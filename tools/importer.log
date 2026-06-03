@@ -70,3 +70,13 @@ At C:\Users\developer\Documents\GitHub\Hardware\tools\import-kicad-parts.ps1:204
     + CategoryInfo          : ObjectNotFound: (Clean-Part:String) [ForEach-Object], CommandNotFoundException
     + FullyQualifiedErrorId : CommandNotFoundException,Microsoft.PowerShell.Commands.ForEachObjectCommand
 
+Processing: STUSB4500QTR
+PS C:\windows\system32> TerminatingError(New-Object): "Exception calling ".ctor" with "3" argument(s): "The process cannot access the file 'C:\Users\developer\Documents\GitHub\Hardware\downloads\STUSB4500QTR.zip' because it is being used by another process.""
+PS C:\windows\system32> TerminatingError(New-Object): "Exception calling ".ctor" with "3" argument(s): "The process cannot access the file 'C:\Users\developer\Documents\GitHub\Hardware\downloads\STUSB4500QTR.zip' because it is being used by another process.""
+>> TerminatingError(New-Object): "Exception calling ".ctor" with "3" argument(s): "The process cannot access the file 'C:\Users\developer\Documents\GitHub\Hardware\downloads\STUSB4500QTR.zip' because it is being used by another process.""
+WARNING: Failed to expand C:\Users\developer\Documents\GitHub\Hardware\downloads\STUSB4500QTR.zip: Exception calling ".ctor" with "3" argument(s): "The process cannot access the file 'C:\Users\developer\Documents\GitHub\Hardware\downloads\STUSB4500QTR.zip' because it is being used by another process."
+Processing: STUSB4500QTR (1)
+  â†’ Moving 3D model: how-to-import.htm
+  â†’ Moving 3D model: License.txt
+  â†’ Moving misc: how-to-import.htm
+  â†’ Moving misc: License.txt
