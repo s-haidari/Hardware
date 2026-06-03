@@ -13,3 +13,16 @@
 [2026-06-03 13:37:03] error: cannot pull with rebase: You have unstaged changes.
 [2026-06-03 13:37:03] error: Please commit or stash them.
 [2026-06-03 13:37:03] ERROR git pull --rebase exit 128
+[2026-06-03 13:37:08] warning: in the working copy of 'libs/My3DModels/License.txt', LF will be replaced by CRLF the next time Git touches it
+[2026-06-03 13:37:08] warning: in the working copy of 'libs/MyFootprints.pretty/GCT_USB4105-GF-A.kicad_mod', LF will be replaced by CRLF the next time Git touches it
+[2026-06-03 13:37:08] warning: in the working copy of 'libs/MyFootprints.pretty/QFN50P400X400X90-25N.kicad_mod', LF will be replaced by CRLF the next time Git touches it
+[2026-06-03 13:37:08] warning: in the working copy of 'misc/License.txt', LF will be replaced by CRLF the next time Git touches it
+[2026-06-03 13:37:08] [main 83773f1] Library update 2026-06-03 13:37:08
+[2026-06-03 13:37:08]  4 files changed, 577 insertions(+)
+[2026-06-03 13:37:08]  create mode 100644 tools/LibraryManager.py
+[2026-06-03 13:37:08]  create mode 100644 tools/config.json
+[2026-06-03 13:37:08]  create mode 100644 tools/ui_python.log
+[2026-06-03 13:37:13] Git pull --rebase...
+[2026-06-03 13:37:13] error: cannot pull with rebase: You have unstaged changes.
+[2026-06-03 13:37:13] error: Please commit or stash them.
+[2026-06-03 13:37:13] ERROR git pull --rebase exit 128
