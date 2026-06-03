@@ -3,23 +3,22 @@
 """
 KiCad Library Manager - Python Tkinter UI
 
+Workflow:
+0. Pull (rebase + autostash) to ensure local repo is up to date.
+1. Drop vendor ZIPs into the Drop Zone (or Open Downloads to place them).
+2. Process ZIPs (move footprints/symbols/models, merge symbols).
+3. Clean leftovers (delete remaining ZIPs/extracted folders in downloads).
+4. Stage, Commit & Push to GitHub.
+
 Features:
-- Pull / Push buttons (no automatic git)
-- Run Import Now (process all ZIPs in downloads)
-- Process Folder… (process a specific extracted vendor folder)
-- Start/Stop Watcher for new ZIPs (requires watchdog)
-- Open Downloads / Open Libs / Open Log
-- Live log panel
-
-Rules:
-- .kicad_sym -> merged into MySymbols.kicad_sym
-- .kicad_mod -> copied to MyFootprints.pretty/
-- .step / .stp / .wrl -> copied to My3DModels/
-- Unknown files -> moved to misc/
-- ZIP + extracted folder -> deleted
-- No renaming (keeps vendor filenames)
-
-Paths can be customized via config.json or by editing DEFAULTS below.
+- Responsive ttk UI (grid-based) that scales cleanly
+- Left-aligned workflow buttons (Step 0 → Step 4)
+- Drag-and-drop ZIPs into a Drop Zone to copy into downloads/ (tkinterdnd2)
+- Scrollable "Library Contents" panel on the right with Search, Filter, Open, Delete
+- Equilux dark theme (via ttkthemes)
+- Optional file watcher (requires 'watchdog')
+- Robust type handling for watchdog (no Pylance error)
+- Live log panel with scrollbar
 
 Author: You
 """
@@ -32,16 +31,27 @@ import shutil
 import subprocess
 from pathlib import Path
 from zipfile import ZipFile, BadZipFile
-from tkinter import Tk, Label, Button, Text, Scrollbar, END, DISABLED, NORMAL, filedialog, messagebox
-from tkinter.font import Font
-from typing import Optional, List, TYPE_CHECKING
+from tkinter import (
+    Tk, Text, END, DISABLED, NORMAL, filedialog, messagebox,
+    BooleanVar, StringVar
+)
+from tkinter import simpledialog
+from tkinter import ttk
+from typing import Optional, List, TYPE_CHECKING, Dict
+
+# -----------------------------
+# Optional drag-and-drop (tkinterdnd2)
+# -----------------------------
+HAVE_TKDND = False
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+    HAVE_TKDND = True
+except Exception:
+    HAVE_TKDND = False
 
 # -----------------------------
 # Optional watcher (robust handling)
 # -----------------------------
-# We try to import watchdog, but if it's not available we:
-#  - Provide minimal runtime stubs so names always exist
-#  - Guard subclass declaration and usage behind HAVE_WATCHDOG
 try:
     from watchdog.observers import Observer
     from watchdog.events import FileSystemEventHandler
@@ -49,28 +59,29 @@ try:
 except Exception:
     HAVE_WATCHDOG = False
 
-    # Runtime stubs so module imports cleanly without watchdog installed
+    # Runtime stubs so the module imports cleanly without watchdog installed
     class Observer:  # minimal placeholder
-        def __init__(self, *_, **__):
-            pass
-
-        def schedule(self, *_, **__):
-            raise RuntimeError("watchdog is not installed")
-
-        def start(self):
-            raise RuntimeError("watchdog is not installed")
-
-        def stop(self):
-            pass
-
-        def join(self, timeout: Optional[float] = None):
-            pass
+        def __init__(self, *_, **__): pass
+        def schedule(self, *_, **__): raise RuntimeError("watchdog is not installed")
+        def start(self): raise RuntimeError("watchdog is not installed")
+        def stop(self): pass
+        def join(self, timeout: Optional[float] = None): pass
 
     class FileSystemEventHandler:  # minimal placeholder
-        def __init__(self, *_, **__):
-            pass
+        def __init__(self, *_, **__): pass
 
-# Tell type checkers about the *real* types without affecting runtime
+# -----------------------------
+# Equilux theme (ttkthemes)
+# -----------------------------
+HAVE_TTKTHEMES = False
+try:
+    # ThemedStyle works with an existing Tk/TkinterDnD root
+    from ttkthemes.themed_style import ThemedStyle
+    HAVE_TTKTHEMES = True
+except Exception:
+    HAVE_TTKTHEMES = False
+
+# Type-only hints for analyzers (no runtime impact)
 if TYPE_CHECKING:
     from watchdog.observers import Observer as _Observer  # noqa: F401
     from watchdog.events import FileSystemEventHandler as _FSEH  # noqa: F401
@@ -78,8 +89,7 @@ if TYPE_CHECKING:
 # -----------------------------
 # Configuration (edit defaults)
 # -----------------------------
-
-DEFAULTS = {
+DEFAULTS: Dict[str, str] = {
     "RepoRoot":     r"C:\Users\developer\Documents\GitHub\Hardware",
     "Downloads":    r"C:\Users\developer\Documents\GitHub\Hardware\downloads",
     "Libs":         r"C:\Users\developer\Documents\GitHub\Hardware\libs",
@@ -97,8 +107,7 @@ CONFIG_PATH = Path(DEFAULTS["RepoRoot"], "tools", "config.json")
 # -----------------------------
 # Utilities / logging
 # -----------------------------
-
-def load_config():
+def load_config() -> Dict[str, str]:
     cfg = DEFAULTS.copy()
     try:
         if CONFIG_PATH.exists():
@@ -122,7 +131,7 @@ def load_config():
     return cfg
 
 
-def save_config(cfg):
+def save_config(cfg: Dict[str, str]):
     try:
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
@@ -156,7 +165,6 @@ class UILog:
 # -----------------------------
 # Core: merge symbols
 # -----------------------------
-
 def read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
 
@@ -167,12 +175,12 @@ def ensure_target_header(target_path: Path):
     if not target_path.exists():
         write_text(target_path, '(kicad_symbol_lib (version 20211014) (generator "LibraryManager.py"))\n)\n')
 
-def extract_symbol_blocks(src_text: str):
+def extract_symbol_blocks(src_text: str) -> List[str]:
     """
     Returns list of full '(symbol ...)' blocks from a .kicad_sym file.
     Simple balanced-paren scanner, tolerates quoted strings.
     """
-    blocks = []
+    blocks: List[str] = []
     s = src_text
     n = len(s)
     i = 0
@@ -204,6 +212,32 @@ def extract_symbol_blocks(src_text: str):
         i += 1
     return blocks
 
+def extract_symbol_name(block: str) -> str:
+    """
+    Try to extract the symbol name from a '(symbol ...)' block.
+    Handles forms like:
+      (symbol "Lib:Name" ...)
+      (symbol (name "Name") ...)
+    Falls back to the first line if parsing fails.
+    """
+    head = block.splitlines()[0]
+    try:
+        # Case 1: (symbol "Lib:Name" ...)
+        if '(symbol "' in head:
+            start = head.index('(symbol "') + len('(symbol "')
+            end = head.index('"', start)
+            raw = head[start:end]
+            name = raw.split(':')[-1]  # prefer part after colon
+            return name
+        # Case 2: (symbol (name "Name") ...)
+        if '(name "' in block:
+            start = block.index('(name "') + len('(name "')
+            end = block.index('"', start)
+            return block[start:end]
+    except Exception:
+        pass
+    return head.strip()
+
 def insert_blocks_into_target(target_text: str, blocks: List[str]) -> str:
     """
     Insert blocks just before the top-level closing paren of the library.
@@ -222,38 +256,39 @@ def insert_blocks_into_target(target_text: str, blocks: List[str]) -> str:
         return f'(kicad_symbol_lib (version 20211014) (generator "LibraryManager.py"))\n{body}\n)\n'
     return target_text[:last_close] + "\n" + "\n".join(blocks) + "\n" + target_text[last_close:]
 
-def merge_symbols(target_path: Path, sources: List[Path], log: UILog):
-    if not sources:
-        return
-    ensure_target_header(target_path)
-    target_text = read_text(target_path)
-    total_blocks: List[str] = []
-    for src in sources:
-        try:
-            src_text = read_text(src)
-        except Exception as e:
-            log.write(f"WARN read symbol {src}: {e}")
-            continue
-        blocks = extract_symbol_blocks(src_text)
-        if blocks:
-            total_blocks.extend(blocks)
-        elif "(symbol" in src_text:
-            total_blocks.append(src_text.strip())
-    if not total_blocks:
-        log.write("No symbols found in source files.")
-        return
-    new_text = insert_blocks_into_target(target_text, total_blocks)
+def remove_symbol_by_name(symbol_lib_path: Path, name: str, log: UILog) -> bool:
+    """
+    Remove a symbol block by name from the .kicad_sym library.
+    Returns True if something was removed.
+    """
     try:
-        write_text(target_path, new_text)
-        log.write(f"Merged {len(total_blocks)} symbol(s) into {target_path}")
+        text = read_text(symbol_lib_path)
+        blocks = extract_symbol_blocks(text)
+        new_blocks: List[str] = []
+        removed = False
+        for b in blocks:
+            nm = extract_symbol_name(b)
+            if nm == name:
+                removed = True
+            else:
+                new_blocks.append(b)
+        if not removed:
+            return False
+        new_text = insert_blocks_into_target(
+            '(kicad_symbol_lib (version 20211014) (generator "LibraryManager.py"))\n)\n',
+            new_blocks
+        )
+        write_text(symbol_lib_path, new_text)
+        log.write(f"Deleted symbol '{name}' from {symbol_lib_path.name}")
+        return True
     except Exception as e:
-        log.write(f"ERROR writing merged symbols: {e}")
+        log.write(f"ERROR deleting symbol '{name}': {e}")
+        return False
 
 
 # -----------------------------
 # Core: processing files
 # -----------------------------
-
 def wait_file_ready(path: Path, tries: int = 20, delay: float = 0.4) -> bool:
     prev_size = -1
     for _ in range(tries):
@@ -283,7 +318,7 @@ def expand_zip_to_folder(zip_path: Path, dest_root: Path, log: UILog) -> Optiona
         log.write(f"ERROR expand zip {zip_path}: {e}")
     return None
 
-def move_files(part_dir: Path, cfg: dict, log: UILog):
+def move_files(part_dir: Path, cfg: Dict[str, str], log: UILog):
     all_files = list(part_dir.rglob("*"))
     files = [p for p in all_files if p.is_file()]
 
@@ -338,7 +373,7 @@ def remove_part_artifacts(zip_path: Optional[Path], part_dir: Optional[Path], lo
         except Exception as e:
             log.write(f"WARN del zip {zip_path}: {e}")
 
-def process_zip(zip_path: Path, cfg: dict, log: UILog):
+def process_zip(zip_path: Path, cfg: Dict[str, str], log: UILog):
     base = zip_path.stem
     log.write(f"Processing: {base}")
     if not wait_file_ready(zip_path):
@@ -351,15 +386,19 @@ def process_zip(zip_path: Path, cfg: dict, log: UILog):
     remove_part_artifacts(zip_path, part_dir, log)
     log.write(f"Done processing {base}")
 
-def process_existing_zips(cfg: dict, log: UILog):
+def process_existing_zips(cfg: Dict[str, str], log: UILog, refresh_cb=None):
     zips = list(Path(cfg["Downloads"]).glob("*.zip"))
     if not zips:
         log.write("No ZIPs found in downloads")
+        if refresh_cb:
+            refresh_cb()
         return
     for z in zips:
         process_zip(z, cfg, log)
+    if refresh_cb:
+        refresh_cb()
 
-def process_folder_dialog(cfg: dict, log: UILog):
+def process_folder_dialog(cfg: Dict[str, str], log: UILog, refresh_cb=None):
     folder = filedialog.askdirectory(initialdir=cfg["Downloads"], title="Select extracted part folder")
     if not folder:
         return
@@ -367,12 +406,54 @@ def process_folder_dialog(cfg: dict, log: UILog):
     log.write(f"Manual process folder: {folder_path}")
     move_files(folder_path, cfg, log)
     log.write("Done manual processing")
+    if refresh_cb:
+        refresh_cb()
+
+def clean_leftovers(cfg: Dict[str, str], log: UILog, refresh_cb=None):
+    """
+    Deletes any remaining *.zip and extracted folders in Downloads.
+    Prompts for confirmation before removal.
+    """
+    downloads = Path(cfg["Downloads"])
+    zips = list(downloads.glob("*.zip"))
+    dirs = [p for p in downloads.iterdir() if p.is_dir()]
+    if not zips and not dirs:
+        log.write("Clean: nothing to remove in downloads")
+        if refresh_cb:
+            refresh_cb()
+        return
+    msg = (
+        f"This will delete {len(zips)} ZIP file(s) and {len(dirs)} folder(s)\n"
+        f"in:\n{downloads}\n\nProceed?"
+    )
+    if not messagebox.askyesno("Confirm Clean Leftovers", msg):
+        log.write("Clean: canceled by user")
+        return
+
+    # Delete zip files
+    for zp in zips:
+        try:
+            zp.unlink()
+            log.write(f"Clean: deleted zip {zp.name}")
+        except Exception as e:
+            log.write(f"WARN clean zip {zp}: {e}")
+
+    # Delete directories
+    for d in dirs:
+        try:
+            shutil.rmtree(d)
+            log.write(f"Clean: deleted folder {d.name}")
+        except Exception as e:
+            log.write(f"WARN clean folder {d}: {e}")
+
+    log.write("Clean: finished deleting leftovers")
+    if refresh_cb:
+        refresh_cb()
 
 # -----------------------------
 # Git commands (button-driven)
 # -----------------------------
-
-def run_git(args: List[str], cfg: dict, log: UILog):
+def run_git(args: List[str], cfg: Dict[str, str], log: UILog):
     try:
         proc = subprocess.run(
             ["git", "-C", cfg["RepoRoot"], *args],
@@ -391,27 +472,41 @@ def run_git(args: List[str], cfg: dict, log: UILog):
     except Exception as e:
         log.write(f"ERROR running git {' '.join(args)}: {e}")
 
-def git_pull(cfg: dict, log: UILog):
-    log.write("Git pull --rebase...")
-    run_git(["pull", "--rebase"], cfg, log)
+def git_pull(cfg: Dict[str, str], log: UILog):
+    log.write("Git pull --rebase (auto-stash)...")
+    # Make pulls resilient: set once (harmless if repeated)
+    run_git(["config", "pull.rebase", "true"], cfg, log)
+    run_git(["config", "rebase.autoStash", "true"], cfg, log)
+    run_git(["pull", "--rebase", "--autostash"], cfg, log)
 
-def git_push(cfg: dict, log: UILog):
+def git_push(cfg: Dict[str, str], log: UILog):
     log.write("Git push...")
     run_git(["push"], cfg, log)
 
-def git_stage_commit(cfg: dict, log: UILog, message: Optional[str] = None):
+def git_stage_commit(cfg: Dict[str, str], log: UILog, message: Optional[str] = None):
     run_git(["add", "-A"], cfg, log)
     if not message:
         message = f"Library update {time.strftime('%Y-%m-%d %H:%M:%S')}"
     run_git(["commit", "-m", message], cfg, log)
 
+def commit_and_push(cfg: Dict[str, str], log: UILog):
+    """
+    Combined action: Stage all, prompt for commit message, commit, then push.
+    """
+    default = f"Library update {time.strftime('%Y-%m-%d %H:%M:%S')}"
+    msg = simpledialog.askstring("Commit Message", "Enter commit message:", initialvalue=default)
+    if msg is None:
+        log.write("Commit: canceled by user")
+        return
+    git_stage_commit(cfg, log, message=msg.strip() or default)
+    git_push(cfg, log)
+
 # -----------------------------
 # Watcher (optional)
 # -----------------------------
-
 if HAVE_WATCHDOG:
     class ZipHandler(FileSystemEventHandler):
-        def __init__(self, cfg, log):
+        def __init__(self, cfg: Dict[str, str], log: UILog):
             super().__init__()
             self.cfg = cfg
             self.log = log
@@ -435,7 +530,7 @@ else:
             raise RuntimeError("Watcher unavailable: install 'watchdog' (pip install watchdog)")
 
 class WatchController:
-    def __init__(self, cfg, log):
+    def __init__(self, cfg: Dict[str, str], log: UILog):
         self.cfg = cfg
         self.log = log
         self.observer: Optional[Observer] = None
@@ -463,75 +558,384 @@ class WatchController:
         self.log.write("Watcher stopped")
 
 # -----------------------------
-# Tkinter UI
+# Helpers: drag-and-drop + safe copy
 # -----------------------------
+def safe_copy_to_downloads(src_path: Path, downloads: Path) -> Path:
+    """Copy src_path to downloads, avoiding overwrite by adding (1), (2), ... suffix."""
+    downloads.mkdir(parents=True, exist_ok=True)
+    dst = downloads / src_path.name
+    if not dst.exists():
+        shutil.copy2(src_path, dst)
+        return dst
 
-def build_ui(cfg):
-    root = Tk()
+    stem = dst.stem
+    suffix = dst.suffix
+    i = 1
+    while True:
+        candidate = downloads / f"{stem} ({i}){suffix}"
+        if not candidate.exists():
+            shutil.copy2(src_path, candidate)
+            return candidate
+        i += 1
+
+def parse_dnd_file_list(tk_root: Tk, data: str) -> List[Path]:
+    """Robustly parse DND_FILES data into Paths (handles braces/quotes/whitespace)."""
+    files = tk_root.tk.splitlist(data)
+    return [Path(f) for f in files]
+
+# -----------------------------
+# Library scan + filtering + UI binding
+# -----------------------------
+def scan_library(cfg: Dict[str, str]):
+    """
+    Scan current library contents.
+    Returns (rows, summary) where rows is list of dicts:
+    {type: 'Symbol'|'Footprint'|'Model', name: str, path: Path}
+    and summary is dict of counts.
+    """
+    rows: List[Dict[str, object]] = []
+
+    # Footprints
+    fp_dir = Path(cfg["FootprintLib"])
+    if fp_dir.exists():
+        for p in sorted(fp_dir.glob("*.kicad_mod")):
+            rows.append({"type": "Footprint", "name": p.stem, "path": p})
+
+    # Models
+    mdl_dir = Path(cfg["ModelLib"])
+    if mdl_dir.exists():
+        for ext in ("*.step", "*.stp", "*.wrl"):
+            for p in sorted(mdl_dir.glob(ext)):
+                rows.append({"type": "Model", "name": p.name, "path": p})
+
+    # Symbols
+    sym_path = Path(cfg["SymbolLib"])
+    if sym_path.exists():
+        try:
+            text = read_text(sym_path)
+            blocks = extract_symbol_blocks(text)
+            for b in blocks:
+                nm = extract_symbol_name(b)
+                rows.append({"type": "Symbol", "name": nm, "path": sym_path})
+        except Exception:
+            # Keep UI resilient even if symbol parsing fails
+            pass
+
+    summary = {
+        "symbols": sum(1 for r in rows if r["type"] == "Symbol"),
+        "footprints": sum(1 for r in rows if r["type"] == "Footprint"),
+        "models": sum(1 for r in rows if r["type"] == "Model"),
+        "total": len(rows),
+    }
+    return rows, summary
+
+def filter_rows(rows: List[Dict[str, object]], query: str, type_filter: str) -> List[Dict[str, object]]:
+    q = (query or "").strip().lower()
+    tf = type_filter
+    out: List[Dict[str, object]] = []
+    for r in rows:
+        if tf != "All" and r["type"] != tf:
+            continue
+        name = str(r["name"]).lower()
+        if q and q not in name:
+            continue
+        out.append(r)
+    return out
+
+def populate_tree(tree: ttk.Treeview, rows: List[Dict[str, object]], summary: Dict[str, int], lbl_summary: ttk.Label):
+    # Clear tree
+    for item in tree.get_children():
+        tree.delete(item)
+    # Insert rows
+    for r in rows:
+        tree.insert("", "end", values=(r["type"], r["name"], str(r["path"])))
+    lbl_summary.config(text=f"Library: {summary['total']} items "
+                            f"(Symbols: {summary['symbols']}, "
+                            f"Footprints: {summary['footprints']}, "
+                            f"Models: {summary['models']})")
+
+# -----------------------------
+# Apply Equilux theme
+# -----------------------------
+def apply_equilux_theme(root: Tk, log: Optional[UILog] = None):
+    """
+    Apply the Equilux theme via ttkthemes and override text colors to white.
+    Also tints classic Tk widgets (Text) to match.
+    """
+    try:
+        from ttkthemes.themed_style import ThemedStyle  # requires `pip install ttkthemes`
+        style = ThemedStyle(root, theme="equilux")
+        style.theme_use("equilux")
+
+        # --- Global overrides (affect all ttk widgets unless a widget-specific style overrides it)
+        style.configure(
+            ".", 
+            foreground="#ffffff",          # default text color
+            selectforeground="#ffffff"     # text color when selected
+        )
+        # --- Common widget types (explicit, to ensure consistency across pixmap-based theme)
+        for widget_style in (
+            "TLabel", "TButton", "TCheckbutton", "TRadiobutton",
+            "TEntry", "TCombobox", "Treeview", "TNotebook", "TFrame", "TLabelframe"
+        ):
+            style.configure(widget_style, foreground="#ffffff")
+
+        # Treeview selection text (map handles state-based colors)
+        style.map("Treeview", foreground=[("selected", "#ffffff")])
+
+        # Combobox entry text sometimes uses the fieldforeground option:
+        # (Not all Tk builds expose this; harmless if ignored)
+        style.configure("TCombobox", fieldforeground="#ffffff")
+
+        # Match window and Text widget to Equilux palette (Equilux window = #373737)
+        root.configure(bg="#373737")
+        # If you have a classic Tk Text for log, set it after creation too:
+        # txt_log.configure(bg="#373737", fg="#ffffff", insertbackground="#ffffff")
+
+        if log:
+            log.write("Theme: Equilux applied with white foreground overrides")
+    except Exception as e:
+        if log:
+            log.write(f"WARN: Equilux not applied or overrides failed: {e}")
+        # Fallback (still make text white on built-in theme)
+        s = ttk.Style(root)
+        try:
+            s.configure(".", foreground="#ffffff")
+        except Exception:
+            pass
+
+# -----------------------------
+# Tkinter UI (responsive ttk)
+# -----------------------------
+def build_ui(cfg: Dict[str, str]):
+    # Use TkinterDnD root if available
+    if HAVE_TKDND:
+        root = TkinterDnD.Tk()
+    else:
+        root = Tk()
+
+    # Theme + window settings
+    style = ttk.Style(root)
+    try:
+        style.theme_use("clam")  # temporary base; Equilux applied below
+    except Exception:
+        pass
     root.title("KiCad Library Manager")
-    root.geometry("900x600")
+    root.minsize(1100, 680)
 
-    lbl_repo = Label(root, text=f"Repo: {cfg['RepoRoot']}")
-    lbl_repo.place(x=10, y=10)
+    # Top-level grid: two columns (left controls, right library/log)
+    root.columnconfigure(0, weight=0)   # left column fixed-width
+    root.columnconfigure(1, weight=1)   # right column grows
+    root.rowconfigure(3, weight=1)      # log row grows
 
-    lbl_down = Label(root, text=f"Downloads: {cfg['Downloads']}")
-    lbl_down.place(x=10, y=35)
+    # Header frame
+    hdr = ttk.Frame(root, padding=(10, 8))
+    hdr.grid(row=0, column=0, columnspan=2, sticky="ew")
+    ttk.Label(hdr, text=f"Repo: {cfg['RepoRoot']}").grid(row=0, column=0, sticky="w", padx=(0, 12))
+    ttk.Label(hdr, text=f"Downloads: {cfg['Downloads']}").grid(row=1, column=0, sticky="w")
 
-    # Buttons row 1
-    btn_pull = Button(root, text="Pull", width=10)
-    btn_pull.place(x=10, y=70)
+    # Drop zone
+    dz = ttk.Labelframe(root, text="Drop Zone", padding=(10, 10))
+    dz.grid(row=1, column=0, columnspan=2, sticky="ew", padx=10, pady=(0, 6))
+    dz.columnconfigure(0, weight=1)
 
-    btn_push = Button(root, text="Push", width=10)
-    btn_push.place(x=100, y=70)
+    drop_text = ttk.Label(
+        dz,
+        text="Drag & drop ZIP files here to copy into Downloads.\n"
+             "Tip: enable 'Process on drop' to automatically process after copy.",
+        anchor="center")
+    drop_text.grid(row=0, column=0, sticky="ew", pady=(4, 6))
 
-    btn_commit = Button(root, text="Stage & Commit", width=15)
-    btn_commit.place(x=190, y=70)
+    process_on_drop = BooleanVar(value=True)
+    ttk.Checkbutton(dz, text="Process on drop", variable=process_on_drop).grid(row=1, column=0, sticky="w")
 
-    btn_import = Button(root, text="Run Import Now", width=15)
-    btn_import.place(x=320, y=70)
+    # Left: Workflow frame (left-aligned buttons)
+    wf = ttk.Labelframe(root, text="Workflow", padding=(10, 10))
+    wf.grid(row=2, column=0, sticky="nsw", padx=10, pady=6)
+    for r in range(8):
+        wf.rowconfigure(r, weight=0)
+    wf.columnconfigure(0, weight=1)
 
-    btn_proc_folder = Button(root, text="Process Folder…", width=15)
-    btn_proc_folder.place(x=450, y=70)
+    # Right top: Library contents
+    libf = ttk.Labelframe(root, text="Library Contents", padding=(10, 8))
+    libf.grid(row=2, column=1, sticky="nsew", padx=(0, 10), pady=6)
+    libf.columnconfigure(0, weight=1)
+    libf.rowconfigure(3, weight=1)
 
-    btn_start = Button(root, text="Start Watcher", width=12)
-    btn_start.place(x=580, y=70)
+    # Filter row
+    filter_frame = ttk.Frame(libf)
+    filter_frame.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+    filter_frame.columnconfigure(3, weight=1)
 
-    btn_stop = Button(root, text="Stop Watcher", width=12)
-    btn_stop.place(x=680, y=70)
+    ttk.Label(filter_frame, text="Type:").grid(row=0, column=0, sticky="w")
+    type_var = StringVar(value="All")
+    type_combo = ttk.Combobox(
+        filter_frame, textvariable=type_var,
+        values=("All", "Symbol", "Footprint", "Model"),
+        state="readonly", width=12
+    )
+    type_combo.grid(row=0, column=1, sticky="w", padx=(6, 12))
 
-    btn_open_down = Button(root, text="Open Downloads", width=15)
-    btn_open_down.place(x=790, y=70)
+    ttk.Label(filter_frame, text="Search:").grid(row=0, column=2, sticky="e")
+    search_var = StringVar(value="")
+    search_entry = ttk.Entry(filter_frame, textvariable=search_var)
+    search_entry.grid(row=0, column=3, sticky="ew", padx=(6, 6))
 
-    btn_open_libs = Button(root, text="Open Libs", width=12)
-    btn_open_libs.place(x=10, y=100)
+    # Summary + actions
+    lbl_summary = ttk.Label(libf, text="Library: 0 items")
+    lbl_summary.grid(row=1, column=0, sticky="w", pady=(0, 6))
 
-    btn_open_log = Button(root, text="Open Log", width=12)
-    btn_open_log.place(x=130, y=100)
+    btn_actions = ttk.Frame(libf)
+    btn_actions.grid(row=2, column=0, sticky="ew", pady=(0, 6))
+    btn_actions.columnconfigure(0, weight=1)
 
-    # Log panel
-    log_font = Font(family="Consolas", size=10)
-    txt_log = Text(root, wrap="none", font=log_font, state=DISABLED)
-    txt_log.place(x=10, y=135, width=870, height=430)
-    scr = Scrollbar(root, command=txt_log.yview)
-    scr.place(x=880, y=135, height=430)
+    # --- Log panel (classic Tk Text, manually colored to Equilux) ---
+    lg = ttk.Labelframe(root, text="Log", padding=(10, 6))
+    lg.grid(row=3, column=1, sticky="nsew", padx=(0, 10), pady=(0, 10))
+    lg.columnconfigure(0, weight=1)
+    lg.rowconfigure(0, weight=1)
+
+    txt_log = Text(lg, wrap="none", state=DISABLED, height=12)
+    txt_log.grid(row=0, column=0, sticky="nsew")
+    scr = ttk.Scrollbar(lg, command=txt_log.yview)
+    scr.grid(row=0, column=1, sticky="ns")
     txt_log.configure(yscrollcommand=scr.set)
 
     log = UILog(txt_log, Path(cfg["LogFile"]))
     log.write("UI started")
 
+    # Apply Equilux theme now (styles + log widget colors)
+    apply_equilux_theme(root, log)
+    # Match Text widget to Equilux palette
+    txt_log.configure(bg="#373737", fg="#a6a6a6", insertbackground="#a6a6a6", highlightthickness=0, relief="flat")
+
     wc = WatchController(cfg, log)
 
-    # Wire buttons
-    btn_pull.configure(command=lambda: git_pull(cfg, log))
-    btn_push.configure(command=lambda: git_push(cfg, log))
-    btn_commit.configure(command=lambda: git_stage_commit(cfg, log))
-    btn_import.configure(command=lambda: process_existing_zips(cfg, log))
-    btn_proc_folder.configure(command=lambda: process_folder_dialog(cfg, log))
-    btn_start.configure(command=wc.start)
-    btn_stop.configure(command=wc.stop)
-    btn_open_down.configure(command=lambda: os.startfile(cfg["Downloads"]))
-    btn_open_libs.configure(command=lambda: os.startfile(cfg["Libs"]))
-    btn_open_log.configure(command=lambda: os.startfile(cfg["LogFile"]))
+    # Drag-and-drop handler
+    def handle_drop(event):
+        files = parse_dnd_file_list(root, event.data)
+        copied = []
+        for f in files:
+            if f.suffix.lower() != ".zip":
+                log.write(f"Skip (not a ZIP): {f}")
+                continue
+            try:
+                dst = safe_copy_to_downloads(f, Path(cfg["Downloads"]))
+                log.write(f"Copied to downloads: {dst.name}")
+                copied.append(dst)
+            except Exception as e:
+                log.write(f"ERROR copying {f}: {e}")
+        if copied and process_on_drop.get():
+            process_existing_zips(cfg, log, refresh_cb=lambda: refresh_library())
+
+    # Register DnD if available; fallback button otherwise
+    if HAVE_TKDND:
+        drop_text.drop_target_register(DND_FILES)
+        drop_text.dnd_bind('<<Drop>>', handle_drop)
+    else:
+        ttk.Label(dz, text="Drag-and-Drop requires 'tkinterdnd2'. Click to open Downloads.").grid(row=2, column=0, sticky="w")
+        ttk.Button(dz, text="Open Downloads", command=lambda: os.startfile(cfg["Downloads"])).grid(row=2, column=0, sticky="e")
+
+    # --- Library actions ---
+    def on_tree_open(event=None):
+        sel = tree.selection()
+        if not sel:
+            return
+        values = tree.item(sel[0], "values")
+        path = Path(values[2])
+        try:
+            if path.is_file():
+                os.startfile(path)
+            else:
+                os.startfile(path if path.exists() else path.parent)
+        except Exception as e:
+            log.write(f"Open failed: {e}")
+
+    def on_tree_delete():
+        sel = tree.selection()
+        if not sel:
+            messagebox.showinfo("Delete", "No item selected.")
+            return
+        t, n, p = tree.item(sel[0], "values")
+        path = Path(p)
+        if not messagebox.askyesno("Confirm Delete", f"Delete '{n}' ({t})?\n\nThis action cannot be undone."):
+            return
+        try:
+            if t == "Symbol":
+                ok = remove_symbol_by_name(Path(cfg["SymbolLib"]), n, log)
+                if not ok:
+                    messagebox.showwarning("Delete Symbol", f"Symbol '{n}' not found or could not be removed.")
+            elif t in ("Footprint", "Model"):
+                if path.exists():
+                    path.unlink()
+                    log.write(f"Deleted file: {path.name}")
+                else:
+                    messagebox.showwarning("Delete", f"File not found:\n{path}")
+            else:
+                messagebox.showwarning("Delete", f"Unsupported type: {t}")
+        except Exception as e:
+            messagebox.showerror("Delete Failed", str(e))
+        refresh_library()
+
+    ttk.Button(btn_actions, text="Refresh Library", command=lambda: refresh_library()).grid(row=0, column=0, sticky="w")
+    ttk.Button(btn_actions, text="Open Selected", command=lambda: on_tree_open()).grid(row=0, column=1, sticky="w", padx=(10, 0))
+    ttk.Button(btn_actions, text="Delete Selected", command=lambda: on_tree_delete()).grid(row=0, column=2, sticky="w", padx=(10, 0))
+
+    # Treeview with columns
+    columns = ("Type", "Name", "Location")
+    tree = ttk.Treeview(libf, columns=columns, show="headings", selectmode="browse")
+    for col in columns:
+        tree.heading(col, text=col)
+    tree.column("Type", width=110, anchor="w")
+    tree.column("Name", width=260, anchor="w")
+    tree.column("Location", width=480, anchor="w")
+    tree.grid(row=3, column=0, sticky="nsew")
+
+    scr_tree = ttk.Scrollbar(libf, orient="vertical", command=tree.yview)
+    scr_tree.grid(row=3, column=1, sticky="ns")
+    tree.configure(yscrollcommand=scr_tree.set)
+    tree.bind("<Double-Button-1>", on_tree_open)
+
+    # Right bottom: Log frame already set above
+
+    # Advanced frame under workflow
+    adv = ttk.Labelframe(root, text="Advanced", padding=(10, 10))
+    adv.grid(row=3, column=0, sticky="news", padx=10, pady=(0, 10))
+    adv.columnconfigure(0, weight=1)
+
+    # --- Filter logic + refresh helper ---
+    def on_filter_change(*_):
+        rows, summary = scan_library(cfg)
+        filtered = filter_rows(rows, search_var.get(), type_var.get())
+        populate_tree(tree, filtered, summary, lbl_summary)
+
+    type_combo.bind("<<ComboboxSelected>>", on_filter_change)
+    search_entry.bind("<KeyRelease>", on_filter_change)
+
+    def refresh_library():
+        rows, summary = scan_library(cfg)
+        filtered = filter_rows(rows, search_var.get(), type_var.get())
+        populate_tree(tree, filtered, summary, lbl_summary)
+
+    # --- Workflow buttons (Step 0–4), left-aligned (sticky='w') ---
+    ttk.Button(wf, text="Step 0: Pull (Rebase + Auto‑Stash)", command=lambda: git_pull(cfg, log)).grid(row=0, column=0, sticky="w", pady=3)
+    ttk.Button(wf, text="Step 1: Open Downloads            ", command=lambda: os.startfile(cfg["Downloads"])).grid(row=1, column=0, sticky="w", pady=3)
+    ttk.Button(wf, text="Step 2: Process ZIPs              ", command=lambda: process_existing_zips(cfg, log, refresh_cb=refresh_library)).grid(row=2, column=0, sticky="w", pady=3)
+    ttk.Button(wf, text="Step 3: Clean Leftovers           ", command=lambda: clean_leftovers(cfg, log, refresh_cb=refresh_library)).grid(row=3, column=0, sticky="w", pady=3)
+    ttk.Button(wf, text="Step 4: Stage, Commit & Push      ", command=lambda: commit_and_push(cfg, log)).grid(row=4, column=0, sticky="w", pady=8)
+
+    # --- Advanced actions ---
+    ttk.Button(adv, text="Pull (rebase)", command=lambda: git_pull(cfg, log)).grid(row=0, column=0, sticky="ew", pady=3)
+    ttk.Button(adv, text="Push", command=lambda: git_push(cfg, log)).grid(row=1, column=0, sticky="ew", pady=3)
+    ttk.Button(adv, text="Stage & Commit", command=lambda: git_stage_commit(cfg, log)).grid(row=2, column=0, sticky="ew", pady=3)
+    ttk.Button(adv, text="Process Folder…", command=lambda: process_folder_dialog(cfg, log, refresh_cb=refresh_library)).grid(row=3, column=0, sticky="ew", pady=3)
+    ttk.Button(adv, text="Start Watcher", command=wc.start).grid(row=4, column=0, sticky="ew", pady=3)
+    ttk.Button(adv, text="Stop Watcher", command=wc.stop).grid(row=5, column=0, sticky="ew", pady=3)
+    ttk.Button(adv, text="Open Libs", command=lambda: os.startfile(cfg["Libs"])).grid(row=6, column=0, sticky="ew", pady=3)
+    ttk.Button(adv, text="Open Log", command=lambda: os.startfile(cfg["LogFile"])).grid(row=7, column=0, sticky="ew", pady=3)
+
+    # Initial population
+    refresh_library()
 
     def on_close():
         wc.stop()
@@ -540,6 +944,39 @@ def build_ui(cfg):
     root.protocol("WM_DELETE_WINDOW", on_close)
     return root
 
+# -----------------------------
+# Merge symbols (placed near UI for clarity; used in move_files)
+# -----------------------------
+def merge_symbols(target_path: Path, sources: List[Path], log: UILog):
+    if not sources:
+        return
+    ensure_target_header(target_path)
+    target_text = read_text(target_path)
+    total_blocks: List[str] = []
+    for src in sources:
+        try:
+            src_text = read_text(src)
+        except Exception as e:
+            log.write(f"WARN read symbol {src}: {e}")
+            continue
+        blocks = extract_symbol_blocks(src_text)
+        if blocks:
+            total_blocks.extend(blocks)
+        elif "(symbol" in src_text:
+            total_blocks.append(src_text.strip())
+    if not total_blocks:
+        log.write("No symbols found in source files.")
+        return
+    new_text = insert_blocks_into_target(target_text, total_blocks)
+    try:
+        write_text(target_path, new_text)
+        log.write(f"Merged {len(total_blocks)} symbol(s) into {target_path}")
+    except Exception as e:
+        log.write(f"ERROR writing merged symbols: {e}")
+
+# -----------------------------
+# Main
+# -----------------------------
 def main():
     cfg = load_config()
     save_config(cfg)  # create/refresh config.json for collaborators
