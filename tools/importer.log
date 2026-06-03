@@ -1,0 +1,72 @@
+﻿**********************
+Windows PowerShell transcript start
+Start time: 20260603124345
+Username: DESKTOP-GUJF239\developer
+RunAs User: DESKTOP-GUJF239\developer
+Configuration Name: 
+Machine: DESKTOP-GUJF239 (Microsoft Windows NT 10.0.26200.0)
+Host Application: C:\windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -NoExit -File C:\Users\developer\Documents\GitHub\Hardware\tools\import-kicad-parts.ps1
+Process ID: 30528
+PSVersion: 5.1.26100.8457
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.8457
+BuildVersion: 10.0.26100.8457
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+Importer watching: C:\Users\developer\Documents\GitHub\Hardware\downloads
+PS>TerminatingError(ForEach-Object): "The term 'Process-Zip' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the name, or if a path was included, verify that the path is correct and try again."
+>> TerminatingError(ForEach-Object): "The term 'Process-Zip' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the name, or if a path was included, verify that the path is correct and try again."
+The term 'Process-Zip' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the name, or if a path was included, verify that the path is correct and try again.
+ForEach-Object : The term 'Process-Zip' is not recognized as the name of a cmdlet, function, script file, or operable
+program. Check the spelling of the name, or if a path was included, verify that the path is correct and try again.
+At C:\Users\developer\Documents\GitHub\Hardware\tools\import-kicad-parts.ps1:204 char:85
++ ... nloads -Filter *.zip -ErrorAction SilentlyContinue | ForEach-Object {
++                                                          ~~~~~~~~~~~~~~~~
+    + CategoryInfo          : ObjectNotFound: (Process-Zip:String) [ForEach-Object], CommandNotFoundException
+    + FullyQualifiedErrorId : CommandNotFoundException,Microsoft.PowerShell.Commands.ForEachObjectCommand
+
+**********************
+Windows PowerShell transcript start
+Start time: 20260603124618
+Username: DESKTOP-GUJF239\developer
+RunAs User: DESKTOP-GUJF239\developer
+Configuration Name: 
+Machine: DESKTOP-GUJF239 (Microsoft Windows NT 10.0.26200.0)
+Host Application: C:\windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -NoExit -File C:\Users\developer\Documents\GitHub\Hardware\tools\import-kicad-parts.ps1
+Process ID: 27840
+PSVersion: 5.1.26100.8457
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.8457
+BuildVersion: 10.0.26100.8457
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+Importer watching: C:\Users\developer\Documents\GitHub\Hardware\downloads
+Processing: USB4105_GF_A
+  â†’ Merging symbols: 1
+Merged 1 symbol(s) into C:\Users\developer\Documents\GitHub\Hardware\libs\MySymbols.kicad_sym
+  â†’ Moving footprint: GCT_USB4105-GF-A.kicad_mod
+  â†’ Moving 3D model: GCT_USB4105-GF-A.kicad_mod
+  â†’ Moving 3D model: how-to-import.htm
+  â†’ Moving 3D model: License.txt
+  â†’ Moving 3D model: USB4105-GF-A.kicad_sym
+  â†’ Moving 3D model: USB4105-GF-A.step
+  â†’ Moving misc: how-to-import.htm
+  â†’ Moving misc: License.txt
+PS>TerminatingError(): "The term 'Clean-Part' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the name, or if a path was included, verify that the path is correct and try again."
+>> TerminatingError(ForEach-Object): "The term 'Clean-Part' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the name, or if a path was included, verify that the path is correct and try again."
+>> TerminatingError(ForEach-Object): "The term 'Clean-Part' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the name, or if a path was included, verify that the path is correct and try again."
+The term 'Clean-Part' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the name, or if a path was included, verify that the path is correct and try again.
+ForEach-Object : The term 'Clean-Part' is not recognized as the name of a cmdlet, function, script file, or operable
+program. Check the spelling of the name, or if a path was included, verify that the path is correct and try again.
+At C:\Users\developer\Documents\GitHub\Hardware\tools\import-kicad-parts.ps1:204 char:85
++ ... nloads -Filter *.zip -ErrorAction SilentlyContinue | ForEach-Object {
++                                                          ~~~~~~~~~~~~~~~~
+    + CategoryInfo          : ObjectNotFound: (Clean-Part:String) [ForEach-Object], CommandNotFoundException
+    + FullyQualifiedErrorId : CommandNotFoundException,Microsoft.PowerShell.Commands.ForEachObjectCommand
+
