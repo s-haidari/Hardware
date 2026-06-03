@@ -80,3 +80,4 @@ Processing: STUSB4500QTR (1)
   â†’ Moving 3D model: License.txt
   â†’ Moving misc: how-to-import.htm
   â†’ Moving misc: License.txt
+PS C:\windows\system32> TerminatingError(): "The term 'Clean-Part' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the name, or if a path was included, verify that the path is correct and try again."

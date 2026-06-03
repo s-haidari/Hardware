@@ -1,0 +1,15 @@
+[2026-06-03 13:36:26] UI started
+[2026-06-03 13:36:37] Watcher started
+[2026-06-03 13:36:52] Git push...
+[2026-06-03 13:36:54] To https://github.com/sshcgh/Hardware.git
+[2026-06-03 13:36:54]  ! [rejected]        main -> main (non-fast-forward)
+[2026-06-03 13:36:54] error: failed to push some refs to 'https://github.com/sshcgh/Hardware.git'
+[2026-06-03 13:36:54] hint: Updates were rejected because the tip of your current branch is behind
+[2026-06-03 13:36:54] hint: its remote counterpart. If you want to integrate the remote changes,
+[2026-06-03 13:36:54] hint: use 'git pull' before pushing again.
+[2026-06-03 13:36:54] hint: See the 'Note about fast-forwards' in 'git push --help' for details.
+[2026-06-03 13:36:54] ERROR git push exit 1
+[2026-06-03 13:37:03] Git pull --rebase...
+[2026-06-03 13:37:03] error: cannot pull with rebase: You have unstaged changes.
+[2026-06-03 13:37:03] error: Please commit or stash them.
+[2026-06-03 13:37:03] ERROR git pull --rebase exit 128
