@@ -468,7 +468,7 @@ class WatchController:
 
 def build_ui(cfg):
     root = Tk()
-    root.title("KiCad Library Manager (Python)")
+    root.title("KiCad Library Manager")
     root.geometry("900x600")
 
     lbl_repo = Label(root, text=f"Repo: {cfg['RepoRoot']}")
