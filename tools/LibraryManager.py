@@ -23,6 +23,7 @@ Features:
 Author: You
 """
 
+from logging import root
 import os
 import sys
 import json
@@ -662,6 +663,10 @@ def apply_equilux_theme(root: Tk, log: Optional[UILog] = None):
     Apply the Equilux theme via ttkthemes and override text colors to white.
     Also tints classic Tk widgets (Text) to match.
     """
+    # Left-align the text inside all step buttons
+    style = ttk.Style(root)
+    style.configure("Step.TButton", anchor="w", padding=(12, 6))
+
     try:
         from ttkthemes.themed_style import ThemedStyle  # requires `pip install ttkthemes`
         style = ThemedStyle(root, theme="equilux")
@@ -735,29 +740,71 @@ def build_ui(cfg: Dict[str, str]):
     ttk.Label(hdr, text=f"Downloads: {cfg['Downloads']}").grid(row=1, column=0, sticky="w")
 
     # Drop zone
-    dz = ttk.Labelframe(root, text="Drop Zone", padding=(10, 10))
+    dz = ttk.Labelframe(root, text="Drag ZIP Files Here into Drop Zone", padding=(10, 10))
     dz.grid(row=1, column=0, columnspan=2, sticky="ew", padx=10, pady=(0, 6))
     dz.columnconfigure(0, weight=1)
-
-    drop_text = ttk.Label(
-        dz,
-        text="Drag & drop ZIP files here to copy into Downloads.\n"
-             "Tip: enable 'Process on drop' to automatically process after copy.",
-        anchor="center")
-    drop_text.grid(row=0, column=0, sticky="ew", pady=(4, 6))
-
+    
+    dz_canvas = None
+    dz_text_id = None
+    dz_rect_id = None
+    
+    def dz_draw_outline(event=None, color="#a6a6a6", dash=(8,6)):
+        nonlocal dz_rect_id, dz_text_id
+        w = dz_canvas.winfo_width()
+        h = dz_canvas.winfo_height()
+        dz_canvas.delete("all")
+        pad = 12
+        dz_rect_id = dz_canvas.create_rectangle(pad, pad, w-pad, h-pad, outline=color, width=2, dash=dash)
+        dz_text_id = dz_canvas.create_text(w//2, h//2, text=dz_canvas.cget("Drop ZIP Files Here"), fill=color, font=("Segoe UI", 11, "bold"), justify="center")
+    
+    def dz_on_enter(_):
+        dz_draw_outline(color="#bebebe")
+        
+    def dz_on_leave(_):
+        dz_draw_outline(color="#a6a6a6")
+    
+    def handle_drop(event):
+        files = parse_dnd_file_list(root, event.data)
+        copied = []
+        for f in files:
+            if f.suffix.lower() != ".zip":
+                log.write(f"Skip (not a ZIP): {f}")
+                continue
+            try:
+                dst = safe_copy_to_downloads(f, Path(cfg["Downloads"]))
+                log.write(f"Copied to downloads: {dst.name}")
+                copied.append(dst)
+            except Exception as e:
+                log.write(f"ERROR {f}: {e}")
+            if copied and process_on_drop.get():
+                process_existing_zips(cfg, log, refresh_cb=lambda: refresh_library())
+        
     process_on_drop = BooleanVar(value=True)
-    ttk.Checkbutton(dz, text="Process on drop", variable=process_on_drop).grid(row=1, column=0, sticky="w")
-
+    ttk.Checkbutton(dz, text="Instantaneous Processing for Dropped File", variable=process_on_drop).grid(row=1, column=0, sticky="w", pady=(6, 0))
+    
+    dz_canvas = Text(dz, height=6, width=10)
+    dz_canvas.configure(bg="#373737", fg="#a6a6a6", insertbackground="#a6a6a6", highlightthickness=0, relief="flat", state=DISABLED)
+    dz_canvas.grid(row=0, column=0, sticky="ew")
+    dz_canvas.bind("<Configure>", dz_draw_outline)
+    dz_canvas.bind("<Enter>", dz_on_enter)
+    dz_canvas.bind("<Leave>", dz_on_leave)
+    
+    if HAVE_TKDND:
+        dz_canvas.drop_target_register(DND_FILES)
+        dz_canvas.dnd_bind('<<Drop>>', handle_drop)
+    else:
+        ttk.Label(dz, text="Drag-and-Drop requires 'tkinterdnd2'. Click to open Downloads.").grid(row=2, column=0, sticky="w")
+        ttk.Button(dz, text="Open Downloads", command=lambda: os.startfile(cfg["Downloads"])).grid(row=2, column=0, sticky="e")
+    
     # Left: Workflow frame (left-aligned buttons)
     wf = ttk.Labelframe(root, text="Workflow", padding=(10, 10))
     wf.grid(row=2, column=0, sticky="nsw", padx=10, pady=6)
     for r in range(8):
         wf.rowconfigure(r, weight=0)
-    wf.columnconfigure(0, weight=1)
+    wf.columnconfigure(0, weight=1, uniform="wf")
 
     # Right top: Library contents
-    libf = ttk.Labelframe(root, text="Library Contents", padding=(10, 8))
+    libf = ttk.Labelframe(root, text="Contents", padding=(10, 8))
     libf.grid(row=2, column=1, sticky="nsew", padx=(0, 10), pady=6)
     libf.columnconfigure(0, weight=1)
     libf.rowconfigure(3, weight=1)
@@ -830,8 +877,8 @@ def build_ui(cfg: Dict[str, str]):
 
     # Register DnD if available; fallback button otherwise
     if HAVE_TKDND:
-        drop_text.drop_target_register(DND_FILES)
-        drop_text.dnd_bind('<<Drop>>', handle_drop)
+        dz_canvas.drop_target_register(DND_FILES)
+        dz_canvas.dnd_bind('<<Drop>>', handle_drop)
     else:
         ttk.Label(dz, text="Drag-and-Drop requires 'tkinterdnd2'. Click to open Downloads.").grid(row=2, column=0, sticky="w")
         ttk.Button(dz, text="Open Downloads", command=lambda: os.startfile(cfg["Downloads"])).grid(row=2, column=0, sticky="e")
@@ -916,22 +963,29 @@ def build_ui(cfg: Dict[str, str]):
         rows, summary = scan_library(cfg)
         filtered = filter_rows(rows, search_var.get(), type_var.get())
         populate_tree(tree, filtered, summary, lbl_summary)
+        
+    style = ttk.Style(root)
+    style.configure("Step.TButton", anchor="w", padding=(12, 6))
 
     # --- Workflow buttons (Step 0–4), left-aligned (sticky='w') ---
-    ttk.Button(wf, text="Step 0: Pull (Rebase + Auto‑Stash)", command=lambda: git_pull(cfg, log)).grid(row=0, column=0, sticky="w", pady=3)
-    ttk.Button(wf, text="Step 1: Open Downloads            ", command=lambda: os.startfile(cfg["Downloads"])).grid(row=1, column=0, sticky="w", pady=3)
-    ttk.Button(wf, text="Step 2: Process ZIPs              ", command=lambda: process_existing_zips(cfg, log, refresh_cb=refresh_library)).grid(row=2, column=0, sticky="w", pady=3)
-    ttk.Button(wf, text="Step 3: Clean Leftovers           ", command=lambda: clean_leftovers(cfg, log, refresh_cb=refresh_library)).grid(row=3, column=0, sticky="w", pady=3)
-    ttk.Button(wf, text="Step 4: Stage, Commit & Push      ", command=lambda: commit_and_push(cfg, log)).grid(row=4, column=0, sticky="w", pady=8)
+    wf = ttk.Labelframe(root, text="Workflow", padding=(10, 10))
+    wf.grid(row=2, column=0, sticky="nsw", padx=10, pady=6)
+    wf.columnconfigure(0, weight=1, uniform="wf")
+    wf.grid_columnconfigure(0, minsize=320)
+    ttk.Button(wf, text="Step 0: Pull (Rebase + Auto‑Stash)", command=lambda: git_pull(cfg, log), style="Step.TButton").grid(row=0, column=0, sticky="ew", pady=3)
+    ttk.Button(wf, text="Step 1: Open Downloads", command=lambda: os.startfile(cfg["Downloads"]), style="Step.TButton").grid(row=1, column=0, sticky="ew", pady=3)
+    ttk.Button(wf, text="Step 2: Process ZIPs", command=lambda: process_existing_zips(cfg, log, refresh_cb=refresh_library), style="Step.TButton").grid(row=2, column=0, sticky="ew", pady=3)
+    ttk.Button(wf, text="Step 3: Clean Leftovers", command=lambda: clean_leftovers(cfg, log, refresh_cb=refresh_library), style="Step.TButton").grid(row=3, column=0, sticky="ew", pady=3)
+    ttk.Button(wf, text="Step 4: Stage, Commit & Push", command=lambda: commit_and_push(cfg, log), style="Step.TButton").grid(row=4, column=0, sticky="ew", pady=8)
 
     # --- Advanced actions ---
-    ttk.Button(adv, text="Pull (rebase)", command=lambda: git_pull(cfg, log)).grid(row=0, column=0, sticky="ew", pady=3)
+    ttk.Button(adv, text="Pull", command=lambda: git_pull(cfg, log)).grid(row=0, column=0, sticky="ew", pady=3)
     ttk.Button(adv, text="Push", command=lambda: git_push(cfg, log)).grid(row=1, column=0, sticky="ew", pady=3)
     ttk.Button(adv, text="Stage & Commit", command=lambda: git_stage_commit(cfg, log)).grid(row=2, column=0, sticky="ew", pady=3)
-    ttk.Button(adv, text="Process Folder…", command=lambda: process_folder_dialog(cfg, log, refresh_cb=refresh_library)).grid(row=3, column=0, sticky="ew", pady=3)
+    ttk.Button(adv, text="Process Folder", command=lambda: process_folder_dialog(cfg, log, refresh_cb=refresh_library)).grid(row=3, column=0, sticky="ew", pady=3)
     ttk.Button(adv, text="Start Watcher", command=wc.start).grid(row=4, column=0, sticky="ew", pady=3)
     ttk.Button(adv, text="Stop Watcher", command=wc.stop).grid(row=5, column=0, sticky="ew", pady=3)
-    ttk.Button(adv, text="Open Libs", command=lambda: os.startfile(cfg["Libs"])).grid(row=6, column=0, sticky="ew", pady=3)
+    ttk.Button(adv, text="Open Libraries", command=lambda: os.startfile(cfg["Libs"])).grid(row=6, column=0, sticky="ew", pady=3)
     ttk.Button(adv, text="Open Log", command=lambda: os.startfile(cfg["LogFile"])).grid(row=7, column=0, sticky="ew", pady=3)
 
     # Initial population
