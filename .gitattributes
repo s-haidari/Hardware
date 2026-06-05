@@ -1,10 +1,25 @@
-* text=auto eol=lf
-*.bat text eol=crlf
-*.cmd text eol=crlf
-*.ps1 text eol=crlf
-*.kicad_mod   text eol=lf
-*.kicad_sym   text eol=lf
-*.step binary
-*.stp  binary
-*.wrl  binary
-*.zip  binary
+# --- Default text normalization (safe cross-platform) ---
+* text=auto
+
+# --- Explicit binary types (no EOL conversion, no diffs) ---
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.zip binary
+*.tgz binary
+*.gz binary
+*.exe binary
+*.dll binary
+*.dylib binary
+*.so  binary
+*.pyd binary
+
+# --- CAD & large assets: track with Git LFS (+ mark binary) ---
+*.step filter=lfs diff=lfs merge=lfs -text
+*.stp  filter=lfs diff=lfs merge=lfs -text
+
+# If you need other large artifacts tracked, add similar lines, e.g.:
+# *.pdf  filter=lfs diff=lfs merge=lfs -text
+# *.mp4  filter=lfs diff=lfs merge=lfs -text
