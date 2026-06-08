@@ -1,0 +1,60 @@
+# --- Python basics ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- Virtual environments ---
+.venv/
+venv/
+ENV/
+.env
+.env.*
+
+# --- Packaging / wheels / eggs ---
+.eggs/
+*.egg-info/
+*.egg
+pip-wheel-metadata/
+share/python-wheels/
+
+# --- PyInstaller (build outputs) ---
+build/
+dist/
+*.spec
+*.manifest
+*.pyz
+
+# --- Logs & caches ---
+*.log
+.nox/
+.tox/
+.pytest_cache/
+.hypothesis/
+.cache/
+htmlcov/
+
+# --- Docs / Sphinx ---
+docs/_build/
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+
+# --- OS / Editor noise ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# --- Binaries produced locally (do not version) ---
+*.dll
+*.dylib
+*.so
+*.pyd
+
+# --- Archives produced locally ---
+*.zip
+*.tgz
+*.gz
+
+# NOTE: CAD assets (*.step, *.stp) are intentionally NOT ignored.
+# We'll track them via Git LFS (below), not ignore them.
