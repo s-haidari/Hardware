@@ -809,7 +809,7 @@ class LibraryManagerWindow(QMainWindow):
         self.summary = {}
         self.process_on_drop = True
        
-        self.setWindowTitle("KiCad Library Manager")
+        self.setWindowTitle("KiCAD Manager")
         self.setMinimumSize(960, 620)
        
         # Central widget with main layout
@@ -1994,7 +1994,7 @@ def main():
     except Exception:
         pass
 
-    app.setApplicationName("KiCAD Library Manager")
+    app.setApplicationName("KiCAD Manager")
    
     window = LibraryManagerWindow(cfg)
     window.show()
