@@ -1,6 +1,4 @@
 (kicad_symbol_lib (version 20211014) (generator "LibraryManager.py")
-
-
 (symbol "MCP4132-103E_P" (pin_names (offset 0.254)) (in_bom yes) (on_board yes)
     (property "Reference" "U" (id 0) (at 27.94 10.16 0)
       (effects (font (size 1.524 1.524)))
@@ -90,7 +88,6 @@
       )
     )
   )
-
 (symbol "STUSB4500QTR" (pin_names (offset 1.016)) (in_bom yes) (on_board yes)
     (property "Reference" "U" (id 0) (at -17.78 31.115 0)
       (effects (font (size 1.27 1.27)) (justify bottom left))
@@ -308,7 +305,6 @@
       )
     )
   )
-
 (symbol "TLV76733DRVR" (pin_names (offset 1.016)) (in_bom yes) (on_board yes)
     (property "Reference" "U" (id 0) (at -12.7 11.16 0.0)
       (effects (font (size 1.27 1.27)) (justify bottom left))
@@ -373,7 +369,6 @@
       )
     )
   )
-
 (symbol "TPS2121RUXR" (pin_names (offset 1.016)) (in_bom yes) (on_board yes)
     (property "Reference" "U" (id 0) (at -7.62 21.082 0)
       (effects (font (size 1.27 1.27)) (justify bottom left))
@@ -524,7 +519,6 @@
       )
     )
   )
-
 (symbol "TPS259470LRPWR" (pin_names (offset 0.254)) (in_bom yes) (on_board yes)
     (property "Reference" "U" (id 0) (at 0 2.54 0)
       (effects (font (size 1.524 1.524)))
@@ -622,7 +616,6 @@
       )
     )
   )
-
 (symbol "TPS54202HDDCR" (pin_names (offset 1.016)) (in_bom yes) (on_board yes)
     (property "Reference" "U" (id 0) (at -12.7 11.16 0.0)
       (effects (font (size 1.27 1.27)) (justify bottom left))
@@ -687,7 +680,6 @@
       )
     )
   )
-
 (symbol "USB4105-GF-A" (pin_names (offset 1.016)) (in_bom yes) (on_board yes)
     (property "Reference" "J" (id 0) (at -15.24 13.97 0)
       (effects (font (size 1.27 1.27)) (justify bottom left))
@@ -844,7 +836,6 @@
       )
     )
   )
-
 (symbol "AD5243BRMZ10-RL7" (pin_names (offset 0.254)) (in_bom yes) (on_board yes)
     (property "Reference" "U" (id 0) (at 20.32 10.16 0)
       (effects (font (size 1.524 1.524)))
@@ -942,7 +933,6 @@
       )
     )
   )
-
 (symbol "MCP4132-103E_P" (pin_names (offset 0.254)) (in_bom yes) (on_board yes)
     (property "Reference" "U" (id 0) (at 27.94 10.16 0)
       (effects (font (size 1.524 1.524)))
@@ -1032,7 +1022,6 @@
       )
     )
   )
-
 (symbol "TPS54202HDDCR" (pin_names (offset 0.254)) (in_bom yes) (on_board yes)
     (property "Reference" "U" (id 0) (at 0 2.54 0)
       (effects (font (size 1.524 1.524)))
@@ -1114,7 +1103,6 @@
       )
     )
   )
-
 (symbol "ESDA25P35-1U1M" (pin_names (offset 0.254)) (in_bom yes) (on_board yes)
     (property "Reference" "CR" (id 0) (at 20.32 10.16 0)
       (effects (font (size 1.524 1.524)))
@@ -1245,7 +1233,6 @@
       )
     )
   )
-
 (symbol "STL6P3LLH6" (pin_names (offset 0.254)) (in_bom yes) (on_board yes)
     (property "Reference" "U" (id 0) (at 20.32 10.16 0)
       (effects (font (size 1.524 1.524)))
@@ -1641,7 +1628,6 @@
       )
     )
   )
-
 (symbol "USB4105-GF-A" (pin_names (offset 1.016)) (in_bom yes) (on_board yes)
     (property "Reference" "J" (id 0) (at -15.24 13.97 0)
       (effects (font (size 1.27 1.27)) (justify bottom left))
@@ -1798,7 +1784,6 @@
       )
     )
   )
-
 (symbol "TPD1E01B04DPYR" (pin_names (offset 1.016)) (in_bom yes) (on_board yes)
     (property "Reference" "D" (id 0) (at -12.7 6.08 0.0)
       (effects (font (size 1.27 1.27)) (justify bottom left))
@@ -1831,7 +1816,6 @@
       )
     )
   )
-
 (symbol "TPS22918DBVR" (pin_names (offset 1.016)) (in_bom yes) (on_board yes)
     (property "Reference" "U" (id 0) (at -12.7 11.16 0.0)
       (effects (font (size 1.27 1.27)) (justify bottom left))
@@ -1896,7 +1880,6 @@
       )
     )
   )
-
 (symbol "TS5A3159QDBVRQ1" (pin_names (offset 0.254)) (in_bom yes) (on_board yes)
     (property "Reference" "U" (id 0) (at 27.94 10.16 0)
       (effects (font (size 1.524 1.524)))
@@ -1978,7 +1961,6 @@
       )
     )
   )
-
 (symbol "IC51-0644-807" (pin_names (offset 1.016)) (in_bom yes) (on_board yes)
     (property "Reference" "J" (id 0) (at -7.62 43.942 0)
       (effects (font (size 1.27 1.27)) (justify bottom left))
@@ -2519,7 +2501,6 @@
       )
     )
   )
-
 (symbol "IC51-1004-809" (pin_names (offset 1.016)) (in_bom yes) (on_board yes)
     (property "Reference" "J" (id 0) (at -7.62 66.675 0)
       (effects (font (size 1.27 1.27)) (justify bottom left))
@@ -3348,7 +3329,6 @@
       )
     )
   )
-
 (symbol "QSH-060-01-X-D-A" (pin_names (offset 1.016)) (in_bom yes) (on_board yes)
     (property "Reference" "J" (id 0) (at -7.62 41.529 0)
       (effects (font (size 1.27 1.27)) (justify bottom left))
@@ -4406,7 +4386,6 @@
       )
     )
   )
-
 (symbol "QTH-060-03-X-D-A" (pin_names (offset 1.016)) (in_bom yes) (on_board yes)
     (property "Reference" "J" (id 0) (at -7.62 44.069 0)
       (effects (font (size 1.27 1.27)) (justify bottom left))
@@ -5464,7 +5443,6 @@
       )
     )
   )
-
 (symbol "TPS7A2018PDBVR" (pin_names (offset 1.016)) (in_bom yes) (on_board yes)
     (property "Reference" "U" (id 0) (at -12.7 8.382 0)
       (effects (font (size 1.27 1.27)) (justify bottom left))
@@ -5539,7 +5517,6 @@
       )
     )
   )
-
 (symbol "TPD4E05U06QDQARQ1" (pin_names (offset 1.016)) (in_bom yes) (on_board yes)
     (property "Reference" "U" (id 0) (at -12.7 18.542 0)
       (effects (font (size 1.27 1.27)) (justify bottom left))
@@ -5960,7 +5937,6 @@
       )
     )
   )
-
 (symbol "TLV76033DBZR" (pin_names (offset 0.254)) (in_bom yes) (on_board yes)
     (property "Reference" "U" (id 0) (at 0 2.54 0)
       (effects (font (size 1.524 1.524)))
@@ -6564,7 +6540,6 @@
       )
     )
   )
-
 (symbol "INA226AIDGSR" (pin_names (offset 1.016)) (in_bom yes) (on_board yes)
     (property "Reference" "U" (id 0) (at -10.16 16.002 0.0)
       (effects (font (size 1.27 1.27)) (justify bottom left))
@@ -6674,6 +6649,93 @@
           (effects (font (size 1.016 1.016)))
         )
         (number "7"
+          (effects (font (size 1.016 1.016)))
+        )
+      )
+    )
+  )
+
+(symbol "FC-135_32.7680KA-A0" (pin_names (offset 1.016)) (in_bom yes) (on_board yes)
+    (property "Reference" "Y" (id 0) (at -5.08787 6.10545 0)
+      (effects (font (size 1.27 1.27)) (justify bottom left))
+    )
+    (property "Value" "FC-135_32.7680KA-A0" (id 1) (at -5.09516 -7.64273 0)
+      (effects (font (size 1.27 1.27)) (justify bottom left))
+    )
+    (property "Footprint" "FC-135_32.7680KA-A0:XTAL_FC-135_32.7680KA-A0" (id 2) (at 0 0 0)
+      (effects (font (size 1.27 1.27)) (justify bottom) hide)
+    )
+    (property "MF" "EPSON" (id 4) (at 0 0 0)
+      (effects (font (size 1.27 1.27)) (justify bottom) hide)
+    )
+    (property "DESCRIPTION" "32.7680 Khz 20ppm 12.5pf" (id 5) (at 0 0 0)
+      (effects (font (size 1.27 1.27)) (justify bottom) hide)
+    )
+    (property "PACKAGE" "SMD-2 Epson" (id 6) (at 0 0 0)
+      (effects (font (size 1.27 1.27)) (justify bottom) hide)
+    )
+    (property "PRICE" "0.33 USD" (id 7) (at 0 0 0)
+      (effects (font (size 1.27 1.27)) (justify bottom) hide)
+    )
+    (property "Package" "SMD-2 Epson" (id 8) (at 0 0 0)
+      (effects (font (size 1.27 1.27)) (justify bottom) hide)
+    )
+    (property "Check_prices" "https://www.snapeda.com/parts/FC-135%2032.7680KA-A0/Epson/view-part/?ref=eda" (id 9) (at 0 0 0)
+      (effects (font (size 1.27 1.27)) (justify bottom) hide)
+    )
+    (property "STANDARD" "Manufacturer Recommendation" (id 10) (at 0 0 0)
+      (effects (font (size 1.27 1.27)) (justify bottom) hide)
+    )
+    (property "SnapEDA_Link" "https://www.snapeda.com/parts/FC-135%2032.7680KA-A0/Epson/view-part/?ref=snap" (id 11) (at 0 0 0)
+      (effects (font (size 1.27 1.27)) (justify bottom) hide)
+    )
+    (property "MP" "FC-135 32.7680KA-A0" (id 12) (at 0 0 0)
+      (effects (font (size 1.27 1.27)) (justify bottom) hide)
+    )
+    (property "Price" "None" (id 13) (at 0 0 0)
+      (effects (font (size 1.27 1.27)) (justify bottom) hide)
+    )
+    (property "Availability" "In Stock" (id 14) (at 0 0 0)
+      (effects (font (size 1.27 1.27)) (justify bottom) hide)
+    )
+    (property "AVAILABILITY" "Good" (id 15) (at 0 0 0)
+      (effects (font (size 1.27 1.27)) (justify bottom) hide)
+    )
+    (property "Description" "\n                        \n                            32.768 kHz ±20ppm Crystal 12.5pF 70 kOhms 2-SMD, No Lead\n                        \n" (id 16) (at 0 0 0)
+      (effects (font (size 1.27 1.27)) (justify bottom) hide)
+    )
+    (symbol "FC-135_32.7680KA-A0_0_0"
+      (polyline
+        (pts (xy -2.54 5.08) (xy 2.54 5.08)) (stroke (width 0.254))
+      )
+      (polyline
+        (pts (xy 2.54 5.08) (xy 2.54 -5.08)) (stroke (width 0.254))
+      )
+      (polyline
+        (pts (xy 2.54 -5.08) (xy -2.54 -5.08)) (stroke (width 0.254))
+      )
+      (polyline
+        (pts (xy -2.54 -5.08) (xy -2.54 5.08)) (stroke (width 0.254))
+      )
+      (polyline
+        (pts (xy -5.08 5.08) (xy -5.08 -5.08)) (stroke (width 0.254))
+      )
+      (polyline
+        (pts (xy 5.08 5.08) (xy 5.08 -5.08)) (stroke (width 0.254))
+      )
+      (pin passive line (at -10.16 0.0 0) (length 5.08)
+        (name "~"
+          (effects (font (size 1.016 1.016)))
+        )
+        (number "1"
+          (effects (font (size 1.016 1.016)))
+        )
+      )
+      (pin passive line (at 10.16 0.0 180.0) (length 5.08)
+        (name "~"
+          (effects (font (size 1.016 1.016)))
+        )
+        (number "2"
           (effects (font (size 1.016 1.016)))
         )
       )
