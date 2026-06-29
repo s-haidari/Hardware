@@ -96,6 +96,31 @@ def test_remove_symbols_by_indices_stale_aborts(tmp_path):
     assert names_in(sym) == ["A", "B", "C"]
 
 
+# --- KiCad Tools integration (folded-in NETDECK features) ----------------
+def test_discover_kicad_projects_generic(tmp_path):
+    import kicad_tools as KT
+    (tmp_path / "projA").mkdir()
+    (tmp_path / "projA" / "a.kicad_pro").write_text("{}", encoding="utf-8")
+    (tmp_path / "sub" / "projB").mkdir(parents=True)
+    (tmp_path / "sub" / "projB" / "b.kicad_pro").write_text("{}", encoding="utf-8")
+    (tmp_path / ".history").mkdir()
+    (tmp_path / ".history" / "old.kicad_pro").write_text("{}", encoding="utf-8")
+    found = sorted(p.name for p in KT.discover_kicad_projects(tmp_path))
+    assert found == ["projA", "projB"]   # nested found, .history ignored
+
+
+def test_nd_wizard_add_tag_refs(tmp_path):
+    import nd_wizard as wiz
+    sch = tmp_path / "x.kicad_sch"
+    sch.write_text('(kicad_sch\n  (property "Reference" "R1")\n  (property "Reference" "U2")\n)\n',
+                   encoding="utf-8")
+    counts, _, _ = wiz.schematic_preview_and_apply(
+        sch, "add_tag", "SH-", apply=True, touch_refs=True, touch_labels=False)
+    assert counts["symbol_ref"] == 2
+    txt = sch.read_text(encoding="utf-8")
+    assert "SH-R1" in txt and "SH-U2" in txt
+
+
 # --- one-click dedup ------------------------------------------------------
 def test_dedupe_symbol_library(tmp_path):
     sym = tmp_path / "s.kicad_sym"

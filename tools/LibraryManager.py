@@ -1177,7 +1177,7 @@ class LibraryManagerWindow(QMainWindow):
         self._closing = False
         self._workers = []   # tracked background threads (joined on close)
 
-        self.setWindowTitle("KiCad Library Manager")
+        self.setWindowTitle("KiCAD Manager")
         self.setMinimumSize(1040, 680)
         _icon = resource_path("app_icon.ico")
         if _icon.exists():
@@ -1269,13 +1269,12 @@ class LibraryManagerWindow(QMainWindow):
             self._opacity_pct = int(self._settings.value("opacity", 100))
         except (TypeError, ValueError):
             self._opacity_pct = 100
-        self._opacity_pct = max(60, min(100, self._opacity_pct))
-        self._apply_theme(str(theme).lower() != "light")
-        # Sync the slider (triggers _apply_bg_opacity via valueChanged)
+        self._opacity_pct = max(30, min(100, self._opacity_pct))
+        self._apply_theme(str(theme).lower() != "light")   # restyles with current alpha
         self.opacity_slider.blockSignals(True)
         self.opacity_slider.setValue(self._opacity_pct)
         self.opacity_slider.blockSignals(False)
-        self._apply_bg_opacity()
+        self.opacity_value_lbl.setText(f"{self._opacity_pct}%")
         geo = self._settings.value("geometry")
         if geo is not None:
             try:
@@ -1325,15 +1324,16 @@ class LibraryManagerWindow(QMainWindow):
         h.setContentsMargins(14, 8, 14, 8)
         h.setSpacing(8)
 
-        title = QLabel("KiCad Library Manager")
+        title = QLabel("KiCAD Manager")
         title.setObjectName("appTitle")
         h.addWidget(title)
         h.addStretch()
 
         # Inline view controls (built straight into the top bar)
         self.theme_btn = QToolButton()
-        self.theme_btn.setText("Light theme")
-        self.theme_btn.setToolTip("Switch between dark and light")
+        self.theme_btn.setObjectName("iconBtn")
+        self.theme_btn.setText("☾")            # set per-theme in _apply_theme
+        self.theme_btn.setToolTip("Toggle light / dark")
         self.theme_btn.clicked.connect(self.toggle_theme)
         h.addWidget(self.theme_btn)
 
@@ -1341,7 +1341,7 @@ class LibraryManagerWindow(QMainWindow):
         opac_lbl.setObjectName("headerStatus")
         h.addWidget(opac_lbl)
         self.opacity_slider = QSlider(Qt.Horizontal)
-        self.opacity_slider.setRange(60, 100)
+        self.opacity_slider.setRange(30, 100)
         self.opacity_slider.setValue(100)
         self.opacity_slider.setFixedWidth(110)
         self.opacity_slider.setToolTip("Window background transparency")
@@ -1716,6 +1716,15 @@ class LibraryManagerWindow(QMainWindow):
         adv_btn.setMenu(adv_menu)
         adv_btn.clicked.connect(adv_btn.showMenu)
         layout.addWidget(adv_btn)
+
+        # KiCad project tools (rename / net classes / project settings)
+        tools_btn = QPushButton("KiCad Tools")
+        tools_btn.setIcon(st.standardIcon(QStyle.SP_FileDialogDetailedView))
+        tools_btn.setStyleSheet(btn_style)
+        tools_btn.setMaximumHeight(34)
+        tools_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        tools_btn.clicked.connect(self.open_kicad_tools)
+        layout.addWidget(tools_btn)
 
         # Full step labels with clear descriptions and icons (all uniform style)
         buttons = [
@@ -2180,39 +2189,46 @@ class LibraryManagerWindow(QMainWindow):
         "MENU_BG": "#ffffff", "MENU_SEL": "#ececec", "CHK_BG": "#ffffff", "CHK_ON": "#888888",
         "DOT_IDLE": "#a0a0a0",
     }
+    # Tokens written @@KEY@@ become rgba(...) with the opacity-slider alpha (so
+    # backgrounds go translucent); tokens written @KEY@ stay opaque hex (text,
+    # borders, selection) — i.e. "everything but the text" fades with the slider.
     _THEME_QSS = """
-        QWidget { background-color: @WIN_BG@; color: @FG@; font-family: "Segoe UI","Helvetica Neue",Arial,sans-serif; }
-        QMainWindow { background-color: @MAIN_BG@; }
-        QFrame#headerBar { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 @HDR1@, stop:1 @HDR2@); border: 1px solid @BORDER@; border-radius: 10px; }
+        QWidget { color: @FG@; font-family: "Segoe UI","Helvetica Neue",Arial,sans-serif; }
+        QMainWindow { background: transparent; }
+        QWidget#rootCentral { background-color: @@WIN_BG@@; }
+        QFrame#headerBar { background: transparent; border: none; }
         QLabel#appTitle { font-size: 13pt; font-weight: 800; color: @TITLE_FG@; }
-        QLabel#branchChip { color: @FG_DIM@; font-weight: 600; font-size: 9pt; background: @CHIP_BG@; border: 1px solid @BORDER@; border-radius: 9px; padding: 2px 10px; }
+        QLabel#branchChip { color: @FG_DIM@; font-weight: 600; font-size: 9pt; }
         QLabel#activityDot { color: @DOT_IDLE@; font-size: 12pt; }
         QLabel#headerStatus { color: @FG_DIM@; font-size: 9pt; }
-        QFrame#card { border: 1px solid @BORDER@; border-radius: 10px; background-color: @CARD_BG@; margin-top: 6px; }
+        QToolButton#iconBtn { font-size: 13pt; padding: 0 8px; border: none; background: transparent; color: @FG_DIM@; }
+        QToolButton#iconBtn:hover { color: @TITLE_FG@; }
+        QFrame#card { border: 1px solid @BORDER@; border-radius: 10px; background-color: @@CARD_BG@@; margin-top: 6px; }
         QLabel#cardTitle { color: @TITLE_FG@; padding: 4px 6px; font-weight: 800; font-size: 10pt; }
-        QToolButton { background-color: transparent; border: 1px solid @BORDER@; border-radius: 6px; padding: 6px 10px; font-weight: 600; }
+        QToolButton { background: transparent; border: 1px solid @BORDER@; border-radius: 6px; padding: 6px 10px; font-weight: 600; }
         QToolButton:hover { border-color: @ACCENT@; }
         QToolButton::menu-indicator { image: none; }
-        QMenu { background-color: @MENU_BG@; border: 1px solid @BORDER@; padding: 4px; }
+        QMenu { background-color: @@MENU_BG@@; border: 1px solid @BORDER@; padding: 4px; }
         QMenu::item { padding: 6px 18px; border-radius: 4px; }
-        QMenu::item:selected { background-color: @MENU_SEL@; color: @FG@; }
-        QPushButton { background-color: @BTN_BG@; color: @FG@; border: 1px solid @BTN_BORDER@; border-radius: 6px; padding: 6px 10px; font-size: 9pt; font-weight: 600; text-align: left; }
-        QPushButton:hover { border-color: @ACCENT@; background-color: @BTN_HOVER@; }
-        QPushButton:pressed { background-color: @MENU_SEL@; }
+        QMenu::item:selected { background-color: @@MENU_SEL@@; color: @FG@; }
+        QPushButton { background-color: @@BTN_BG@@; color: @FG@; border: 1px solid @BTN_BORDER@; border-radius: 6px; padding: 6px 10px; font-size: 9pt; font-weight: 600; text-align: left; }
+        QPushButton:hover { border-color: @ACCENT@; background-color: @@BTN_HOVER@@; }
+        QPushButton:pressed { background-color: @@MENU_SEL@@; }
         QPushButton:disabled { color: #888888; border-color: @BORDER@; }
         QPushButton::menu-indicator { image: none; }
-        QLineEdit, QComboBox { background-color: @IN_BG@; border: 1px solid @BORDER@; border-radius: 6px; padding: 5px 8px; color: @FG@; }
-        QLineEdit:focus, QComboBox:focus { border: 1px solid @ACCENT@; }
-        QComboBox QAbstractItemView { background-color: @MENU_BG@; color: @FG@; selection-background-color: @SEL_BG@; border: 1px solid @BORDER@; }
+        QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox { background-color: @@IN_BG@@; border: 1px solid @BORDER@; border-radius: 6px; padding: 5px 8px; color: @FG@; }
+        QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus { border: 1px solid @ACCENT@; }
+        QComboBox QAbstractItemView { background-color: @@MENU_BG@@; color: @FG@; selection-background-color: @SEL_BG@; border: 1px solid @BORDER@; }
         QCheckBox { color: @FG@; spacing: 6px; }
-        QCheckBox::indicator { width: 15px; height: 15px; border-radius: 4px; border: 1px solid @ACCENT@; background: @CHK_BG@; }
+        QCheckBox::indicator { width: 15px; height: 15px; border-radius: 4px; border: 1px solid @ACCENT@; background: @@CHK_BG@@; }
         QCheckBox::indicator:checked { background: @CHK_ON@; border-color: @CHK_ON@; }
-        QTreeWidget { background-color: @TREE_BG@; border: 1px solid @BORDER@; border-radius: 8px; color: @FG@; alternate-background-color: @TREE_ALT@; outline: 0; }
-        QTreeWidget::item { padding: 3px 2px; }
-        QTreeWidget::item:selected { background-color: @SEL_BG@; color: @SEL_FG@; }
-        QTreeWidget::item:hover { background-color: @HOVER_BG@; }
-        QHeaderView::section { background-color: @SEC_BG@; color: @SEC_FG@; padding: 6px; border: none; border-right: 1px solid @BORDER@; border-bottom: 1px solid @BORDER@; font-weight: 700; }
-        QTextEdit { background-color: @LOG_BG@; border: 1px solid @BORDER@; border-radius: 8px; color: @LOG_FG@; font-family: "Cascadia Mono","Consolas",monospace; font-size: 8pt; }
+        QTreeWidget, QTableWidget, QListWidget { background-color: @@TREE_BG@@; border: 1px solid @BORDER@; border-radius: 8px; color: @FG@; alternate-background-color: @@TREE_ALT@@; outline: 0; }
+        QTreeWidget::item, QTableWidget::item { padding: 3px 2px; }
+        QTreeWidget::item:selected, QTableWidget::item:selected, QListWidget::item:selected { background-color: @SEL_BG@; color: @SEL_FG@; }
+        QTreeWidget::item:hover, QListWidget::item:hover { background-color: @HOVER_BG@; }
+        QHeaderView::section { background-color: @@SEC_BG@@; color: @SEC_FG@; padding: 6px; border: none; border-right: 1px solid @BORDER@; border-bottom: 1px solid @BORDER@; font-weight: 700; }
+        QTextEdit, QPlainTextEdit { background-color: @@LOG_BG@@; border: 1px solid @BORDER@; border-radius: 8px; color: @LOG_FG@; font-family: "Cascadia Mono","Consolas",monospace; font-size: 8pt; }
+        QTabWidget::pane { border: 1px solid @BORDER@; border-radius: 8px; top: -1px; }
         QScrollBar:vertical { background: transparent; width: 12px; margin: 2px; }
         QScrollBar::handle:vertical { background: @SCROLL@; border-radius: 5px; min-height: 24px; }
         QScrollBar::handle:vertical:hover { background: @SCROLL_HOVER@; }
@@ -2221,15 +2237,21 @@ class LibraryManagerWindow(QMainWindow):
         QScrollBar::handle:horizontal:hover { background: @SCROLL_HOVER@; }
         QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
         QScrollBar::add-page, QScrollBar::sub-page { background: none; }
-        QStatusBar { background: @ST_BG@; border-top: 1px solid @BORDER@; color: @ST_FG@; }
+        QSlider::groove:horizontal { height: 4px; background: @SCROLL@; border-radius: 2px; }
+        QSlider::sub-page:horizontal { background: @SCROLL_HOVER@; border-radius: 2px; }
+        QSlider::handle:horizontal { width: 12px; margin: -5px 0; border-radius: 6px; background: @FG_DIM@; }
+        QSlider::handle:horizontal:hover { background: @FG@; }
+        QStatusBar { background: @@ST_BG@@; border-top: 1px solid @BORDER@; color: @ST_FG@; }
         QStatusBar::item { border: none; }
         QLabel#resultChip { font-weight: 700; padding: 0 8px; }
-        QProgressBar#opProgress { background: @PROG_BG@; border: 1px solid @BORDER@; border-radius: 7px; }
+        QProgressBar#opProgress { background: @@PROG_BG@@; border: 1px solid @BORDER@; border-radius: 7px; }
         QProgressBar#opProgress::chunk { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 @PROG1@, stop:1 @PROG2@); border-radius: 6px; }
         QTabBar#cardTabBar { background: transparent; spacing: 6px; }
-        QTabBar#cardTabBar::tab { padding: 6px 14px; font-weight: 700; font-size: 10pt; color: @FG_DIM@; border: 1px solid @BORDER@; border-radius: 7px; background: @TAB_BG@; margin: 0 4px; min-height: 24px; }
-        QTabBar#cardTabBar::tab:hover { background: @HOVER_BG@; }
-        QTabBar#cardTabBar::tab:selected { color: @TAB_SEL_FG@; background: @TAB_SEL_BG@; border-color: @ACCENT@; }
+        QTabBar#cardTabBar::tab { padding: 6px 14px; font-weight: 700; font-size: 10pt; color: @FG_DIM@; border: 1px solid @BORDER@; border-radius: 7px; background: @@TAB_BG@@; margin: 0 4px; min-height: 24px; }
+        QTabBar#cardTabBar::tab:hover { background: @@HOVER_BG@@; }
+        QTabBar#cardTabBar::tab:selected { color: @TAB_SEL_FG@; background: @@TAB_SEL_BG@@; border-color: @ACCENT@; }
+        QTabBar::tab { padding: 6px 12px; color: @FG_DIM@; background: @@TAB_BG@@; border: 1px solid @BORDER@; border-bottom: none; border-top-left-radius: 6px; border-top-right-radius: 6px; }
+        QTabBar::tab:selected { color: @TITLE_FG@; background: @@TAB_SEL_BG@@; }
         QToolTip { background: @MENU_BG@; color: @FG@; border: 1px solid @ACCENT@; padding: 4px; }
     """
 
@@ -2248,23 +2270,32 @@ class LibraryManagerWindow(QMainWindow):
         pal.setColor(QPalette.HighlightedText, QColor(c["SEL_FG"]))
         return pal
 
-    def _apply_theme(self, dark: bool):
-        self._is_dark = dark
-        c = self._DARK_COLORS if dark else self._LIGHT_COLORS
-        self._theme = c
-        self.setPalette(self._theme_palette(c))
+    def _build_qss(self, c: dict, alpha: int) -> str:
+        """Render the stylesheet: @@KEY@@ -> rgba with `alpha`, @KEY@ -> hex."""
         qss = self._THEME_QSS
         for k, v in c.items():
+            h = v.lstrip("#")
+            r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+            qss = qss.replace("@@" + k + "@@", "rgba(%d,%d,%d,%d)" % (r, g, b, alpha))
             qss = qss.replace("@" + k + "@", v)
-        self.setStyleSheet(qss)
-        # keep the toggle button label and the idle dot colour in sync
-        if hasattr(self, "theme_btn"):
-            self.theme_btn.setText("Light theme" if dark else "Dark theme")
-        if hasattr(self, "activity_dot") and not getattr(self, "_busy", False):
-            self.activity_dot.setStyleSheet("color: %s;" % c["DOT_IDLE"])
-        # the background tint changed with the theme, so re-apply its alpha
+        return qss
+
+    def _restyle(self):
+        alpha = int(round(max(30, min(100, getattr(self, "_opacity_pct", 100))) / 100.0 * 255))
+        self.setStyleSheet(self._build_qss(self._theme, alpha))
+
+    def _apply_theme(self, dark: bool):
+        self._is_dark = dark
+        self._theme = self._DARK_COLORS if dark else self._LIGHT_COLORS
+        self.setPalette(self._theme_palette(self._theme))
+        self._restyle()
         if hasattr(self, "central"):
-            self._apply_bg_opacity()
+            self.central.setStyleSheet("")   # background now comes from #rootCentral
+        # sun in dark mode (click -> light), moon in light mode (click -> dark)
+        if hasattr(self, "theme_btn"):
+            self.theme_btn.setText("☀" if dark else "☾")
+        if hasattr(self, "activity_dot") and not getattr(self, "_busy", False):
+            self.activity_dot.setStyleSheet("color: %s;" % self._theme["DOT_IDLE"])
         # repaint duplicate highlights with theme-appropriate colours
         if hasattr(self, "tree") and getattr(self, "rows", None) is not None:
             self.on_filter_change()
@@ -2279,22 +2310,13 @@ class LibraryManagerWindow(QMainWindow):
         self._apply_theme(not self._is_dark)
         self._save_view_settings()
 
-    def _apply_bg_opacity(self):
-        """Paint ONLY the root background with the chosen alpha (cards/text
-        stay opaque). Combined with WA_TranslucentBackground this lets the
-        desktop show through the window's backdrop."""
-        hexc = self._theme["WIN_BG"].lstrip("#")
-        r, g, b = int(hexc[0:2], 16), int(hexc[2:4], 16), int(hexc[4:6], 16)
-        a = int(round(max(60, min(100, self._opacity_pct)) / 100.0 * 255))
-        self.central.setStyleSheet(
-            "QWidget#rootCentral { background-color: rgba(%d,%d,%d,%d); }" % (r, g, b, a)
-        )
-
     def set_bg_opacity(self, pct: int):
-        self._opacity_pct = max(60, min(100, int(pct)))
+        """Slider handler: re-render the stylesheet so every background uses the
+        new alpha (text/borders stay opaque). 100% = fully opaque."""
+        self._opacity_pct = max(30, min(100, int(pct)))
         if hasattr(self, "opacity_value_lbl"):
             self.opacity_value_lbl.setText(f"{self._opacity_pct}%")
-        self._apply_bg_opacity()
+        self._restyle()
         self._save_view_settings()
 
     def _save_view_settings(self):
@@ -2308,12 +2330,30 @@ class LibraryManagerWindow(QMainWindow):
 
     def show_about(self):
         QMessageBox.about(
-            self, "About KiCad Library Manager",
-            f"<b>KiCad Library Manager</b><br>Version {APP_VERSION}<br><br>"
+            self, "About KiCAD Manager",
+            f"<b>KiCAD Manager</b><br>Version {APP_VERSION}<br><br>"
             "Drop vendor ZIPs to merge symbols, footprints and 3D models into the "
             "shared library, with one-click git sync.<br><br>"
-            "Built with PyQt5."
+            "Includes KiCad project tools: bulk rename, net-class sync, and "
+            "project-settings sync.<br><br>Built with PyQt5."
         )
+
+    def open_kicad_tools(self):
+        """Open the KiCad project tools (rename / net classes / project settings)."""
+        try:
+            from kicad_tools import KiCadToolsDialog
+        except Exception as e:
+            QMessageBox.critical(self, "KiCad Tools", f"Could not load KiCad Tools:\n{e}")
+            return
+        projects_dir = self._settings.value("projects_dir", "") or str(Path(self.cfg["RepoRoot"]).parent)
+
+        def _save(p):
+            try:
+                self._settings.setValue("projects_dir", p)
+            except Exception:
+                pass
+        dlg = KiCadToolsDialog(self, projects_dir, save_dir_cb=_save)
+        dlg.exec_()
         
    
     def handle_dropped_files(self, files: List[Path]):
