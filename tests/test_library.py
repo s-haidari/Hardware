@@ -121,6 +121,42 @@ def test_nd_wizard_add_tag_refs(tmp_path):
     assert "SH-R1" in txt and "SH-U2" in txt
 
 
+# --- extended net-class / project-settings round-trips -------------------
+def test_netclass_microvia_roundtrip():
+    import nd_netclass_manager as NCM
+    nc = NCM.NetClass(name="X", microvia_diameter=0.25, microvia_drill=0.12, diff_pair_via_gap=0.3)
+    d = nc.to_kicad_dict()
+    assert d["microvia_diameter"] == 0.25 and d["microvia_drill"] == 0.12
+    assert d["diff_pair_via_gap"] == 0.3
+    back = NCM.NetClass.from_kicad_dict("X", d)
+    assert back.microvia_diameter == 0.25 and back.diff_pair_via_gap == 0.3
+
+
+def test_netclass_patterns_roundtrip(tmp_path):
+    import json
+    import nd_netclass_manager as NCM
+    pro = tmp_path / "P.kicad_pro"
+    pro.write_text(json.dumps({"net_settings": {"classes": [{"name": "Default"}]}}), encoding="utf-8")
+    m = NCM.NetClassManager()
+    m.add_netclass(NCM.NetClass(name="PWR", patterns=["/VDD*", "GND"]))
+    assert m.save_to_project(pro, backup=False)
+    m2 = NCM.NetClassManager(); m2.load_from_project(pro)
+    assert sorted(m2.get_netclass("PWR").patterns) == ["/VDD*", "GND"]
+
+
+def test_project_settings_min_constraints_roundtrip(tmp_path):
+    import json
+    import nd_project_settings_manager as PSM
+    pro = tmp_path / "B.kicad_pro"
+    pro.write_text(json.dumps({"board": {"design_settings": {"rules": {}}}}), encoding="utf-8")
+    m = PSM.ProjectSettingsManager()
+    m.settings.min_hole_to_hole = 9.0
+    m.settings.min_microvia_drill = 3.0
+    assert m.save_to_project(pro, backup=False)
+    m2 = PSM.ProjectSettingsManager(); m2.load_from_project(pro)
+    assert m2.settings.min_hole_to_hole == 9.0 and m2.settings.min_microvia_drill == 3.0
+
+
 # --- one-click dedup ------------------------------------------------------
 def test_dedupe_symbol_library(tmp_path):
     sym = tmp_path / "s.kicad_sym"

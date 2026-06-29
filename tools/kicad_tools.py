@@ -66,13 +66,17 @@ class KiCadToolsWidget(QWidget):
         ("Track Width", "track_width", "num"),
         ("Via Size", "via_diameter", "num"),
         ("Via Hole", "via_drill", "num"),
-        ("Diff Pair Width", "diff_pair_width", "num"),
-        ("Diff Pair Gap", "diff_pair_gap", "num"),
+        ("µVia Size", "microvia_diameter", "num"),
+        ("µVia Hole", "microvia_drill", "num"),
+        ("DP Width", "diff_pair_width", "num"),
+        ("DP Gap", "diff_pair_gap", "num"),
+        ("DP Via Gap", "diff_pair_via_gap", "num"),
         ("Wire Thickness", "wire_thickness", "num"),
         ("Bus Thickness", "bus_thickness", "num"),
         ("Color", "color", "color"),
         ("Line Style", "line_style", "linestyle"),
         ("Priority", "priority", "num"),
+        ("Patterns (net globs)", "patterns", "patterns"),
     ]
     # Project settings grouped like KiCad's dialog (all values in mils).
     PS_GROUPS = [
@@ -94,11 +98,22 @@ class KiCadToolsWidget(QWidget):
             ("fab_text_size", "Fab size"),
             ("fab_text_thickness", "Fab thickness"),
         ]),
-        ("Design Rules", [
+        ("Design Rules (defaults)", [
             ("default_clearance", "Clearance"),
             ("default_track_width", "Track width"),
             ("default_via_diameter", "Via diameter"),
             ("default_via_drill", "Via drill"),
+        ]),
+        ("Minimum Constraints", [
+            ("min_via_diameter", "Min via diameter"),
+            ("min_via_annular_width", "Min via annular ring"),
+            ("min_through_hole", "Min through-hole"),
+            ("min_hole_to_hole", "Min hole-to-hole"),
+            ("min_hole_clearance", "Min hole clearance"),
+            ("min_microvia_diameter", "Min µvia diameter"),
+            ("min_microvia_drill", "Min µvia drill"),
+            ("min_copper_edge_clearance", "Min copper-to-edge"),
+            ("min_silk_clearance", "Min silk clearance"),
         ]),
         ("Solder Mask / Paste", [
             ("solder_mask_clearance", "Mask clearance"),
@@ -132,13 +147,16 @@ class KiCadToolsWidget(QWidget):
 
         lcard, ll = self._card("Projects")
         rowh = QHBoxLayout()
-        rowh.addWidget(QLabel("Check to act on:"))
+        self.sel_label = QLabel("0 of 0 selected")
+        self.sel_label.setStyleSheet("font-weight: 700;")
+        rowh.addWidget(self.sel_label)
         rowh.addStretch()
         b_all = QPushButton("All"); b_all.setMaximumWidth(60); b_all.clicked.connect(lambda: self._check_all(True))
         b_none = QPushButton("None"); b_none.setMaximumWidth(60); b_none.clicked.connect(lambda: self._check_all(False))
         rowh.addWidget(b_all); rowh.addWidget(b_none)
         ll.addLayout(rowh)
         self.proj_list = QListWidget()
+        self.proj_list.itemChanged.connect(lambda *_: self._update_selection())
         ll.addWidget(self.proj_list, 1)
         lcard.setMinimumWidth(240)
         split.addWidget(lcard)
@@ -207,11 +225,19 @@ class KiCadToolsWidget(QWidget):
             it.setCheckState(Qt.Checked)
             it.setData(Qt.UserRole, str(pro) if pro else "")
             self.proj_list.addItem(it)
+        self._update_selection()
         self.log(f"Found {len(projs)} KICAD project(s) under {path or '(unset)'}")
+
+    def _update_selection(self):
+        total = self.proj_list.count()
+        sel = sum(1 for i in range(total)
+                  if self.proj_list.item(i).checkState() == Qt.Checked)
+        self.sel_label.setText(f"{sel} of {total} selected")
 
     def _check_all(self, on: bool):
         for i in range(self.proj_list.count()):
             self.proj_list.item(i).setCheckState(Qt.Checked if on else Qt.Unchecked)
+        self._update_selection()
 
     def selected_pro_files(self) -> List[Path]:
         out = []
@@ -407,6 +433,9 @@ class KiCadToolsWidget(QWidget):
                 combo.addItems(self.LINE_STYLES)
                 combo.setCurrentText(val if val in self.LINE_STYLES else "solid")
                 self.nc_table.setCellWidget(r, col, combo)
+            elif kind == "patterns":
+                txt = ", ".join(val) if isinstance(val, (list, tuple)) else ("" if val is None else str(val))
+                self.nc_table.setItem(r, col, QTableWidgetItem(txt))
             else:
                 self.nc_table.setItem(r, col, QTableWidgetItem("" if val is None else str(val)))
 
@@ -475,6 +504,7 @@ class KiCadToolsWidget(QWidget):
                     return float(s) if s != "" else None
                 except ValueError:
                     return d
+            pats = [p.strip() for p in str(row.get("patterns", "")).split(",") if p.strip()]
             try:
                 nc = NetClass(
                     name=row["name"],
@@ -486,9 +516,13 @@ class KiCadToolsWidget(QWidget):
                     track_width=fnum("track_width", 0.2) or 0.2,
                     via_diameter=fnum("via_diameter", 0.8) or 0.8,
                     via_drill=fnum("via_drill", 0.4) or 0.4,
+                    microvia_diameter=fnum("microvia_diameter", 0.3) or 0.3,
+                    microvia_drill=fnum("microvia_drill", 0.1) or 0.1,
                     diff_pair_width=fnum("diff_pair_width", None),
                     diff_pair_gap=fnum("diff_pair_gap", None),
+                    diff_pair_via_gap=fnum("diff_pair_via_gap", 0.25) or 0.25,
                     priority=int(fnum("priority", 0) or 0),
+                    patterns=pats,
                 )
                 m.add_netclass(nc)
             except Exception:

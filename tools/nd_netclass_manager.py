@@ -99,9 +99,14 @@ class NetClass:
     via_diameter: float = 0.8  # mm
     via_drill: float = 0.4  # mm
 
+    # Microvia (µVia)
+    microvia_diameter: float = 0.3  # mm
+    microvia_drill: float = 0.1  # mm
+
     # Differential pair (optional)
     diff_pair_width: Optional[float] = None
     diff_pair_gap: Optional[float] = None
+    diff_pair_via_gap: float = 0.25  # mm
 
     # Priority (lower = higher precedence; Default uses 2147483647)
     priority: int = 0
@@ -132,11 +137,11 @@ class NetClass:
             result["diff_pair_width"] = 0.2
 
         # Add diff_pair_via_gap (required in KiCad 10)
-        result["diff_pair_via_gap"] = 0.25
+        result["diff_pair_via_gap"] = self.diff_pair_via_gap
 
         # Add microvia settings (required in KiCad 10)
-        result["microvia_diameter"] = 0.3
-        result["microvia_drill"] = 0.1
+        result["microvia_diameter"] = self.microvia_diameter
+        result["microvia_drill"] = self.microvia_drill
 
         # Add tuning profile (required in KiCad 10)
         result["tuning_profile"] = ""
@@ -186,8 +191,11 @@ class NetClass:
             track_width=data.get("track_width", 0.2),
             via_diameter=data.get("via_diameter", 0.8),
             via_drill=data.get("via_drill", 0.4),
+            microvia_diameter=data.get("microvia_diameter", 0.3),
+            microvia_drill=data.get("microvia_drill", 0.1),
             diff_pair_width=data.get("diff_pair_width"),
             diff_pair_gap=data.get("diff_pair_gap"),
+            diff_pair_via_gap=data.get("diff_pair_via_gap", 0.25),
             priority=data.get("priority", 0),
             patterns=[]
         )

@@ -156,6 +156,17 @@ class ProjectSettings:
     default_via_diameter: float = 32.0   # 0.8mm - via outer diameter
     default_via_drill: float = 16.0      # 0.4mm - via drill hole
 
+    # PCB minimum constraints (Board Setup -> Constraints), mils
+    min_via_diameter: float = 20.0          # 0.5mm
+    min_via_annular_width: float = 5.0      # 0.127mm - min annular ring
+    min_through_hole: float = 12.0          # 0.3mm - min hole diameter
+    min_hole_to_hole: float = 10.0          # 0.25mm
+    min_hole_clearance: float = 10.0        # 0.25mm
+    min_microvia_diameter: float = 8.0      # 0.2mm
+    min_microvia_drill: float = 4.0         # 0.1mm
+    min_copper_edge_clearance: float = 20.0 # 0.5mm
+    min_silk_clearance: float = 0.0         # 0mm
+
     # Solder mask/paste (mils)
     solder_mask_clearance: float = 2.0   # 0.05mm - mask expansion
     solder_paste_margin: float = -2.0    # -0.05mm - paste shrink
@@ -271,6 +282,17 @@ class ProjectSettingsManager:
             self.settings.default_clearance = round(mm_to_mils(rules.get("min_clearance", 0.2)), 1)
             self.settings.default_track_width = round(mm_to_mils(rules.get("min_track_width", 0.254)), 1)
 
+            # Minimum constraints (Board Setup -> Constraints)
+            self.settings.min_via_diameter = round(mm_to_mils(rules.get("min_via_diameter", 0.5)), 1)
+            self.settings.min_via_annular_width = round(mm_to_mils(rules.get("min_via_annular_width", 0.127)), 1)
+            self.settings.min_through_hole = round(mm_to_mils(rules.get("min_through_hole_diameter", 0.3)), 1)
+            self.settings.min_hole_to_hole = round(mm_to_mils(rules.get("min_hole_to_hole", 0.25)), 1)
+            self.settings.min_hole_clearance = round(mm_to_mils(rules.get("min_hole_clearance", 0.25)), 1)
+            self.settings.min_microvia_diameter = round(mm_to_mils(rules.get("min_microvia_diameter", 0.2)), 1)
+            self.settings.min_microvia_drill = round(mm_to_mils(rules.get("min_microvia_drill", 0.1)), 1)
+            self.settings.min_copper_edge_clearance = round(mm_to_mils(rules.get("min_copper_edge_clearance", 0.5)), 1)
+            self.settings.min_silk_clearance = round(mm_to_mils(rules.get("min_silk_clearance", 0.0)), 1)
+
             # Via settings
             pcb_settings = data.get("board", {}).get("design_settings", {})
             self.settings.default_via_diameter = round(mm_to_mils(pcb_settings.get("via_diameter", 0.8)), 1)
@@ -374,6 +396,15 @@ class ProjectSettingsManager:
 
             design["rules"]["min_clearance"] = round(mils_to_mm(self.settings.default_clearance), 4)
             design["rules"]["min_track_width"] = round(mils_to_mm(self.settings.default_track_width), 4)
+            design["rules"]["min_via_diameter"] = round(mils_to_mm(self.settings.min_via_diameter), 4)
+            design["rules"]["min_via_annular_width"] = round(mils_to_mm(self.settings.min_via_annular_width), 4)
+            design["rules"]["min_through_hole_diameter"] = round(mils_to_mm(self.settings.min_through_hole), 4)
+            design["rules"]["min_hole_to_hole"] = round(mils_to_mm(self.settings.min_hole_to_hole), 4)
+            design["rules"]["min_hole_clearance"] = round(mils_to_mm(self.settings.min_hole_clearance), 4)
+            design["rules"]["min_microvia_diameter"] = round(mils_to_mm(self.settings.min_microvia_diameter), 4)
+            design["rules"]["min_microvia_drill"] = round(mils_to_mm(self.settings.min_microvia_drill), 4)
+            design["rules"]["min_copper_edge_clearance"] = round(mils_to_mm(self.settings.min_copper_edge_clearance), 4)
+            design["rules"]["min_silk_clearance"] = round(mils_to_mm(self.settings.min_silk_clearance), 4)
 
             # Via settings (convert mils to mm)
             design["via_diameter"] = round(mils_to_mm(self.settings.default_via_diameter), 4)

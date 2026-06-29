@@ -1252,8 +1252,7 @@ class LibraryManagerWindow(QMainWindow):
         self.main_stack = QStackedWidget()
         self.main_stack.addWidget(library_tab)   # index 0 -> "KICAD Manager"
         self.main_stack.addWidget(tools_tab)     # index 1 -> "KICAD Tools"
-        self.title_tabs.currentChanged.connect(self.main_stack.setCurrentIndex)
-        self.title_tabs.setCurrentIndex(0)       # KICAD Manager is the default
+        self._select_tab(0)                      # KICAD Manager is the default
         main_layout.addWidget(self.main_stack, 1)
 
         # --- Status bar (operation text + progress + result chip) ---
@@ -1329,15 +1328,18 @@ class LibraryManagerWindow(QMainWindow):
         h.setContentsMargins(12, 6, 12, 6)
         h.setSpacing(8)
 
-        # The section tabs ARE the title (KICAD Manager / KICAD Tools)
-        self.title_tabs = QTabBar()
-        self.title_tabs.setObjectName("titleTabs")
-        self.title_tabs.addTab("KICAD Manager")
-        self.title_tabs.addTab("KICAD Tools")
-        self.title_tabs.setExpanding(False)
-        self.title_tabs.setDrawBase(False)
-        self.title_tabs.setMinimumHeight(40)
-        h.addWidget(self.title_tabs, 0, Qt.AlignVCenter)
+        # The section tabs ARE the title — custom underline buttons for crisp
+        # rendering (KICAD Manager / KICAD Tools).
+        self.nav_btns = []
+        for i, name in enumerate(["KICAD Manager", "KICAD Tools"]):
+            b = QPushButton(name)
+            b.setObjectName("navTab")
+            b.setCheckable(True)
+            b.setCursor(Qt.PointingHandCursor)
+            b.clicked.connect(lambda _checked=False, ix=i: self._select_tab(ix))
+            self.nav_btns.append(b)
+            h.addWidget(b)
+        self.nav_btns[0].setChecked(True)
         h.addStretch()
 
         # Inline view controls (built straight into the top bar)
@@ -1366,6 +1368,13 @@ class LibraryManagerWindow(QMainWindow):
         h.addWidget(self.activity_dot)
         h.addWidget(self.header_status)
         return bar
+
+    def _select_tab(self, idx: int):
+        """Switch the active section tab and content page."""
+        for i, b in enumerate(getattr(self, "nav_btns", [])):
+            b.setChecked(i == idx)
+        if hasattr(self, "main_stack"):
+            self.main_stack.setCurrentIndex(idx)
 
     def build_status_bar(self):
         """Bottom status bar: operation text, progress bar, last-result chip."""
@@ -2193,10 +2202,9 @@ class LibraryManagerWindow(QMainWindow):
         QWidget#rootCentral { background-color: @@WIN_BG@@; }
         QFrame#headerBar { background: transparent; border: none; }
         QLabel#appTitle { font-size: 13pt; font-weight: 800; color: @TITLE_FG@; }
-        QTabBar#titleTabs { background: transparent; qproperty-drawBase: 0; }
-        QTabBar#titleTabs::tab { background: transparent; border: none; padding: 8px 16px; margin-right: 2px; min-height: 24px; font-size: 12pt; font-weight: 800; color: @FG_DIM@; }
-        QTabBar#titleTabs::tab:selected { color: @TITLE_FG@; border-bottom: 3px solid @ACCENT@; }
-        QTabBar#titleTabs::tab:hover { color: @TITLE_FG@; }
+        QPushButton#navTab { background: transparent; border: none; border-bottom: 3px solid transparent; border-radius: 0; padding: 8px 16px; margin-right: 4px; font-size: 12pt; font-weight: 800; color: @FG_DIM@; text-align: center; }
+        QPushButton#navTab:hover { color: @TITLE_FG@; }
+        QPushButton#navTab:checked { color: @TITLE_FG@; border-bottom: 3px solid @ACCENT@; }
         QLabel#branchChip { color: @FG_DIM@; font-weight: 600; font-size: 9pt; }
         QLabel#activityDot { color: @DOT_IDLE@; font-size: 12pt; }
         QLabel#headerStatus { color: @FG_DIM@; font-size: 9pt; }
@@ -2287,7 +2295,13 @@ class LibraryManagerWindow(QMainWindow):
             self.central.setStyleSheet("")   # background now comes from #rootCentral
         # sun in dark mode (click -> light), moon in light mode (click -> dark)
         if hasattr(self, "theme_btn"):
-            self.theme_btn.setText("☀" if dark else "☾")
+            ico = resource_path("icon_sun.png" if dark else "icon_moon.png")
+            if ico.exists():
+                self.theme_btn.setIcon(QIcon(str(ico)))
+                self.theme_btn.setIconSize(QSize(20, 20))
+                self.theme_btn.setText("")
+            else:
+                self.theme_btn.setText("☀" if dark else "☾")
         if hasattr(self, "activity_dot") and not getattr(self, "_busy", False):
             self.activity_dot.setStyleSheet("color: %s;" % self._theme["DOT_IDLE"])
         # repaint duplicate highlights with theme-appropriate colours
