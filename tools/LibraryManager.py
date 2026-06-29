@@ -188,7 +188,7 @@ def _can_write_dir(path: Path) -> bool:
         return False
 
 
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 
 REPO_ROOT = detect_repo_root()
 DEFAULTS: Dict[str, str] = derive_paths(REPO_ROOT)
