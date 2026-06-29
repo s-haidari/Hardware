@@ -25,6 +25,10 @@ dist/
 *.pyz
 *.exe
 
+# --- Generated library catalog (regenerate from the app) ---
+/library_catalog.md
+/catalog_assets/
+
 # --- Logs & caches ---
 *.log
 .kicadmgr_write_test.tmp

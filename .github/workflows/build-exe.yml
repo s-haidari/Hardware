@@ -26,7 +26,7 @@ jobs:
         run: pip install PyQt5 watchdog pyinstaller
 
       - name: Build exe
-        run: pyinstaller --onefile --windowed --name KiCadLibraryManager --icon tools/app_icon.ico --add-data "tools/app_icon.ico;." --add-data "tools/icon_sun.png;." --add-data "tools/icon_moon.png;." --add-data "tools/check_dark.png;." --add-data "tools/check_light.png;." --add-data "tools/fonts;fonts" --hidden-import watchdog.observers --hidden-import watchdog.events --hidden-import kicad_tools --hidden-import nd_wizard --hidden-import nd_netclass_manager --hidden-import nd_project_settings_manager --paths tools tools/LibraryManager.py
+        run: pyinstaller --onefile --windowed --name KiCadLibraryManager --icon tools/app_icon.ico --add-data "tools/app_icon.ico;." --add-data "tools/icon_sun.png;." --add-data "tools/icon_moon.png;." --add-data "tools/check_dark.png;." --add-data "tools/check_light.png;." --add-data "tools/fonts;fonts" --hidden-import watchdog.observers --hidden-import watchdog.events --hidden-import kicad_tools --hidden-import nd_wizard --hidden-import nd_netclass_manager --hidden-import nd_project_settings_manager --hidden-import fp_render --paths tools tools/LibraryManager.py
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4

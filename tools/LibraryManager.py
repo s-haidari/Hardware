@@ -955,6 +955,71 @@ def scan_library(cfg: Dict[str, str]):
     }
     return rows, summary
 
+
+def export_catalog(cfg: Dict[str, str], log: UILog, progress_cb=None) -> Optional[Path]:
+    """Write one big Markdown catalog (`library_catalog.md`) with a rendered PNG
+    + metadata for every footprint, plus tables of 3D models and symbols. The
+    single file (with its catalog_assets/ images) is meant to be human- and
+    AI-readable as a complete reference of the library."""
+    import fp_render
+    root = Path(cfg["RepoRoot"])
+    assets = root / "catalog_assets"
+    assets.mkdir(parents=True, exist_ok=True)
+    rows, summary = scan_library(cfg)
+    fps = sorted([r for r in rows if r["type"] == "Footprint"], key=lambda r: str(r["name"]).lower())
+    models = sorted([r for r in rows if r["type"] == "Model"], key=lambda r: str(r["name"]).lower())
+    syms = sorted([r for r in rows if r["type"] == "Symbol"], key=lambda r: str(r["name"]).lower())
+
+    out: List[str] = []
+    out.append("# KiCad Library Catalog\n")
+    out.append(f"Generated {time.strftime('%Y-%m-%d %H:%M')} — "
+               f"{summary['footprints']} footprints, {summary['models']} 3D models, "
+               f"{summary['symbols']} symbols.\n")
+
+    out.append("## Footprints\n")
+    rendered = 0
+    for i, r in enumerate(fps, 1):
+        if progress_cb:
+            progress_cb(i, len(fps), str(r["name"]))
+        p = Path(r["path"])
+        rel = ""
+        try:
+            img = fp_render.render_footprint_image(p, 360)
+            if img is not None:
+                fn = assets / (p.stem + ".png")
+                img.save(str(fn))
+                rel = f"catalog_assets/{fn.name}"
+                rendered += 1
+        except Exception as e:
+            log.write(f"Catalog: render failed for {p.name}: {e}")
+        s = fp_render.footprint_summary(p) or {}
+        out.append(f"### {r['name']}\n")
+        if rel:
+            out.append(f"![{r['name']}]({rel})\n")
+        out.append(f"- Pads: {s.get('pads', '?')} ({s.get('smd_pads', 0)} SMD, {s.get('tht_pads', 0)} through-hole)")
+        out.append(f"- Body: {s.get('width_mm', '?')} × {s.get('height_mm', '?')} mm")
+        out.append(f"- Layers: {', '.join(s.get('layers', [])) or '—'}")
+        out.append(f"- File: `{p.name}` · added {r.get('date', '')}\n")
+
+    out.append("## 3D Models\n")
+    out.append("| Model | Size | Added |")
+    out.append("|---|---:|---|")
+    for r in models:
+        p = Path(r["path"])
+        kb = (p.stat().st_size // 1024) if p.exists() else 0
+        out.append(f"| `{r['name']}` | {kb} KB | {r.get('date', '')} |")
+    out.append("")
+
+    out.append(f"## Symbols ({len(syms)})\n")
+    for r in syms:
+        out.append(f"- `{r['name']}`")
+    out.append("")
+
+    md = root / "library_catalog.md"
+    write_text(md, "\n".join(out))
+    log.write(f"Catalog written: {md.name} ({rendered}/{len(fps)} footprints rendered)")
+    return md
+
 def filter_rows(rows: List[Dict[str, object]], query: str, type_filter: str,
                 dup_only: bool = False) -> List[Dict[str, object]]:
     q = (query or "").strip().lower()
@@ -1577,6 +1642,18 @@ class LibraryManagerWindow(QMainWindow):
                 self.log.write("Push skipped: nothing was committed")
         self.run_async(work, "Commit & Push…", "Pushed ✓", refresh=True)
 
+    def do_export_catalog(self):
+        def work():
+            md = export_catalog(
+                self.cfg, self.log,
+                progress_cb=lambda d, t, n: self._emit(self.progress_signal, d, t, n))
+            if md:
+                try:
+                    os.startfile(str(md))
+                except Exception:
+                    pass
+        self.run_async(work, "Building catalog…", "Catalog ✓")
+
     def do_process_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Select extracted part folder", self.cfg["Downloads"])
         if not folder:
@@ -1745,6 +1822,7 @@ class LibraryManagerWindow(QMainWindow):
             ("Push", self.do_push),
             ("Stage and Commit", self.do_stage_commit),
             ("Process Folder", self.do_process_folder),
+            ("Export Catalog", self.do_export_catalog),
             ("Start Watcher", lambda: self.watcher.start()),
             ("Stop Watcher", lambda: self.watcher.stop()),
             ("Open Libraries", lambda: os.startfile(self.cfg["Libs"])),
@@ -1936,9 +2014,64 @@ class LibraryManagerWindow(QMainWindow):
             self.tree.header().setStretchLastSection(True)
 
         self.tree.itemDoubleClicked.connect(self.open_in_kicad)
+        self.tree.itemSelectionChanged.connect(self.update_preview)
         layout.addWidget(self.tree)
 
+        # Preview pane — renders the selected footprint (or item info)
+        self.preview = QLabel("Select an item to preview")
+        self.preview.setObjectName("previewPane")
+        self.preview.setAlignment(Qt.AlignCenter)
+        self.preview.setMinimumHeight(168)
+        self.preview.setMaximumHeight(220)
+        layout.addWidget(self.preview)
+        self.preview_info = QLabel("")
+        self.preview_info.setObjectName("headerStatus")
+        self.preview_info.setWordWrap(True)
+        layout.addWidget(self.preview_info)
+
         return group
+
+    def update_preview(self):
+        """Render the selected footprint, or show info for symbols / 3D models."""
+        item = self.tree.currentItem()
+        if not item:
+            self.preview.setPixmap(QPixmap())
+            self.preview.setText("Select an item to preview")
+            self.preview_info.setText("")
+            return
+        t = item.text(0)
+        name = item.text(1)
+        path = Path(item.text(2))
+        date = item.text(3)
+        if t == "Footprint":
+            try:
+                from fp_render import render_footprint_image, footprint_summary
+                img = render_footprint_image(path, 220)
+                if img is not None:
+                    self.preview.setPixmap(QPixmap.fromImage(img))
+                else:
+                    self.preview.setText("(could not render)")
+                s = footprint_summary(path) or {}
+                self.preview_info.setText(
+                    f"{name}  ·  {s.get('pads', 0)} pads "
+                    f"({s.get('smd_pads', 0)} SMD / {s.get('tht_pads', 0)} TH)  ·  "
+                    f"{s.get('width_mm', '?')} × {s.get('height_mm', '?')} mm  ·  {date}"
+                )
+            except Exception as e:
+                self.preview.setText("(render error)")
+                self.preview_info.setText(str(e))
+        elif t == "Model":
+            self.preview.setPixmap(QPixmap())
+            self.preview.setText("3D model\n(open in KiCad / CAD viewer)")
+            try:
+                kb = path.stat().st_size // 1024 if path.exists() else 0
+            except Exception:
+                kb = 0
+            self.preview_info.setText(f"{name}  ·  {kb} KB  ·  {date}")
+        else:  # Symbol
+            self.preview.setPixmap(QPixmap())
+            self.preview.setText("Symbol")
+            self.preview_info.setText(f"{name}  ·  in {path.name}  ·  {date}")
    
     
    
@@ -2252,6 +2385,7 @@ class LibraryManagerWindow(QMainWindow):
         QToolButton#iconBtn:hover { color: @TITLE_FG@; }
         QFrame#card { border: 1px solid @BORDER@; border-radius: 12px; background-color: @@CARD_BG@@; margin-top: 6px; }
         QLabel#cardTitle { color: @TITLE_FG@; padding: 6px 8px 2px 8px; font-weight: 800; font-size: 10pt; }
+        QLabel#previewPane { background-color: @@LOG_BG@@; border: 1px solid @BORDER@; border-radius: 10px; color: @FG_DIM@; }
         QToolButton { background: transparent; border: 1px solid @BORDER@; border-radius: 7px; padding: 6px 10px; font-weight: 600; }
         QToolButton:hover { border-color: @ACCENT@; }
         QToolButton::menu-indicator { image: none; }
