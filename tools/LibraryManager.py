@@ -114,6 +114,22 @@ def resource_path(name: str) -> Path:
     return Path(__file__).resolve().parent / name
 
 
+def load_bundled_fonts() -> bool:
+    """Register the bundled Inter TTFs so the app uses Inter regardless of what
+    the OS has installed. Requires a QApplication to already exist."""
+    from PyQt5.QtGui import QFontDatabase
+    loaded = False
+    try:
+        fdir = resource_path("fonts")
+        if fdir.exists():
+            for ttf in sorted(fdir.glob("*.ttf")):
+                if QFontDatabase.addApplicationFont(str(ttf)) != -1:
+                    loaded = True
+    except Exception:
+        pass
+    return loaded
+
+
 def gray_icon(style, sp, size: int = 16) -> QIcon:
     """Return a desaturated (grayscale) version of a Qt standard icon so every
     button glyph shares one neutral, monochrome style instead of the colorful
@@ -1711,7 +1727,7 @@ class LibraryManagerWindow(QMainWindow):
             QPushButton {
                 text-align: left;
                 padding: 6px 10px;
-                font-size: 9pt;
+                font-size: 8pt;
             }
         """
 
@@ -2221,7 +2237,7 @@ class LibraryManagerWindow(QMainWindow):
     }
     # @@KEY@@ -> background hex, @KEY@ -> text/border hex (substituted in _build_qss).
     _THEME_QSS = """
-        QWidget { color: @FG@; font-family: "Inter","Segoe UI Variable Text","Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif; font-size: 9pt; }
+        QWidget { color: @FG@; font-family: "Inter","Segoe UI Variable Text","Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif; font-size: 8pt; }
         QMainWindow { background: transparent; }
         QWidget#rootCentral { background-color: @@WIN_BG@@; }
         QFrame#headerBar { background: transparent; border: none; }
@@ -2243,7 +2259,7 @@ class LibraryManagerWindow(QMainWindow):
         QMenu::item { padding: 6px 18px; border-radius: 5px; }
         QMenu::item:selected { background-color: @@MENU_SEL@@; color: @FG@; }
         QMenu::separator { height: 1px; background: @BORDER@; margin: 4px 8px; }
-        QPushButton { background-color: @@BTN_BG@@; color: @FG@; border: 1px solid @BTN_BORDER@; border-radius: 7px; padding: 6px 12px; font-size: 9pt; font-weight: 600; text-align: left; }
+        QPushButton { background-color: @@BTN_BG@@; color: @FG@; border: 1px solid @BTN_BORDER@; border-radius: 7px; padding: 6px 12px; font-size: 8pt; font-weight: 600; text-align: left; }
         QPushButton:hover { border-color: @ACCENT@; background-color: @@BTN_HOVER@@; }
         QPushButton:pressed { background-color: @@MENU_SEL@@; }
         QPushButton:disabled { color: @FG_DIM@; border-color: @BORDER@; }
@@ -2668,13 +2684,14 @@ def main():
         app.setStyle('Fusion')
     except Exception:
         pass
-    # Modern UI font: prefer Inter, else Windows 11's Segoe UI Variable, else Segoe UI
+    # Modern UI font: load bundled Inter, prefer it, else Win11 Segoe UI Variable
+    load_bundled_fonts()
     try:
         from PyQt5.QtGui import QFontDatabase
         fams = set(QFontDatabase().families())
         for fam in ("Inter", "Segoe UI Variable Text", "Segoe UI"):
             if fam in fams:
-                app.setFont(QFont(fam, 10))
+                app.setFont(QFont(fam, 9))   # compact base size
                 break
     except Exception:
         pass
