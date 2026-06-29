@@ -22,7 +22,7 @@ from PyQt5.QtWidgets import (
     QComboBox, QCheckBox, QListWidget, QListWidgetItem, QPlainTextEdit, QTabWidget,
     QTableWidget, QTableWidgetItem, QFormLayout, QDoubleSpinBox, QFileDialog,
     QMessageBox, QAbstractItemView, QHeaderView, QSizePolicy, QApplication,
-    QColorDialog, QScrollArea, QToolButton, QMenu, QWidgetAction
+    QColorDialog, QScrollArea, QToolButton, QMenu, QWidgetAction, QStyle
 )
 from PyQt5.QtGui import QColor
 from PyQt5.QtCore import Qt
@@ -132,11 +132,12 @@ class KiCadToolsWidget(QWidget):
         # --- Projects card: folder + a compact multi-select dropdown ---
         pcard, pl = self._card("KICAD Projects")
         top = QHBoxLayout()
+        st = self.style()
         top.addWidget(QLabel("Folder:"))
         self.dir_edit = QLineEdit(projects_dir or "")
         top.addWidget(self.dir_edit, 1)
-        b_browse = QPushButton("Browse…"); b_browse.clicked.connect(self._browse)
-        b_scan = QPushButton("Rescan"); b_scan.clicked.connect(self.rescan)
+        b_browse = QPushButton("Browse…"); b_browse.setIcon(st.standardIcon(QStyle.SP_DirOpenIcon)); b_browse.clicked.connect(self._browse)
+        b_scan = QPushButton("Rescan"); b_scan.setIcon(st.standardIcon(QStyle.SP_BrowserReload)); b_scan.clicked.connect(self.rescan)
         top.addWidget(b_browse); top.addWidget(b_scan)
         pl.addLayout(top)
 
@@ -289,10 +290,14 @@ class KiCadToolsWidget(QWidget):
 
         v.addStretch(1)
 
+        st = self.style()
         btns = QHBoxLayout()
-        b_prev = QPushButton("Preview"); b_prev.clicked.connect(lambda: self._run_rename(apply=False))
-        b_apply = QPushButton("Apply  (Creates .bak)"); b_apply.clicked.connect(lambda: self._run_rename(apply=True))
-        b_erc = QPushButton("Run ERC"); b_erc.clicked.connect(self._run_erc)
+        b_prev = QPushButton("Preview"); b_prev.setIcon(st.standardIcon(QStyle.SP_FileDialogContentsView))
+        b_prev.clicked.connect(lambda: self._run_rename(apply=False))
+        b_apply = QPushButton("Apply  (Creates .bak)"); b_apply.setIcon(st.standardIcon(QStyle.SP_DialogApplyButton))
+        b_apply.clicked.connect(lambda: self._run_rename(apply=True))
+        b_erc = QPushButton("Run ERC"); b_erc.setIcon(st.standardIcon(QStyle.SP_MediaPlay))
+        b_erc.clicked.connect(self._run_erc)
         btns.addWidget(b_prev); btns.addWidget(b_apply); btns.addStretch(); btns.addWidget(b_erc)
         v.addLayout(btns)
         self._op_changed()
@@ -395,25 +400,33 @@ class KiCadToolsWidget(QWidget):
 
     # ============================================================ NET CLASSES
     def _build_netclass_tab(self) -> QWidget:
-        w = QWidget(); v = QVBoxLayout(w)
-        bar = QHBoxLayout()
-        for label, fn in [
-            ("Load Vault Template", self._nc_load_template),
-            ("Load from Project", self._nc_load_project),
-            ("Add", self._nc_add), ("Remove", self._nc_remove),
-            ("Import…", self._nc_import), ("Export…", self._nc_export),
+        w = QWidget(); v = QVBoxLayout(w); v.setSpacing(8)
+        st = self.style()
+        bar = QHBoxLayout(); bar.setSpacing(6)
+        for label, icon, fn in [
+            ("Load Vault Template", QStyle.SP_FileDialogContentsView, self._nc_load_template),
+            ("Load from Project", QStyle.SP_DirOpenIcon, self._nc_load_project),
+            ("Add", QStyle.SP_FileDialogNewFolder, self._nc_add),
+            ("Remove", QStyle.SP_TrashIcon, self._nc_remove),
+            ("Import…", QStyle.SP_ArrowDown, self._nc_import),
+            ("Export…", QStyle.SP_ArrowUp, self._nc_export),
         ]:
-            b = QPushButton(label); b.clicked.connect(fn); bar.addWidget(b)
+            b = QPushButton(label); b.setIcon(st.standardIcon(icon)); b.clicked.connect(fn)
+            bar.addWidget(b)
         bar.addStretch()
-        b_sync = QPushButton("Sync to Selected Projects"); b_sync.clicked.connect(self._nc_sync)
+        b_sync = QPushButton("Sync to Selected Projects")
+        b_sync.setIcon(st.standardIcon(QStyle.SP_BrowserReload)); b_sync.clicked.connect(self._nc_sync)
         bar.addWidget(b_sync)
         v.addLayout(bar)
 
         self.nc_table = QTableWidget(0, len(self.NC_COLS))
         self.nc_table.setHorizontalHeaderLabels([c[0] for c in self.NC_COLS])
-        # Size every column to its content so text is never truncated; the table
-        # scrolls horizontally instead of forcing the window wider.
-        self.nc_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        # Columns size to content (no truncation); the last column stretches so
+        # the table always fills the window width.
+        hdr = self.nc_table.horizontalHeader()
+        for i in range(len(self.NC_COLS) - 1):
+            hdr.setSectionResizeMode(i, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(len(self.NC_COLS) - 1, QHeaderView.Stretch)
         self.nc_table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.nc_table.cellDoubleClicked.connect(self._nc_cell_clicked)
         v.addWidget(self.nc_table, 1)
@@ -570,11 +583,14 @@ class KiCadToolsWidget(QWidget):
 
     # ========================================================= PROJECT SETTINGS
     def _build_settings_tab(self) -> QWidget:
+        st = self.style()
         outer = QWidget(); ov = QVBoxLayout(outer)
         bar = QHBoxLayout()
-        b_load = QPushButton("Load from Project"); b_load.clicked.connect(self._ps_load)
+        b_load = QPushButton("Load from Project"); b_load.setIcon(st.standardIcon(QStyle.SP_DirOpenIcon))
+        b_load.clicked.connect(self._ps_load)
         bar.addWidget(b_load); bar.addStretch()
-        b_sync = QPushButton("Sync to Selected Projects"); b_sync.clicked.connect(self._ps_sync)
+        b_sync = QPushButton("Sync to Selected Projects"); b_sync.setIcon(st.standardIcon(QStyle.SP_BrowserReload))
+        b_sync.clicked.connect(self._ps_sync)
         bar.addWidget(b_sync)
         ov.addLayout(bar)
 
@@ -594,10 +610,23 @@ class KiCadToolsWidget(QWidget):
                 sp.setSuffix(" mil")
                 sp.setValue(float(getattr(defaults, attr)))
                 self.ps_spins[attr] = sp
-                form.addRow(label, sp)
+                # show the mm equivalent side-by-side, updating live
+                mm = QLabel()
+                mm.setStyleSheet("color: palette(mid);")
+                mm.setMinimumWidth(96)
+
+                def _upd(val, lbl=mm):
+                    lbl.setText(f"= {val * 0.0254:.3f} mm")
+                sp.valueChanged.connect(_upd)
+                _upd(sp.value())
+
+                fieldw = QWidget()
+                fh = QHBoxLayout(fieldw); fh.setContentsMargins(0, 0, 0, 0); fh.setSpacing(10)
+                fh.addWidget(sp); fh.addWidget(mm); fh.addStretch()
+                form.addRow(label, fieldw)
         scroll.setWidget(inner)
         ov.addWidget(scroll, 1)
-        ov.addWidget(QLabel("Values are in mils. Grid is per-project (.kicad_prl) and not synced."))
+        ov.addWidget(QLabel("Values shown in mils with the mm equivalent. Grid is per-project (.kicad_prl) and not synced."))
         return outer
 
     def _ps_load(self):
