@@ -104,6 +104,7 @@ class _Footprint:
         r = self.root
         for pad in _findall(r, "pad"):
             try:
+                num = str(pad[1]) if len(pad) > 1 else ""
                 ptype = pad[2]
                 shape = pad[3]
                 at = _find(pad, "at")
@@ -116,7 +117,7 @@ class _Footprint:
                 if drill:
                     vals = [_f(v) for v in drill[1:] if re.match(r"-?\d", str(v))]
                     dr = max(vals) if vals else 0.0
-                self.pads.append((shape, x, y, w, h, rot, dr, ptype))
+                self.pads.append((shape, x, y, w, h, rot, dr, ptype, num))
             except Exception:
                 continue
         for ln in _findall(r, "fp_line") + _findall(r, "gr_line"):
@@ -152,7 +153,7 @@ class _Footprint:
 
     def bbox(self) -> Tuple[float, float, float, float]:
         xs, ys = [], []
-        for (_s, x, y, w, h, _r, _d, _t) in self.pads:
+        for (_s, x, y, w, h, _r, _d, _t, _n) in self.pads:
             xs += [x - w / 2, x + w / 2]
             ys += [y - h / 2, y + h / 2]
         for (x1, y1, x2, y2, _l, _w) in self.lines + self.rects:
@@ -170,7 +171,7 @@ class _Footprint:
         stray silk/fab markers (pin-1 dots, reference outlines) that sit far
         from the body and would otherwise skew the framing."""
         xs, ys = [], []
-        for (_s, x, y, w, h, _r, _d, _t) in self.pads:
+        for (_s, x, y, w, h, _r, _d, _t, _n) in self.pads:
             xs += [x - w / 2, x + w / 2]
             ys += [y - h / 2, y + h / 2]
         for (x1, y1, x2, y2, lay, _w) in self.lines:
@@ -257,7 +258,8 @@ class _Footprint:
             p.drawPolygon(poly)
 
         # pads (copper) on top
-        for (shape, x, y, w, h, rot, dr, ptype) in self.pads:
+        label_font = QFont("Arial")
+        for (shape, x, y, w, h, rot, dr, ptype, num) in self.pads:
             p.save()
             p.translate(T(x, y))
             if rot:
@@ -279,6 +281,15 @@ class _Footprint:
                 p.setPen(Qt.NoPen)
                 p.drawEllipse(QPointF(0, 0), dr * scale / 2, dr * scale / 2)
             p.restore()
+            # pad number, centred and upright (sized to fit even thin pads)
+            fs = int(min(max(pw, ph) * 0.42, min(pw, ph) * 0.95))
+            if num and fs >= 7:
+                label_font.setPixelSize(min(fs, 20))
+                p.setFont(label_font)
+                p.setPen(QPen(QColor("#1c1407")))
+                p.drawText(QRectF(T(x, y).x() - max(pw, ph) / 2, T(x, y).y() - max(pw, ph) / 2,
+                                  max(pw, ph), max(pw, ph)),
+                           Qt.AlignCenter, num)
 
         # silk last (most visible)
         draw_lines([l for l in self.lines if "SilkS" in l[4]])
@@ -345,9 +356,11 @@ def render_symbol_image(block_text: str, px: int = 280) -> Optional[QImage]:
                         arcs.append((_f(s[1]), _f(s[2]), _f(e[1]), _f(e[2])))
                 elif h == "pin":
                     at, ln = _find(c, "at"), _find(c, "length")
+                    numf = _find(c, "number")
                     if at:
                         ang = _f(at[3]) if len(at) > 3 else 0.0
-                        pins.append((_f(at[1]), _f(at[2]), ang, _f(ln[1]) if ln else 2.54))
+                        num = str(numf[1]) if numf and len(numf) > 1 else ""
+                        pins.append((_f(at[1]), _f(at[2]), ang, _f(ln[1]) if ln else 2.54, num))
                 walk(c)
 
         walk(root)
@@ -358,7 +371,7 @@ def render_symbol_image(block_text: str, px: int = 280) -> Optional[QImage]:
             xs += [p[0] for p in pp]; ys += [p[1] for p in pp]
         for (cx, cy, r) in circs:
             xs += [cx - r, cx + r]; ys += [cy - r, cy + r]
-        for (x, y, ang, ln) in pins:
+        for (x, y, ang, ln, num) in pins:
             ex = x + ln * math.cos(math.radians(ang))
             ey = y + ln * math.sin(math.radians(ang))
             xs += [x, ex]; ys += [y, ey]
@@ -377,12 +390,20 @@ def render_symbol_image(block_text: str, px: int = 280) -> Optional[QImage]:
         img.fill(BG)
         p = QPainter(img)
         p.setRenderHint(QPainter.Antialiasing, True)
-        for (x, y, ang, ln) in pins:            # pins first (under body)
+        pin_font = QFont("Arial")
+        pin_font.setPixelSize(max(int(min(px, px) * 0.035), 8))
+        show_nums = len(pins) <= 40
+        for (x, y, ang, ln, num) in pins:       # pins first (under body)
             ex = x + ln * math.cos(math.radians(ang))
             ey = y + ln * math.sin(math.radians(ang))
             p.setPen(QPen(COL_SYMPIN, 1.6)); p.drawLine(T(x, y), T(ex, ey))
             p.setPen(Qt.NoPen); p.setBrush(QBrush(COL_SYMPIN))
             p.drawEllipse(T(x, y), 2.2, 2.2)
+            if num and show_nums:               # number near the body end
+                mid = T(x + ln * 0.62 * math.cos(math.radians(ang)),
+                        y + ln * 0.62 * math.sin(math.radians(ang)))
+                p.setPen(QPen(QColor("#d9dee5"))); p.setFont(pin_font)
+                p.drawText(QRectF(mid.x() - 14, mid.y() - 9, 28, 18), Qt.AlignCenter, num)
         p.setBrush(QBrush(QColor(201, 160, 99, 28)))
         for (a, b, c2, d) in rects:
             p.setPen(QPen(COL_SYMBODY, 2)); p.drawRect(QRectF(T(a, b), T(c2, d)))
@@ -446,7 +467,7 @@ def _suppress_native_stderr():
             os.close(devnull)
 
 
-def _load_step_mesh(step_path: Path):
+def load_step_mesh(step_path: Path):
     """Return (vertices Nx3, faces Mx3) numpy arrays, or (None, None)."""
     import os
     import tempfile
@@ -472,6 +493,63 @@ def _load_step_mesh(step_path: Path):
             pass
 
 
+_load_step_mesh = load_step_mesh   # backward-compatible alias
+
+
+def paint_mesh(painter, w: int, h: int, verts, faces,
+               rot_x: float = -60.0, rot_y: float = -35.0, zoom: float = 1.0):
+    """Software-rasterise a shaded mesh onto `painter` filling a w×h area. Used
+    both for the static thumbnail and the interactive viewer (re-called on drag)."""
+    import numpy as np
+    v = np.asarray(verts, float)
+    v = v - (v.max(0) + v.min(0)) / 2.0
+    ax, ay = math.radians(rot_x), math.radians(rot_y)
+    Rx = np.array([[1, 0, 0],
+                   [0, math.cos(ax), -math.sin(ax)],
+                   [0, math.sin(ax), math.cos(ax)]])
+    Ry = np.array([[math.cos(ay), 0, math.sin(ay)],
+                   [0, 1, 0],
+                   [-math.sin(ay), 0, math.cos(ay)]])
+    vr = v @ (Rx @ Ry).T
+
+    proj = vr[:, :2]
+    pmin, pmax = proj.min(0), proj.max(0)
+    ctr = (pmin + pmax) / 2.0
+    side = min(w, h)
+    margin = side * 0.12
+    s = (side - 2 * margin) / max(float((pmax - pmin).max()), 1e-6) * zoom
+
+    tris = vr[faces]
+    normals = np.cross(tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0])
+    nlen = np.linalg.norm(normals, axis=1)
+    nlen[nlen == 0] = 1.0
+    normals = normals / nlen[:, None]
+    light = np.array([0.35, 0.45, 0.82]); light /= np.linalg.norm(light)
+    ndotl = normals @ light
+    shade = np.clip(0.26 + 0.74 * np.clip(ndotl, 0.0, 1.0), 0.0, 1.0)
+    depth = tris[:, :, 2].mean(1)
+    order = np.argsort(depth)
+    front = normals[:, 2] > 0
+    order = order[front[order]]
+    if len(order) < 4:
+        order = np.argsort(depth)
+        shade = np.clip(0.26 + 0.74 * np.abs(ndotl), 0.0, 1.0)
+
+    cxpx, cypx = w / 2.0, h / 2.0
+
+    def to2d(pt):
+        return QPointF((pt[0] - ctr[0]) * s + cxpx, (pt[1] - ctr[1]) * s + cypx)
+
+    base = (198, 204, 212)
+    for i in order:
+        sh = shade[i]
+        col = QColor(int(base[0] * sh), int(base[1] * sh), int(base[2] * sh))
+        poly = QPolygonF([to2d(tris[i][0]), to2d(tris[i][1]), to2d(tris[i][2])])
+        pen = QPen(col); pen.setWidthF(0.7)
+        painter.setPen(pen); painter.setBrush(QBrush(col))
+        painter.drawPolygon(poly)
+
+
 def step_summary(step_path: Path) -> Optional[dict]:
     if not have_3d():
         return None
@@ -491,65 +569,18 @@ def step_summary(step_path: Path) -> Optional[dict]:
 
 
 def render_step_image(step_path: Path, px: int = 420) -> Optional[QImage]:
-    """Render a shaded 3D thumbnail of a STEP model (None if unavailable)."""
+    """Render a static shaded 3D thumbnail of a STEP model (None if unavailable)."""
     if not have_3d():
         return None
     try:
-        import numpy as np
-        v, faces = _load_step_mesh(step_path)
+        v, faces = load_step_mesh(step_path)
         if v is None or len(faces) == 0:
             return None
-        v = v - (v.max(0) + v.min(0)) / 2.0      # center
-
-        # 3/4 isometric-ish view
-        rx, rz = math.radians(-65.0), math.radians(35.0)
-        Rx = np.array([[1, 0, 0],
-                       [0, math.cos(rx), -math.sin(rx)],
-                       [0, math.sin(rx), math.cos(rx)]])
-        Rz = np.array([[math.cos(rz), -math.sin(rz), 0],
-                       [math.sin(rz), math.cos(rz), 0],
-                       [0, 0, 1]])
-        vr = v @ (Rx @ Rz).T
-
-        proj = vr[:, :2]
-        pmin, pmax = proj.min(0), proj.max(0)
-        ctr = (pmin + pmax) / 2.0
-        margin = px * 0.12
-        s = (px - 2 * margin) / max(float((pmax - pmin).max()), 1e-6)
-
-        tris = vr[faces]                          # (M,3,3)
-        normals = np.cross(tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0])
-        nlen = np.linalg.norm(normals, axis=1)
-        nlen[nlen == 0] = 1.0
-        normals = normals / nlen[:, None]
-        light = np.array([0.35, 0.45, 0.82]); light /= np.linalg.norm(light)
-        ndotl = normals @ light
-        shade = np.clip(0.26 + 0.74 * np.clip(ndotl, 0.0, 1.0), 0.0, 1.0)
-        depth = tris[:, :, 2].mean(1)
-        order = np.argsort(depth)                 # far -> near (painter's)
-        # backface cull: keep faces pointing toward the +z camera (clean solid)
-        front = normals[:, 2] > 0
-        order = order[front[order]]
-        if len(order) < 4:                        # winding inconsistent -> show all
-            order = np.argsort(depth)
-            shade = np.clip(0.26 + 0.74 * np.abs(ndotl), 0.0, 1.0)
-
-        def to2d(pt):
-            return QPointF((pt[0] - ctr[0]) * s + px / 2.0,
-                           (pt[1] - ctr[1]) * s + px / 2.0)
-
         img = QImage(px, px, QImage.Format_ARGB32)
         img.fill(BG)
         p = QPainter(img)
         p.setRenderHint(QPainter.Antialiasing, True)
-        base = (198, 204, 212)
-        for i in order:
-            sh = shade[i]
-            col = QColor(int(base[0] * sh), int(base[1] * sh), int(base[2] * sh))
-            poly = QPolygonF([to2d(tris[i][0]), to2d(tris[i][1]), to2d(tris[i][2])])
-            pen = QPen(col); pen.setWidthF(0.7)
-            p.setPen(pen); p.setBrush(QBrush(col))
-            p.drawPolygon(poly)
+        paint_mesh(p, px, px, v, faces, rot_x=-60.0, rot_y=-35.0, zoom=1.0)
         p.end()
         return img
     except Exception:

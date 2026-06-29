@@ -957,6 +957,55 @@ def scan_library(cfg: Dict[str, str]):
     return rows, summary
 
 
+def group_components(rows: List[Dict[str, object]]):
+    """Cluster rows (symbol / footprint / 3D model) that belong to the same
+    component, even when their names differ slightly (e.g. TPS2121RUXR symbol,
+    TPS2121RUX footprint, TPS2121 model). Union by shared normalized-name prefix.
+    Returns a list of (label, [rows]) sorted by label."""
+    n = len(rows)
+
+    def norm(name):
+        stem = re.sub(r"\.(step|stp|wrl|kicad_mod|kicad_sym)$", "", str(name), flags=re.I)
+        return re.sub(r"[^a-z0-9]", "", stem.lower())
+
+    norms = [norm(r["name"]) for r in rows]
+    parent = list(range(n))
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    for i in range(n):
+        a = norms[i]
+        if not a:
+            continue
+        for j in range(i + 1, n):
+            b = norms[j]
+            if not b:
+                continue
+            m = min(len(a), len(b))
+            k = 0
+            while k < m and a[k] == b[k]:
+                k += 1
+            # group when they share a long common prefix (>=4 chars and >=70%)
+            if m >= 4 and k >= 4 and k >= 0.7 * m:
+                union(i, j)
+
+    groups: Dict[int, list] = {}
+    for i, r in enumerate(rows):
+        groups.setdefault(find(i), []).append(r)
+    out = [(min((str(x["name"]) for x in grp), key=len), grp) for grp in groups.values()]
+    out.sort(key=lambda g: g[0].lower())
+    return out
+
+
 def export_catalog(cfg: Dict[str, str], log: UILog, progress_cb=None) -> Optional[Path]:
     """Write one big Markdown catalog (`library_catalog.md`) with a rendered PNG
     + metadata for every footprint, plus tables of 3D models and symbols. The
@@ -1183,6 +1232,95 @@ class DropZone(QFrame):
 
 # -----------------------------
 # Card-like container for modern UI sections
+class PreviewView(QWidget):
+    """Preview pane: shows a footprint/symbol image, or an interactive
+    drag-to-rotate / scroll-to-zoom 3D model rendered by fp_render.paint_mesh."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("previewPane")
+        self._pixmap = None
+        self._mesh = None           # (verts, faces)
+        self._text = "Select an item to preview"
+        self._rx, self._ry, self._zoom = -60.0, -35.0, 1.0
+        self._last = None
+        self.setMinimumHeight(220)
+        self.setMaximumHeight(330)
+
+    def show_text(self, text):
+        self._pixmap = None
+        self._mesh = None
+        self._text = text or ""
+        self.setCursor(Qt.ArrowCursor)
+        self.update()
+
+    def show_image(self, qimage):
+        self._mesh = None
+        self._text = ""
+        self._pixmap = QPixmap.fromImage(qimage) if qimage is not None else None
+        self.setCursor(Qt.ArrowCursor)
+        self.update()
+
+    def show_mesh(self, verts, faces):
+        self._pixmap = None
+        self._text = ""
+        self._mesh = (verts, faces)
+        self._rx, self._ry, self._zoom = -60.0, -35.0, 1.0
+        self.setCursor(Qt.OpenHandCursor)
+        self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        r = self.rect().adjusted(1, 1, -1, -1)
+        p.setPen(QPen(QColor("#2a2f37"), 1))
+        p.setBrush(QBrush(QColor("#14161a")))
+        p.drawRoundedRect(r, 10, 10)
+        p.setClipRect(r)
+        if self._mesh is not None:
+            try:
+                import fp_render
+                fp_render.paint_mesh(p, self.width(), self.height(),
+                                     self._mesh[0], self._mesh[1],
+                                     self._rx, self._ry, self._zoom)
+                p.setPen(QColor("#5b6673"))
+                p.drawText(self.rect().adjusted(0, 0, -12, -8),
+                           Qt.AlignRight | Qt.AlignBottom, "drag to rotate · scroll to zoom")
+            except Exception:
+                pass
+        elif self._pixmap is not None:
+            x = (self.width() - self._pixmap.width()) // 2
+            y = (self.height() - self._pixmap.height()) // 2
+            p.drawPixmap(x, y, self._pixmap)
+        else:
+            p.setPen(QColor("#7f8aa0"))
+            p.drawText(self.rect(), Qt.AlignCenter, self._text)
+        p.end()
+
+    def mousePressEvent(self, e):
+        self._last = e.pos()
+        if self._mesh is not None:
+            self.setCursor(Qt.ClosedHandCursor)
+
+    def mouseReleaseEvent(self, e):
+        if self._mesh is not None:
+            self.setCursor(Qt.OpenHandCursor)
+
+    def mouseMoveEvent(self, e):
+        if self._mesh is not None and self._last is not None:
+            d = e.pos() - self._last
+            self._last = e.pos()
+            self._ry += d.x() * 0.6
+            self._rx += d.y() * 0.6
+            self.update()
+
+    def wheelEvent(self, e):
+        if self._mesh is not None:
+            self._zoom *= 1.0 + (e.angleDelta().y() / 120.0) * 0.12
+            self._zoom = max(0.3, min(self._zoom, 6.0))
+            self.update()
+
+
 class CardWidget(QFrame):
     def __init__(self, title: str = "", parent=None):
         super().__init__(parent)
@@ -1457,7 +1595,8 @@ class LibraryManagerWindow(QMainWindow):
                 self._settings.setValue("projects_dir", p)
             except Exception:
                 pass
-        return KiCadToolsWidget(self, projects_dir, save_dir_cb=_save)
+        self.tools_widget = KiCadToolsWidget(self, projects_dir, save_dir_cb=_save)
+        return self.tools_widget
    
     def create_header(self) -> CardWidget:
         """Create header with repo info"""
@@ -1995,12 +2134,21 @@ class LibraryManagerWindow(QMainWindow):
         search_row.addWidget(self.search_edit)
         filter_block.addLayout(search_row)
 
-        # Duplicates-only toggle
+        # Toggles row: duplicates-only + group-by-component
+        toggles = QHBoxLayout()
         self.chk_dupes = QCheckBox("Duplicates only")
         self.chk_dupes.setChecked(False)
         self.chk_dupes.setToolTip("Show only entries that have more than one copy")
         self.chk_dupes.stateChanged.connect(self.on_filter_change)
-        filter_block.addWidget(self.chk_dupes)
+        toggles.addWidget(self.chk_dupes)
+        self.chk_group = QCheckBox("Group by component")
+        self.chk_group.setChecked(True)
+        self.chk_group.setToolTip("Group the symbol, footprint and 3D model of a part together,\n"
+                                  "even when their names differ slightly")
+        self.chk_group.stateChanged.connect(self.on_filter_change)
+        toggles.addWidget(self.chk_group)
+        toggles.addStretch()
+        filter_block.addLayout(toggles)
 
         # Initialize filters state
         self.format_filters = set(self.format_checks.keys())
@@ -2069,12 +2217,8 @@ class LibraryManagerWindow(QMainWindow):
         self.tree.itemSelectionChanged.connect(self.update_preview)
         layout.addWidget(self.tree)
 
-        # Preview pane — renders the selected footprint (or item info)
-        self.preview = QLabel("Select an item to preview")
-        self.preview.setObjectName("previewPane")
-        self.preview.setAlignment(Qt.AlignCenter)
-        self.preview.setMinimumHeight(210)
-        self.preview.setMaximumHeight(300)
+        # Preview pane — footprint/symbol image, or interactive 3D model
+        self.preview = PreviewView()
         layout.addWidget(self.preview)
         self.preview_info = QLabel("")
         self.preview_info.setObjectName("headerStatus")
@@ -2083,23 +2227,23 @@ class LibraryManagerWindow(QMainWindow):
 
         return group
 
-    def _apply_preview(self, img, info, token):
+    def _apply_preview(self, payload, info, token):
         if token != self._preview_token:
             return   # selection changed; ignore stale render
-        if img is not None:
-            self.preview.setPixmap(QPixmap.fromImage(img))
+        if isinstance(payload, tuple) and len(payload) == 2 and payload[0] is not None:
+            self.preview.show_mesh(payload[0], payload[1])     # interactive 3D
         else:
-            self.preview.setPixmap(QPixmap())
+            self.preview.show_text("3D preview unavailable")
         self.preview_info.setText(info or "")
 
     def update_preview(self):
-        """Render the selected footprint (sync, fast) or 3D model (threaded)."""
+        """Footprint/symbol render (sync); interactive 3D model (mesh loaded in a
+        worker thread, then rotated locally)."""
         self._preview_token += 1
         token = self._preview_token
         item = self.tree.currentItem()
-        if not item:
-            self.preview.setPixmap(QPixmap())
-            self.preview.setText("Select an item to preview")
+        if not item or not item.text(2):     # nothing / a group header (no path)
+            self.preview.show_text("Select an item to preview")
             self.preview_info.setText("")
             return
         t, name, path, date = item.text(0), item.text(1), Path(item.text(2)), item.text(3)
@@ -2107,20 +2251,22 @@ class LibraryManagerWindow(QMainWindow):
         if t == "Footprint":
             try:
                 from fp_render import render_footprint_image, footprint_summary
-                img = render_footprint_image(path, 280)
-                self.preview.setPixmap(QPixmap.fromImage(img)) if img is not None else self.preview.setText("(could not render)")
+                img = render_footprint_image(path, 300)
+                if img is not None:
+                    self.preview.show_image(img)
+                else:
+                    self.preview.show_text("(could not render)")
                 s = footprint_summary(path) or {}
                 self.preview_info.setText(
                     f"{name}  ·  {s.get('pads', 0)} pads "
                     f"({s.get('smd_pads', 0)} SMD / {s.get('tht_pads', 0)} TH)  ·  "
                     f"{s.get('width_mm', '?')} × {s.get('height_mm', '?')} mm  ·  {date}")
             except Exception as e:
-                self.preview.setText("(render error)")
+                self.preview.show_text("(render error)")
                 self.preview_info.setText(str(e))
 
         elif t == "Model":
-            self.preview.setPixmap(QPixmap())
-            self.preview.setText("Rendering 3D…")
+            self.preview.show_text("Rendering 3D…")
             try:
                 kb = path.stat().st_size // 1024 if path.exists() else 0
             except Exception:
@@ -2129,17 +2275,22 @@ class LibraryManagerWindow(QMainWindow):
 
             def work():
                 try:
-                    from fp_render import render_step_image, step_summary, have_3d
+                    from fp_render import load_step_mesh, have_3d
                     if not have_3d():
                         self._emit(self.preview_ready, None,
                                    f"{name}  ·  {kb} KB  ·  3D engine not installed  ·  {date}", token)
                         return
-                    img = render_step_image(path, 280)
-                    s = step_summary(path) or {}
-                    dims = s.get("size_mm")
-                    dtxt = (f"{dims[0]} × {dims[1]} × {dims[2]} mm  ·  " if dims else "")
-                    info = f"{name}  ·  {dtxt}{s.get('triangles', '?')} tris  ·  {kb} KB  ·  {date}"
-                    self._emit(self.preview_ready, img, info, token)
+                    verts, faces = load_step_mesh(path)
+                    if verts is None or len(faces) == 0:
+                        self._emit(self.preview_ready, None, f"{name}  ·  {kb} KB  ·  {date}", token)
+                        return
+                    import numpy as np
+                    dims = np.asarray(verts).max(0) - np.asarray(verts).min(0)
+                    if float(dims.max()) < 1.0:
+                        dims = dims * 1000.0
+                    info = (f"{name}  ·  {dims[0]:.1f} × {dims[1]:.1f} × {dims[2]:.1f} mm  ·  "
+                            f"{len(faces)} tris  ·  {kb} KB  ·  drag to rotate  ·  {date}")
+                    self._emit(self.preview_ready, (verts, faces), info, token)
                 except Exception:
                     self._emit(self.preview_ready, None, f"{name}  ·  {kb} KB  ·  {date}", token)
             self._spawn(work)
@@ -2147,19 +2298,18 @@ class LibraryManagerWindow(QMainWindow):
         else:  # Symbol — render the schematic body + pins
             row = item.data(0, Qt.UserRole) or {}
             idx = row.get("sym_index")
-            self.preview.setText("Symbol")
             try:
                 from fp_render import render_symbol_image
                 blocks = extract_symbol_blocks(read_text(path))
                 img = None
                 if idx is not None and 0 <= idx < len(blocks):
-                    img = render_symbol_image(blocks[idx], 280)
+                    img = render_symbol_image(blocks[idx], 300)
                 if img is not None:
-                    self.preview.setPixmap(QPixmap.fromImage(img))
+                    self.preview.show_image(img)
                 else:
-                    self.preview.setPixmap(QPixmap())
+                    self.preview.show_text("Symbol")
             except Exception:
-                self.preview.setPixmap(QPixmap())
+                self.preview.show_text("Symbol")
             self.preview_info.setText(f"{name}  ·  symbol in {path.name}  ·  {date}")
    
     
@@ -2490,11 +2640,12 @@ class LibraryManagerWindow(QMainWindow):
         QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox { background-color: @@IN_BG@@; border: 1px solid @BORDER@; border-radius: 7px; padding: 5px 8px; color: @FG@; selection-background-color: @SEL_BG@; selection-color: @SEL_FG@; }
         QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus { border: 1px solid @ACCENT@; }
         QComboBox QAbstractItemView { background-color: @@MENU_BG@@; color: @FG@; selection-background-color: @SEL_BG@; border: 1px solid @BORDER@; border-radius: 6px; }
-        QComboBox::drop-down { border: none; width: 18px; }
-        QComboBox::down-arrow { image: none; border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 5px solid @FG_DIM@; margin-right: 8px; }
-        QSpinBox::up-button, QDoubleSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::down-button { background: @@BTN_BG@@; border: none; width: 16px; }
-        QSpinBox::up-arrow, QDoubleSpinBox::up-arrow { image: none; border-left: 4px solid transparent; border-right: 4px solid transparent; border-bottom: 5px solid @FG_DIM@; }
-        QSpinBox::down-arrow, QDoubleSpinBox::down-arrow { image: none; border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 5px solid @FG_DIM@; }
+        QComboBox::drop-down { border: none; width: 20px; }
+        QComboBox::down-arrow { image: url(@CARET_DOWN@); width: 11px; height: 7px; margin-right: 8px; }
+        QSpinBox::up-button, QDoubleSpinBox::up-button { subcontrol-origin: border; subcontrol-position: top right; background: @@BTN_BG@@; border: none; border-top-right-radius: 7px; width: 17px; }
+        QSpinBox::down-button, QDoubleSpinBox::down-button { subcontrol-origin: border; subcontrol-position: bottom right; background: @@BTN_BG@@; border: none; border-bottom-right-radius: 7px; width: 17px; }
+        QSpinBox::up-arrow, QDoubleSpinBox::up-arrow { image: url(@CARET_UP@); width: 9px; height: 6px; }
+        QSpinBox::down-arrow, QDoubleSpinBox::down-arrow { image: url(@CARET_DOWN@); width: 9px; height: 6px; }
         QCheckBox { color: @FG@; spacing: 8px; }
         QCheckBox::indicator { width: 17px; height: 17px; border: 1px solid @ACCENT@; border-radius: 5px; background: @@IN_BG@@; }
         QCheckBox::indicator:hover { border-color: @FG_DIM@; }
@@ -2559,6 +2710,8 @@ class LibraryManagerWindow(QMainWindow):
         # checkmark image (theme-specific), forward-slashed for Qt stylesheet url()
         check = resource_path("check_dark.png" if self._is_dark else "check_light.png")
         qss = qss.replace("@CHECK_IMG@", str(check).replace("\\", "/"))
+        qss = qss.replace("@CARET_DOWN@", str(resource_path("caret_down.png")).replace("\\", "/"))
+        qss = qss.replace("@CARET_UP@", str(resource_path("caret_up.png")).replace("\\", "/"))
         return qss
 
     def _restyle(self):
@@ -2694,7 +2847,8 @@ class LibraryManagerWindow(QMainWindow):
         self.format_btn.setText(text)
    
     def _selected_rows(self):
-        return [(it, it.data(0, Qt.UserRole) or {}) for it in self.tree.selectedItems()]
+        return [(it, it.data(0, Qt.UserRole) or {})
+                for it in self.tree.selectedItems() if it.text(2)]
 
     def open_in_kicad(self, *args):
         """Open the selected item(s) in KiCad (via the editor associated with the
@@ -2706,6 +2860,8 @@ class LibraryManagerWindow(QMainWindow):
         # distinct targets (all symbols share one .kicad_sym -> open it once)
         targets = []
         for it in items:
+            if not it.text(2):     # group header, no file
+                continue
             t = it.text(0)
             target = Path(self.cfg["SymbolLib"]) if t == "Symbol" else Path(it.text(2))
             if target not in targets:
@@ -2753,35 +2909,56 @@ class LibraryManagerWindow(QMainWindow):
         )
         self.refresh_library()
 
+    def _make_tree_item(self, r, dup_bg) -> QTreeWidgetItem:
+        item = QTreeWidgetItem([
+            str(r["type"]), str(r["name"]), str(r["path"]), str(r.get("date", "")),
+        ])
+        # Carry the full row (incl. sym_index) so Delete targets exactly this entry.
+        item.setData(0, Qt.UserRole, r)
+        if r.get("dup"):
+            n = r.get("dup_count", 2)
+            tip = (f"Duplicate: {n} copies of this {str(r['type']).lower()} exist. "
+                   f"Deleting this row removes only this copy.")
+            for col in range(self.tree.columnCount()):
+                item.setBackground(col, dup_bg)
+                item.setToolTip(col, tip)
+            f = item.font(1); f.setBold(True); item.setFont(1, f)
+        return item
+
     def populate_tree(self, rows: List[Dict[str, object]]):
-        """Populate tree widget with filtered rows"""
+        """Populate the tree, optionally grouping each component's assets."""
         self.tree.clear()
 
         is_dark = getattr(self, "_is_dark", True)
         # Neutral slate tint so duplicates stand out without a colour accent.
         dup_bg = QBrush(QColor(58, 62, 70) if is_dark else QColor(224, 228, 236))
+        grp_bg = QBrush(QColor(40, 44, 52) if is_dark else QColor(232, 235, 241))
 
-        for r in rows:
-            item = QTreeWidgetItem([
-                str(r["type"]),
-                str(r["name"]),
-                str(r["path"]),
-                str(r.get("date", "")),
-            ])
-            # Carry the full row (incl. sym_index) so Delete targets exactly
-            # this entry rather than every entry sharing its name.
-            item.setData(0, Qt.UserRole, r)
-            if r.get("dup"):
-                n = r.get("dup_count", 2)
-                tip = (f"Duplicate: {n} copies of this {str(r['type']).lower()} exist. "
-                       f"Deleting this row removes only this copy.")
+        grouped = bool(getattr(self, "chk_group", None) and self.chk_group.isChecked())
+        self.tree.setRootIsDecorated(grouped)
+
+        if grouped:
+            for label, grp in group_components(rows):
+                if len(grp) <= 1:
+                    self.tree.addTopLevelItem(self._make_tree_item(grp[0], dup_bg))
+                    continue
+                counts: Dict[str, int] = {}
+                for r in grp:
+                    counts[str(r["type"])] = counts.get(str(r["type"]), 0) + 1
+                summary = "   ".join(
+                    f"{counts[t]}× {t.lower()}" for t in ("Symbol", "Footprint", "Model") if t in counts)
+                parent = QTreeWidgetItem(["", label, summary, ""])
                 for col in range(self.tree.columnCount()):
-                    item.setBackground(col, dup_bg)
-                    item.setToolTip(col, tip)
-                f = item.font(1)
-                f.setBold(True)
-                item.setFont(1, f)
-            self.tree.addTopLevelItem(item)
+                    parent.setBackground(col, grp_bg)
+                f = parent.font(1); f.setBold(True); parent.setFont(1, f)
+                fc = parent.font(2); parent.setForeground(2, QBrush(QColor("#8a93a3")))
+                self.tree.addTopLevelItem(parent)
+                for r in grp:
+                    parent.addChild(self._make_tree_item(r, dup_bg))
+                parent.setExpanded(True)
+        else:
+            for r in rows:
+                self.tree.addTopLevelItem(self._make_tree_item(r, dup_bg))
 
         # Update summary label (call out duplicates when present)
         s = self.summary
@@ -2801,6 +2978,8 @@ class LibraryManagerWindow(QMainWindow):
             return
         seen = set()
         for it in items:
+            if not it.text(2):     # group header
+                continue
             path = Path(it.text(2))
             if str(path) in seen:
                 continue
@@ -2823,6 +3002,8 @@ class LibraryManagerWindow(QMainWindow):
         sym_fallback: List[str] = []         # names with no index (legacy)
         files = []                           # (name, path)
         for it in items:
+            if not it.text(2):     # group header — skip
+                continue
             row = it.data(0, Qt.UserRole) or {}
             t = it.text(0)
             name = it.text(1)
@@ -2835,7 +3016,10 @@ class LibraryManagerWindow(QMainWindow):
             elif t in ("Footprint", "Model"):
                 files.append((name, Path(it.text(2))))
 
-        total = len(items)
+        total = len(sym_to_remove) + len(sym_fallback) + len(files)
+        if total == 0:
+            QMessageBox.information(self, "Delete", "Select a component asset (not a group header) to delete.")
+            return
         reply = QMessageBox.question(
             self, "Confirm Delete",
             f"Delete {total} selected item(s)?\n\n"
