@@ -2165,39 +2165,40 @@ class LibraryManagerWindow(QMainWindow):
     # ------------------------------------------------------------------
     # Theming: one token-based stylesheet drives both dark and light.
     # ------------------------------------------------------------------
+    # Modern neutral palette (cool grays + a restrained slate accent), inspired
+    # by editor themes like One Dark / GitHub. Token @@KEY@@ = background hex,
+    # @KEY@ = text/border hex.
     _DARK_COLORS = {
-        "WIN_BG": "#1e1e1e", "MAIN_BG": "#1a1a1a", "FG": "#e6e6e6", "FG_DIM": "#b8b8b8",
-        "TITLE_FG": "#f4f4f4", "CARD_BG": "#232323", "BORDER": "#2e2e2e",
-        "HDR1": "#272727", "HDR2": "#202020", "CHIP_BG": "#2b2b2b", "IN_BG": "#262626",
-        "BTN_BG": "#2f2f2f", "BTN_HOVER": "#353535", "BTN_BORDER": "#3f3f3f",
-        "ACCENT": "#8a8a8a", "TREE_BG": "#1f1f1f", "TREE_ALT": "#242424",
-        "SEL_BG": "#3d3d3d", "SEL_FG": "#f5f5f5", "HOVER_BG": "#2a2a2a",
-        "SEC_BG": "#262626", "SEC_FG": "#d8d8d8", "LOG_BG": "#151515", "LOG_FG": "#d6d6d6",
-        "SCROLL": "#3a3a3a", "SCROLL_HOVER": "#777777", "ST_BG": "#1a1a1a", "ST_FG": "#b8b8b8",
-        "PROG_BG": "#262626", "PROG1": "#8a8a8a", "PROG2": "#b0b0b0",
-        "TAB_BG": "#2a2a2a", "TAB_SEL_BG": "#3d3d3d", "TAB_SEL_FG": "#f5f5f5",
-        "MENU_BG": "#2a2a2a", "MENU_SEL": "#3a3a3a", "CHK_BG": "#262626", "CHK_ON": "#9a9a9a",
-        "DOT_IDLE": "#5a5a5a",
+        "WIN_BG": "#16181d", "MAIN_BG": "#121317", "FG": "#e7eaf0", "FG_DIM": "#9197a3",
+        "TITLE_FG": "#f6f8fb", "CARD_BG": "#1e2127", "BORDER": "#2c303a",
+        "HDR1": "#1e2127", "HDR2": "#16181d", "CHIP_BG": "#262a33", "IN_BG": "#191c22",
+        "BTN_BG": "#262a33", "BTN_HOVER": "#2f3440", "BTN_BORDER": "#363b47",
+        "ACCENT": "#7f8aa0", "TREE_BG": "#191c22", "TREE_ALT": "#1d2026",
+        "SEL_BG": "#33405c", "SEL_FG": "#f6f8fb", "HOVER_BG": "#242832",
+        "SEC_BG": "#22262f", "SEC_FG": "#c2c8d4", "LOG_BG": "#121419", "LOG_FG": "#c2c8d4",
+        "SCROLL": "#363b47", "SCROLL_HOVER": "#4a5160", "ST_BG": "#121419", "ST_FG": "#9197a3",
+        "PROG_BG": "#191c22", "PROG1": "#566074", "PROG2": "#7f8aa0",
+        "TAB_BG": "#1e2127", "TAB_SEL_BG": "#2a2f3a", "TAB_SEL_FG": "#f6f8fb",
+        "MENU_BG": "#1e2127", "MENU_SEL": "#2a2f3a", "CHK_BG": "#191c22", "CHK_ON": "#7f8aa0",
+        "DOT_IDLE": "#586072",
     }
     _LIGHT_COLORS = {
-        "WIN_BG": "#f3f3f4", "MAIN_BG": "#e9e9ea", "FG": "#2a2a2a", "FG_DIM": "#5a5a5a",
-        "TITLE_FG": "#1a1a1a", "CARD_BG": "#ffffff", "BORDER": "#dcdcdc",
-        "HDR1": "#fcfcfc", "HDR2": "#efefef", "CHIP_BG": "#ececec", "IN_BG": "#ffffff",
-        "BTN_BG": "#efefef", "BTN_HOVER": "#e6e6e6", "BTN_BORDER": "#cfcfcf",
-        "ACCENT": "#888888", "TREE_BG": "#ffffff", "TREE_ALT": "#f5f5f5",
-        "SEL_BG": "#d2d2d2", "SEL_FG": "#1a1a1a", "HOVER_BG": "#ececec",
-        "SEC_BG": "#efefef", "SEC_FG": "#2a2a2a", "LOG_BG": "#fbfbfb", "LOG_FG": "#303030",
-        "SCROLL": "#c4c4c4", "SCROLL_HOVER": "#9a9a9a", "ST_BG": "#e9e9ea", "ST_FG": "#555555",
-        "PROG_BG": "#e6e6e6", "PROG1": "#9a9a9a", "PROG2": "#bcbcbc",
-        "TAB_BG": "#ececec", "TAB_SEL_BG": "#ffffff", "TAB_SEL_FG": "#111111",
-        "MENU_BG": "#ffffff", "MENU_SEL": "#ececec", "CHK_BG": "#ffffff", "CHK_ON": "#888888",
-        "DOT_IDLE": "#a0a0a0",
+        "WIN_BG": "#f1f3f6", "MAIN_BG": "#e6e9ee", "FG": "#1f2329", "FG_DIM": "#5b6673",
+        "TITLE_FG": "#11141a", "CARD_BG": "#ffffff", "BORDER": "#e1e4ea",
+        "HDR1": "#ffffff", "HDR2": "#eef0f4", "CHIP_BG": "#eaedf2", "IN_BG": "#ffffff",
+        "BTN_BG": "#f1f3f6", "BTN_HOVER": "#e7eaf0", "BTN_BORDER": "#d6dae2",
+        "ACCENT": "#7f8aa0", "TREE_BG": "#ffffff", "TREE_ALT": "#f5f7f9",
+        "SEL_BG": "#d7deeb", "SEL_FG": "#11141a", "HOVER_BG": "#eef0f4",
+        "SEC_BG": "#f1f3f6", "SEC_FG": "#3a3f4b", "LOG_BG": "#fafbfc", "LOG_FG": "#2a2e36",
+        "SCROLL": "#ccd1da", "SCROLL_HOVER": "#aeb4c0", "ST_BG": "#e6e9ee", "ST_FG": "#5b6673",
+        "PROG_BG": "#e7eaf0", "PROG1": "#9aa1af", "PROG2": "#7f8aa0",
+        "TAB_BG": "#eaedf2", "TAB_SEL_BG": "#ffffff", "TAB_SEL_FG": "#11141a",
+        "MENU_BG": "#ffffff", "MENU_SEL": "#eef0f4", "CHK_BG": "#ffffff", "CHK_ON": "#7f8aa0",
+        "DOT_IDLE": "#a7adba",
     }
-    # Tokens written @@KEY@@ become rgba(...) with the opacity-slider alpha (so
-    # backgrounds go translucent); tokens written @KEY@ stay opaque hex (text,
-    # borders, selection) — i.e. "everything but the text" fades with the slider.
+    # @@KEY@@ -> background hex, @KEY@ -> text/border hex (substituted in _build_qss).
     _THEME_QSS = """
-        QWidget { color: @FG@; font-family: "Segoe UI","Helvetica Neue",Arial,sans-serif; }
+        QWidget { color: @FG@; font-family: "Segoe UI","Helvetica Neue",Arial,sans-serif; font-size: 9pt; }
         QMainWindow { background: transparent; }
         QWidget#rootCentral { background-color: @@WIN_BG@@; }
         QFrame#headerBar { background: transparent; border: none; }
@@ -2210,38 +2211,46 @@ class LibraryManagerWindow(QMainWindow):
         QLabel#headerStatus { color: @FG_DIM@; font-size: 9pt; }
         QToolButton#iconBtn { font-size: 13pt; padding: 0 8px; border: none; background: transparent; color: @FG_DIM@; }
         QToolButton#iconBtn:hover { color: @TITLE_FG@; }
-        QFrame#card { border: 1px solid @BORDER@; border-radius: 10px; background-color: @@CARD_BG@@; margin-top: 6px; }
-        QLabel#cardTitle { color: @TITLE_FG@; padding: 4px 6px; font-weight: 800; font-size: 10pt; }
-        QToolButton { background: transparent; border: 1px solid @BORDER@; border-radius: 6px; padding: 6px 10px; font-weight: 600; }
+        QFrame#card { border: 1px solid @BORDER@; border-radius: 12px; background-color: @@CARD_BG@@; margin-top: 6px; }
+        QLabel#cardTitle { color: @TITLE_FG@; padding: 6px 8px 2px 8px; font-weight: 800; font-size: 10pt; }
+        QToolButton { background: transparent; border: 1px solid @BORDER@; border-radius: 7px; padding: 6px 10px; font-weight: 600; }
         QToolButton:hover { border-color: @ACCENT@; }
         QToolButton::menu-indicator { image: none; }
-        QMenu { background-color: @@MENU_BG@@; border: 1px solid @BORDER@; padding: 4px; }
-        QMenu::item { padding: 6px 18px; border-radius: 4px; }
+        QMenu { background-color: @@MENU_BG@@; border: 1px solid @BORDER@; border-radius: 8px; padding: 5px; }
+        QMenu::item { padding: 6px 18px; border-radius: 5px; }
         QMenu::item:selected { background-color: @@MENU_SEL@@; color: @FG@; }
-        QPushButton { background-color: @@BTN_BG@@; color: @FG@; border: 1px solid @BTN_BORDER@; border-radius: 6px; padding: 6px 10px; font-size: 9pt; font-weight: 600; text-align: left; }
+        QMenu::separator { height: 1px; background: @BORDER@; margin: 4px 8px; }
+        QPushButton { background-color: @@BTN_BG@@; color: @FG@; border: 1px solid @BTN_BORDER@; border-radius: 7px; padding: 6px 12px; font-size: 9pt; font-weight: 600; text-align: left; }
         QPushButton:hover { border-color: @ACCENT@; background-color: @@BTN_HOVER@@; }
         QPushButton:pressed { background-color: @@MENU_SEL@@; }
-        QPushButton:disabled { color: #888888; border-color: @BORDER@; }
+        QPushButton:disabled { color: @FG_DIM@; border-color: @BORDER@; }
         QPushButton::menu-indicator { image: none; }
-        QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox { background-color: @@IN_BG@@; border: 1px solid @BORDER@; border-radius: 6px; padding: 5px 8px; color: @FG@; }
+        QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox { background-color: @@IN_BG@@; border: 1px solid @BORDER@; border-radius: 7px; padding: 5px 8px; color: @FG@; selection-background-color: @SEL_BG@; selection-color: @SEL_FG@; }
         QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus { border: 1px solid @ACCENT@; }
-        QComboBox QAbstractItemView { background-color: @@MENU_BG@@; color: @FG@; selection-background-color: @SEL_BG@; border: 1px solid @BORDER@; }
+        QComboBox QAbstractItemView { background-color: @@MENU_BG@@; color: @FG@; selection-background-color: @SEL_BG@; border: 1px solid @BORDER@; border-radius: 6px; }
+        QComboBox::drop-down { border: none; width: 18px; }
+        QComboBox::down-arrow { image: none; border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 5px solid @FG_DIM@; margin-right: 8px; }
+        QSpinBox::up-button, QDoubleSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::down-button { background: @@BTN_BG@@; border: none; width: 16px; }
+        QSpinBox::up-arrow, QDoubleSpinBox::up-arrow { image: none; border-left: 4px solid transparent; border-right: 4px solid transparent; border-bottom: 5px solid @FG_DIM@; }
+        QSpinBox::down-arrow, QDoubleSpinBox::down-arrow { image: none; border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 5px solid @FG_DIM@; }
         QCheckBox { color: @FG@; spacing: 8px; }
-        QCheckBox::indicator { width: 17px; height: 17px; border: 1px solid @ACCENT@; border-radius: 4px; background: @@IN_BG@@; }
+        QCheckBox::indicator { width: 17px; height: 17px; border: 1px solid @ACCENT@; border-radius: 5px; background: @@IN_BG@@; }
         QCheckBox::indicator:hover { border-color: @FG_DIM@; }
         QCheckBox::indicator:checked { image: url(@CHECK_IMG@); background: @@SEC_BG@@; border-color: @FG_DIM@; }
-        QTreeWidget, QTableWidget, QListWidget { background-color: @@TREE_BG@@; border: 1px solid @BORDER@; border-radius: 8px; color: @FG@; alternate-background-color: @@TREE_ALT@@; outline: 0; }
-        QTreeWidget::item, QTableWidget::item { padding: 3px 2px; }
+        QTreeWidget, QTableWidget, QListWidget { background-color: @@TREE_BG@@; border: 1px solid @BORDER@; border-radius: 10px; color: @FG@; alternate-background-color: @@TREE_ALT@@; outline: 0; gridline-color: @BORDER@; }
+        QTreeWidget::item, QTableWidget::item { padding: 4px 3px; }
         QTreeWidget::item:selected, QTableWidget::item:selected, QListWidget::item:selected { background-color: @SEL_BG@; color: @SEL_FG@; }
         QTreeWidget::item:hover, QListWidget::item:hover { background-color: @HOVER_BG@; }
-        QHeaderView::section { background-color: @@SEC_BG@@; color: @SEC_FG@; padding: 6px; border: none; border-right: 1px solid @BORDER@; border-bottom: 1px solid @BORDER@; font-weight: 700; }
-        QTextEdit, QPlainTextEdit { background-color: @@LOG_BG@@; border: 1px solid @BORDER@; border-radius: 8px; color: @LOG_FG@; font-family: "Cascadia Mono","Consolas",monospace; font-size: 8pt; }
-        QTabWidget::pane { border: 1px solid @BORDER@; border-radius: 8px; top: -1px; }
+        QHeaderView::section { background-color: @@SEC_BG@@; color: @SEC_FG@; padding: 7px; border: none; border-right: 1px solid @BORDER@; border-bottom: 1px solid @BORDER@; font-weight: 700; }
+        QTextEdit, QPlainTextEdit { background-color: @@LOG_BG@@; border: 1px solid @BORDER@; border-radius: 10px; color: @LOG_FG@; font-family: "Cascadia Mono","Consolas",monospace; font-size: 8pt; }
+        QScrollArea { background: transparent; border: none; }
+        QScrollArea > QWidget > QWidget { background: transparent; }
+        QTabWidget::pane { border: 1px solid @BORDER@; border-radius: 10px; top: -1px; background: transparent; }
         QScrollBar:vertical { background: transparent; width: 12px; margin: 2px; }
-        QScrollBar::handle:vertical { background: @SCROLL@; border-radius: 5px; min-height: 24px; }
+        QScrollBar::handle:vertical { background: @SCROLL@; border-radius: 5px; min-height: 26px; }
         QScrollBar::handle:vertical:hover { background: @SCROLL_HOVER@; }
         QScrollBar:horizontal { background: transparent; height: 12px; margin: 2px; }
-        QScrollBar::handle:horizontal { background: @SCROLL@; border-radius: 5px; min-width: 24px; }
+        QScrollBar::handle:horizontal { background: @SCROLL@; border-radius: 5px; min-width: 26px; }
         QScrollBar::handle:horizontal:hover { background: @SCROLL_HOVER@; }
         QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
         QScrollBar::add-page, QScrollBar::sub-page { background: none; }
@@ -2255,12 +2264,13 @@ class LibraryManagerWindow(QMainWindow):
         QProgressBar#opProgress { background: @@PROG_BG@@; border: 1px solid @BORDER@; border-radius: 7px; }
         QProgressBar#opProgress::chunk { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 @PROG1@, stop:1 @PROG2@); border-radius: 6px; }
         QTabBar#cardTabBar { background: transparent; spacing: 6px; }
-        QTabBar#cardTabBar::tab { padding: 6px 14px; font-weight: 700; font-size: 10pt; color: @FG_DIM@; border: 1px solid @BORDER@; border-radius: 7px; background: @@TAB_BG@@; margin: 0 4px; min-height: 24px; }
+        QTabBar#cardTabBar::tab { padding: 6px 14px; font-weight: 700; font-size: 10pt; color: @FG_DIM@; border: 1px solid @BORDER@; border-radius: 8px; background: @@TAB_BG@@; margin: 0 4px; min-height: 24px; }
         QTabBar#cardTabBar::tab:hover { background: @@HOVER_BG@@; }
         QTabBar#cardTabBar::tab:selected { color: @TAB_SEL_FG@; background: @@TAB_SEL_BG@@; border-color: @ACCENT@; }
-        QTabBar::tab { padding: 6px 12px; color: @FG_DIM@; background: @@TAB_BG@@; border: 1px solid @BORDER@; border-bottom: none; border-top-left-radius: 6px; border-top-right-radius: 6px; }
+        QTabBar::tab { padding: 7px 14px; color: @FG_DIM@; background: @@TAB_BG@@; border: 1px solid @BORDER@; border-bottom: none; border-top-left-radius: 8px; border-top-right-radius: 8px; margin-right: 2px; }
         QTabBar::tab:selected { color: @TITLE_FG@; background: @@TAB_SEL_BG@@; }
-        QToolTip { background: @MENU_BG@; color: @FG@; border: 1px solid @ACCENT@; padding: 4px; }
+        QTabBar::tab:hover { color: @TITLE_FG@; }
+        QToolTip { background: @MENU_BG@; color: @FG@; border: 1px solid @ACCENT@; padding: 5px 7px; }
     """
 
     def _theme_palette(self, c):

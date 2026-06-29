@@ -612,7 +612,7 @@ class KiCadToolsWidget(QWidget):
                 self.ps_spins[attr] = sp
                 # show the mm equivalent side-by-side, updating live
                 mm = QLabel()
-                mm.setStyleSheet("color: palette(mid);")
+                mm.setStyleSheet("color: #8a93a3;")   # neutral, readable on both themes
                 mm.setMinimumWidth(96)
 
                 def _upd(val, lbl=mm):
