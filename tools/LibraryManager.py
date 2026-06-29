@@ -1002,13 +1002,31 @@ def export_catalog(cfg: Dict[str, str], log: UILog, progress_cb=None) -> Optiona
         out.append(f"- File: `{p.name}` · added {r.get('date', '')}\n")
 
     out.append("## 3D Models\n")
-    out.append("| Model | Size | Added |")
-    out.append("|---|---:|---|")
-    for r in models:
+    rendered_3d = 0
+    for j, r in enumerate(models, 1):
+        if progress_cb:
+            progress_cb(len(fps) + j, len(fps) + len(models), str(r["name"]))
         p = Path(r["path"])
+        rel = ""
+        try:
+            img = fp_render.render_step_image(p, 360)
+            if img is not None:
+                fn = assets / (p.stem + "_3d.png")
+                img.save(str(fn))
+                rel = f"catalog_assets/{fn.name}"
+                rendered_3d += 1
+        except Exception:
+            pass
+        s = fp_render.step_summary(p) or {}
         kb = (p.stat().st_size // 1024) if p.exists() else 0
-        out.append(f"| `{r['name']}` | {kb} KB | {r.get('date', '')} |")
-    out.append("")
+        out.append(f"### {r['name']}\n")
+        if rel:
+            out.append(f"![{r['name']}]({rel})\n")
+        dims = s.get("size_mm")
+        if dims:
+            out.append(f"- Size: {dims[0]} × {dims[1]} × {dims[2]} mm")
+        out.append(f"- Triangles: {s.get('triangles', '?')}")
+        out.append(f"- File: `{p.name}` · {kb} KB · added {r.get('date', '')}\n")
 
     out.append(f"## Symbols ({len(syms)})\n")
     for r in syms:
@@ -1017,7 +1035,8 @@ def export_catalog(cfg: Dict[str, str], log: UILog, progress_cb=None) -> Optiona
 
     md = root / "library_catalog.md"
     write_text(md, "\n".join(out))
-    log.write(f"Catalog written: {md.name} ({rendered}/{len(fps)} footprints rendered)")
+    log.write(f"Catalog written: {md.name} "
+              f"({rendered}/{len(fps)} footprints, {rendered_3d}/{len(models)} 3D models rendered)")
     return md
 
 def filter_rows(rows: List[Dict[str, object]], query: str, type_filter: str,
@@ -1273,6 +1292,7 @@ class LibraryManagerWindow(QMainWindow):
     progress_signal = pyqtSignal(int, int, str)   # done, total, name (from workers)
     branch_signal = pyqtSignal(str)               # branch + ahead/behind text
     _async_finished = pyqtSignal(object)          # carries a callable to run on GUI thread
+    preview_ready = pyqtSignal(object, object, int)  # (QImage|None, info, token)
 
     def __init__(self, cfg: Dict[str, str]):
         super().__init__()
@@ -1352,6 +1372,8 @@ class LibraryManagerWindow(QMainWindow):
         self.progress_signal.connect(self.set_progress)
         self.branch_signal.connect(self._on_branch_text)
         self._async_finished.connect(lambda fn: fn())
+        self.preview_ready.connect(self._apply_preview)
+        self._preview_token = 0
 
         # Initialize watcher (needs log)
         self.watcher = WatchController(self.cfg, self.log)
@@ -2031,43 +2053,67 @@ class LibraryManagerWindow(QMainWindow):
 
         return group
 
+    def _apply_preview(self, img, info, token):
+        if token != self._preview_token:
+            return   # selection changed; ignore stale render
+        if img is not None:
+            self.preview.setPixmap(QPixmap.fromImage(img))
+        else:
+            self.preview.setPixmap(QPixmap())
+        self.preview_info.setText(info or "")
+
     def update_preview(self):
-        """Render the selected footprint, or show info for symbols / 3D models."""
+        """Render the selected footprint (sync, fast) or 3D model (threaded)."""
+        self._preview_token += 1
+        token = self._preview_token
         item = self.tree.currentItem()
         if not item:
             self.preview.setPixmap(QPixmap())
             self.preview.setText("Select an item to preview")
             self.preview_info.setText("")
             return
-        t = item.text(0)
-        name = item.text(1)
-        path = Path(item.text(2))
-        date = item.text(3)
+        t, name, path, date = item.text(0), item.text(1), Path(item.text(2)), item.text(3)
+
         if t == "Footprint":
             try:
                 from fp_render import render_footprint_image, footprint_summary
                 img = render_footprint_image(path, 220)
-                if img is not None:
-                    self.preview.setPixmap(QPixmap.fromImage(img))
-                else:
-                    self.preview.setText("(could not render)")
+                self.preview.setPixmap(QPixmap.fromImage(img)) if img is not None else self.preview.setText("(could not render)")
                 s = footprint_summary(path) or {}
                 self.preview_info.setText(
                     f"{name}  ·  {s.get('pads', 0)} pads "
                     f"({s.get('smd_pads', 0)} SMD / {s.get('tht_pads', 0)} TH)  ·  "
-                    f"{s.get('width_mm', '?')} × {s.get('height_mm', '?')} mm  ·  {date}"
-                )
+                    f"{s.get('width_mm', '?')} × {s.get('height_mm', '?')} mm  ·  {date}")
             except Exception as e:
                 self.preview.setText("(render error)")
                 self.preview_info.setText(str(e))
+
         elif t == "Model":
             self.preview.setPixmap(QPixmap())
-            self.preview.setText("3D model\n(open in KiCad / CAD viewer)")
+            self.preview.setText("Rendering 3D…")
             try:
                 kb = path.stat().st_size // 1024 if path.exists() else 0
             except Exception:
                 kb = 0
             self.preview_info.setText(f"{name}  ·  {kb} KB  ·  {date}")
+
+            def work():
+                try:
+                    from fp_render import render_step_image, step_summary, have_3d
+                    if not have_3d():
+                        self._emit(self.preview_ready, None,
+                                   f"{name}  ·  {kb} KB  ·  3D engine not installed  ·  {date}", token)
+                        return
+                    img = render_step_image(path, 220)
+                    s = step_summary(path) or {}
+                    dims = s.get("size_mm")
+                    dtxt = (f"{dims[0]} × {dims[1]} × {dims[2]} mm  ·  " if dims else "")
+                    info = f"{name}  ·  {dtxt}{s.get('triangles', '?')} tris  ·  {kb} KB  ·  {date}"
+                    self._emit(self.preview_ready, img, info, token)
+                except Exception:
+                    self._emit(self.preview_ready, None, f"{name}  ·  {kb} KB  ·  {date}", token)
+            self._spawn(work)
+
         else:  # Symbol
             self.preview.setPixmap(QPixmap())
             self.preview.setText("Symbol")

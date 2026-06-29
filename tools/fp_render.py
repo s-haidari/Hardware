@@ -272,3 +272,152 @@ def render_footprint_image(path: Path, px: int = 420) -> Optional[QImage]:
 def footprint_summary(path: Path) -> Optional[dict]:
     fp = load_footprint(path)
     return fp.summary() if fp else None
+
+
+# ---------------------------------------------------------------------------
+# 3D model rendering — STEP -> mesh via cascadio (OpenCASCADE, the SnapMagic
+# approach), then a small software rasteriser draws a shaded thumbnail. All
+# local, no display required. Degrades gracefully if cascadio isn't installed.
+# ---------------------------------------------------------------------------
+def have_3d() -> bool:
+    try:
+        import cascadio  # noqa: F401
+        import trimesh   # noqa: F401
+        import numpy     # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+import contextlib
+
+
+@contextlib.contextmanager
+def _suppress_native_stderr():
+    """Silence OpenCASCADE's C-level stderr chatter (skipped-node warnings)."""
+    import os
+    import sys
+    try:
+        fd = sys.stderr.fileno()
+    except Exception:
+        yield
+        return
+    saved = os.dup(fd)
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    try:
+        os.dup2(devnull, fd)
+        yield
+    finally:
+        os.dup2(saved, fd)
+        os.close(devnull)
+        os.close(saved)
+
+
+def _load_step_mesh(step_path: Path):
+    """Return (vertices Nx3, faces Mx3) numpy arrays, or (None, None)."""
+    import os
+    import tempfile
+    import cascadio
+    import trimesh
+    import numpy as np
+    glb = tempfile.NamedTemporaryFile(suffix=".glb", delete=False).name
+    try:
+        with _suppress_native_stderr():
+            cascadio.step_to_glb(str(step_path), glb, tol_linear=0.05, tol_angular=0.3)
+        scene = trimesh.load(glb)
+        if hasattr(scene, "to_geometry"):
+            mesh = scene.to_geometry()
+        elif hasattr(scene, "dump"):
+            mesh = scene.dump(concatenate=True)
+        else:
+            mesh = scene
+        return np.asarray(mesh.vertices, float), np.asarray(mesh.faces, int)
+    finally:
+        try:
+            os.unlink(glb)
+        except Exception:
+            pass
+
+
+def step_summary(step_path: Path) -> Optional[dict]:
+    if not have_3d():
+        return None
+    try:
+        import numpy as np
+        v, f = _load_step_mesh(step_path)
+        if v is None or len(v) == 0:
+            return None
+        dims = v.max(0) - v.min(0)
+        # glTF/GLB from cascadio is in metres; convert to mm for display
+        if float(dims.max()) < 1.0:
+            dims = dims * 1000.0
+        return {"triangles": int(len(f)),
+                "size_mm": [round(float(d), 2) for d in dims]}
+    except Exception:
+        return None
+
+
+def render_step_image(step_path: Path, px: int = 420) -> Optional[QImage]:
+    """Render a shaded 3D thumbnail of a STEP model (None if unavailable)."""
+    if not have_3d():
+        return None
+    try:
+        import numpy as np
+        v, faces = _load_step_mesh(step_path)
+        if v is None or len(faces) == 0:
+            return None
+        v = v - (v.max(0) + v.min(0)) / 2.0      # center
+
+        # 3/4 isometric-ish view
+        rx, rz = math.radians(-65.0), math.radians(35.0)
+        Rx = np.array([[1, 0, 0],
+                       [0, math.cos(rx), -math.sin(rx)],
+                       [0, math.sin(rx), math.cos(rx)]])
+        Rz = np.array([[math.cos(rz), -math.sin(rz), 0],
+                       [math.sin(rz), math.cos(rz), 0],
+                       [0, 0, 1]])
+        vr = v @ (Rx @ Rz).T
+
+        proj = vr[:, :2]
+        pmin, pmax = proj.min(0), proj.max(0)
+        ctr = (pmin + pmax) / 2.0
+        margin = px * 0.12
+        s = (px - 2 * margin) / max(float((pmax - pmin).max()), 1e-6)
+
+        tris = vr[faces]                          # (M,3,3)
+        normals = np.cross(tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0])
+        nlen = np.linalg.norm(normals, axis=1)
+        nlen[nlen == 0] = 1.0
+        normals = normals / nlen[:, None]
+        light = np.array([0.35, 0.45, 0.82]); light /= np.linalg.norm(light)
+        ndotl = normals @ light
+        shade = np.clip(0.26 + 0.74 * np.clip(ndotl, 0.0, 1.0), 0.0, 1.0)
+        depth = tris[:, :, 2].mean(1)
+        order = np.argsort(depth)                 # far -> near (painter's)
+        # backface cull: keep faces pointing toward the +z camera (clean solid)
+        front = normals[:, 2] > 0
+        order = order[front[order]]
+        if len(order) < 4:                        # winding inconsistent -> show all
+            order = np.argsort(depth)
+            shade = np.clip(0.26 + 0.74 * np.abs(ndotl), 0.0, 1.0)
+
+        def to2d(pt):
+            return QPointF((pt[0] - ctr[0]) * s + px / 2.0,
+                           (pt[1] - ctr[1]) * s + px / 2.0)
+
+        img = QImage(px, px, QImage.Format_ARGB32)
+        img.fill(BG)
+        p = QPainter(img)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        base = (198, 204, 212)
+        for i in order:
+            sh = shade[i]
+            col = QColor(int(base[0] * sh), int(base[1] * sh), int(base[2] * sh))
+            poly = QPolygonF([to2d(tris[i][0]), to2d(tris[i][1]), to2d(tris[i][2])])
+            pen = QPen(col); pen.setWidthF(0.7)
+            p.setPen(pen); p.setBrush(QBrush(col))
+            p.drawPolygon(poly)
+        p.end()
+        return img
+    except Exception:
+        return None
