@@ -165,8 +165,23 @@ class _Footprint:
             return (-1, -1, 1, 1)
         return (min(xs), min(ys), max(xs), max(ys))
 
+    def body_bbox(self) -> Tuple[float, float, float, float]:
+        """Bounds of the actual component body — pads + courtyard — ignoring
+        stray silk/fab markers (pin-1 dots, reference outlines) that sit far
+        from the body and would otherwise skew the framing."""
+        xs, ys = [], []
+        for (_s, x, y, w, h, _r, _d, _t) in self.pads:
+            xs += [x - w / 2, x + w / 2]
+            ys += [y - h / 2, y + h / 2]
+        for (x1, y1, x2, y2, lay, _w) in self.lines:
+            if "CrtYd" in lay:
+                xs += [x1, x2]; ys += [y1, y2]
+        if not xs:
+            return self.bbox()
+        return (min(xs), min(ys), max(xs), max(ys))
+
     def summary(self) -> dict:
-        x0, y0, x1, y1 = self.bbox()
+        x0, y0, x1, y1 = self.body_bbox()
         layers = set()
         for coll in (self.lines, self.rects):
             for item in coll:
@@ -186,11 +201,20 @@ class _Footprint:
     def render(self, px: int = 420) -> QImage:
         img = QImage(px, px, QImage.Format_ARGB32)
         img.fill(BG)
-        x0, y0, x1, y1 = self.bbox()
+        x0, y0, x1, y1 = self.body_bbox()
         span = max(x1 - x0, y1 - y0, 0.5)
-        margin = px * 0.10
+        margin = px * 0.12
         scale = (px - 2 * margin) / span
         cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+
+        # outlier-rejection window: drop graphics far outside the body so stray
+        # silk/fab markers don't appear as floating dots
+        ex = (x1 - x0) * 0.30 + 0.3
+        ey = (y1 - y0) * 0.30 + 0.3
+        wx0, wy0, wx1, wy1 = x0 - ex, y0 - ey, x1 + ex, y1 + ey
+
+        def _in(mx, my):
+            return wx0 <= mx <= wx1 and wy0 <= my <= wy1
 
         def T(mx, my):
             return QPointF((mx - cx) * scale + px / 2, (my - cy) * scale + px / 2)
@@ -200,6 +224,8 @@ class _Footprint:
 
         def draw_lines(coll):
             for (x1_, y1_, x2_, y2_, lay, w) in coll:
+                if not (_in(x1_, y1_) or _in(x2_, y2_)):
+                    continue
                 pen = QPen(_layer_color(lay)); pen.setWidthF(max(w * scale, 1.0))
                 pen.setCapStyle(Qt.RoundCap)
                 p.setPen(pen)
@@ -209,15 +235,21 @@ class _Footprint:
         draw_lines([l for l in self.lines if "CrtYd" in l[4]])
         draw_lines([l for l in self.lines if "Fab" in l[4]])
         for (a, b, c2, d, lay, w) in self.rects:
+            if not (_in(a, b) or _in(c2, d)):
+                continue
             pen = QPen(_layer_color(lay)); pen.setWidthF(max(w * scale, 1.0)); p.setPen(pen)
             p.setBrush(Qt.NoBrush)
             p.drawRect(QRectF(T(a, b), T(c2, d)))
         for (pcx, pcy, rr, lay, w) in self.circles:
+            if not _in(pcx, pcy):
+                continue
             pen = QPen(_layer_color(lay)); pen.setWidthF(max(w * scale, 1.0)); p.setPen(pen)
             p.setBrush(Qt.NoBrush)
             ctr = T(pcx, pcy)
             p.drawEllipse(ctr, rr * scale, rr * scale)
         for (pp, lay, w) in self.polys:
+            if not any(_in(x, y) for (x, y) in pp):
+                continue
             poly = QPolygonF([T(x, y) for (x, y) in pp])
             col = _layer_color(lay)
             p.setPen(QPen(col, max(w * scale, 1.0)))

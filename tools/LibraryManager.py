@@ -1072,7 +1072,7 @@ class DropZone(QFrame):
         super().__init__(parent)
         self.setAcceptDrops(True)
         # Container with a dashed box that contains the label and checkbox
-        self.setMinimumHeight(88)
+        self.setMinimumHeight(58)
         self.setFrameStyle(QFrame.NoFrame)
 
         layout = QVBoxLayout(self)
@@ -1083,7 +1083,7 @@ class DropZone(QFrame):
         self.dash_box = QFrame()
         self.dash_box.setObjectName("dashBox")
         self.dash_box.setAcceptDrops(True)
-        self.dash_box.setMinimumHeight(64)
+        self.dash_box.setMinimumHeight(42)
         self.dash_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         inner = QVBoxLayout(self.dash_box)
@@ -1341,13 +1341,13 @@ class LibraryManagerWindow(QMainWindow):
         left_layout.setSpacing(8)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.addWidget(workflow)
-        left_panel.setMinimumWidth(300)
+        left_panel.setMinimumWidth(250)
         central_splitter.addWidget(left_panel)
         library = self.create_library_panel()
-        library.setMinimumWidth(300)
+        library.setMinimumWidth(360)
         central_splitter.addWidget(library)
         log_card = self.create_log_panel()
-        log_card.setMinimumWidth(300)
+        log_card.setMinimumWidth(280)
         central_splitter.addWidget(log_card)
         try:
             central_splitter.setCollapsible(0, False)
@@ -1356,8 +1356,12 @@ class LibraryManagerWindow(QMainWindow):
         except Exception:
             pass
         central_splitter.setStretchFactor(0, 0)
-        central_splitter.setStretchFactor(1, 1)
-        central_splitter.setStretchFactor(2, 1)
+        central_splitter.setStretchFactor(1, 3)   # Contents (the star) gets the room
+        central_splitter.setStretchFactor(2, 2)
+        try:
+            central_splitter.setSizes([260, 720, 430])
+        except Exception:
+            pass
         lib_layout.addWidget(central_splitter)
 
         # --- "KiCad Tools" tab ---
@@ -1795,8 +1799,8 @@ class LibraryManagerWindow(QMainWindow):
 
         # Custom drop zone widget
         self.drop_zone = DropZone()
-        self.drop_zone.setMinimumHeight(56)
-        self.drop_zone.setMaximumHeight(96)
+        self.drop_zone.setMinimumHeight(48)
+        self.drop_zone.setMaximumHeight(70)
         self.drop_zone.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.drop_zone.files_dropped.connect(self.handle_dropped_files)
         layout.addWidget(self.drop_zone)
@@ -2043,8 +2047,8 @@ class LibraryManagerWindow(QMainWindow):
         self.preview = QLabel("Select an item to preview")
         self.preview.setObjectName("previewPane")
         self.preview.setAlignment(Qt.AlignCenter)
-        self.preview.setMinimumHeight(168)
-        self.preview.setMaximumHeight(220)
+        self.preview.setMinimumHeight(210)
+        self.preview.setMaximumHeight(300)
         layout.addWidget(self.preview)
         self.preview_info = QLabel("")
         self.preview_info.setObjectName("headerStatus")
@@ -2077,7 +2081,7 @@ class LibraryManagerWindow(QMainWindow):
         if t == "Footprint":
             try:
                 from fp_render import render_footprint_image, footprint_summary
-                img = render_footprint_image(path, 220)
+                img = render_footprint_image(path, 280)
                 self.preview.setPixmap(QPixmap.fromImage(img)) if img is not None else self.preview.setText("(could not render)")
                 s = footprint_summary(path) or {}
                 self.preview_info.setText(
@@ -2104,7 +2108,7 @@ class LibraryManagerWindow(QMainWindow):
                         self._emit(self.preview_ready, None,
                                    f"{name}  ·  {kb} KB  ·  3D engine not installed  ·  {date}", token)
                         return
-                    img = render_step_image(path, 220)
+                    img = render_step_image(path, 280)
                     s = step_summary(path) or {}
                     dims = s.get("size_mm")
                     dtxt = (f"{dims[0]} × {dims[1]} × {dims[2]} mm  ·  " if dims else "")
