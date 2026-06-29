@@ -26,6 +26,7 @@ dist/
 
 # --- Logs & caches ---
 *.log
+.kicadmgr_write_test.tmp
 .nox/
 .tox/
 .pytest_cache/
