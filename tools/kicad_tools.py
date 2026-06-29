@@ -76,7 +76,7 @@ class KiCadToolsWidget(QWidget):
         ("Color", "color", "color"),
         ("Line Style", "line_style", "linestyle"),
         ("Priority", "priority", "num"),
-        ("Patterns (net globs)", "patterns", "patterns"),
+        ("Patterns", "patterns", "patterns"),
     ]
     # Project settings grouped like KiCad's dialog (all values in mils).
     PS_GROUPS = [
@@ -460,7 +460,10 @@ class KiCadToolsWidget(QWidget):
 
     def _nc_set_rows(self, manager: NetClassManager):
         self.nc_table.setRowCount(0)
-        for name in manager.list_netclasses():
+        # Show net classes sorted by priority (lower number = higher precedence).
+        names = sorted(manager.list_netclasses(),
+                       key=lambda n: (manager.get_netclass(n).priority, n.lower()))
+        for name in names:
             nc = manager.get_netclass(name)
             r = self.nc_table.rowCount()
             self.nc_table.insertRow(r)

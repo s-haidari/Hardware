@@ -144,6 +144,23 @@ def test_netclass_patterns_roundtrip(tmp_path):
     assert sorted(m2.get_netclass("PWR").patterns) == ["/VDD*", "GND"]
 
 
+def test_vault_template_matches_obsidian_spec():
+    import nd_netclass_manager as NCM
+    m = NCM.create_vault_standard_template()
+    names = m.list_netclasses()
+    assert len(names) == 18
+    # 43 patterns total per the Obsidian "Net Class Colors & Styles" table
+    assert sum(len(m.get_netclass(n).patterns) for n in names) == 43
+    g = m.get_netclass("GND")
+    assert (g.track_width, g.via_diameter, g.via_drill) == (0.25, 0.6, 0.3)
+    s = m.get_netclass("SENSE")
+    assert (s.track_width, s.via_diameter, s.via_drill) == (0.15, 0.4572, 0.254)
+    u = m.get_netclass("USB")
+    assert (u.diff_pair_width, u.diff_pair_gap) == (0.20, 0.15)
+    assert m.get_netclass("FAULT").line_style == "dashed"
+    assert m.get_netclass("GND").priority == 0   # GND = highest precedence
+
+
 def test_project_settings_min_constraints_roundtrip(tmp_path):
     import json
     import nd_project_settings_manager as PSM
