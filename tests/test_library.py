@@ -76,6 +76,26 @@ def test_remove_symbol_by_index_stale_guard(tmp_path):
     assert names_in(sym) == ["A", "B"]
 
 
+# --- multi-select bulk delete --------------------------------------------
+def test_remove_symbols_by_indices_bulk(tmp_path):
+    sym = tmp_path / "s.kicad_sym"
+    make_symlib(sym, ["A", "B", "A", "C", "A"])   # A at indices 0, 2, 4
+    log = DummyLog()
+    # delete the two later A copies in one pass (no index-shift bug)
+    removed = L.remove_symbols_by_indices(sym, {2: "A", 4: "A"}, log)
+    assert removed == 2
+    assert names_in(sym) == ["A", "B", "C"]
+
+
+def test_remove_symbols_by_indices_stale_aborts(tmp_path):
+    sym = tmp_path / "s.kicad_sym"
+    make_symlib(sym, ["A", "B", "C"])
+    log = DummyLog()
+    removed = L.remove_symbols_by_indices(sym, {1: "WRONG"}, log)
+    assert removed == 0
+    assert names_in(sym) == ["A", "B", "C"]
+
+
 # --- one-click dedup ------------------------------------------------------
 def test_dedupe_symbol_library(tmp_path):
     sym = tmp_path / "s.kicad_sym"

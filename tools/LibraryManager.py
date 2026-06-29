@@ -41,9 +41,12 @@ from PyQt5.QtWidgets import (
     QListWidget, QListWidgetItem, QAbstractItemView, QTabBar, QStackedWidget,
     QComboBox, QCheckBox, QGroupBox, QFileDialog, QMessageBox, QInputDialog,
     QHeaderView, QFrame, QScrollArea, QSizePolicy, QSplitter, QStyle,
-    QToolButton, QMenu, QProgressBar, QStatusBar
+    QToolButton, QMenu, QProgressBar, QStatusBar, QSlider, QLayout
 )
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread, QMimeData, QUrl, QObject, QSettings
+from PyQt5.QtCore import (
+    Qt, QTimer, pyqtSignal, QThread, QMimeData, QUrl, QObject, QSettings,
+    QRect, QSize, QPoint
+)
 from PyQt5.QtGui import QPalette, QColor, QBrush, QIcon, QDragEnterEvent, QDropEvent, QPainter, QPen, QFont
 
 # -----------------------------
@@ -381,6 +384,39 @@ def dedupe_symbol_library(symbol_lib_path: Path, log: UILog) -> int:
         return removed
     except Exception as e:
         log.write(f"ERROR removing duplicates: {e}")
+        return 0
+
+
+def remove_symbols_by_indices(symbol_lib_path: Path, expected: Dict[int, str],
+                              log: UILog) -> int:
+    """Remove several symbol blocks at once, identified by file position.
+
+    `expected` maps block-index -> expected name. Removing them in a single pass
+    avoids the index-shifting bug you'd hit deleting one at a time. If any index
+    no longer matches its expected name (library changed since the scan), the
+    whole operation aborts. Returns the number removed.
+    """
+    try:
+        text = read_text(symbol_lib_path)
+        blocks = extract_symbol_blocks(text)
+        idxset = {i for i in expected if 0 <= i < len(blocks)}
+        for i in idxset:
+            if extract_symbol_name(blocks[i]) != expected[i]:
+                log.write("WARN bulk symbol delete aborted: library changed — "
+                          "refresh and retry.")
+                return 0
+        kept = [b for k, b in enumerate(blocks) if k not in idxset]
+        removed = len(blocks) - len(kept)
+        if removed:
+            new_text = insert_blocks_into_target(
+                '(kicad_symbol_lib (version 20211014) (generator "LibraryManager.py"))\n)\n',
+                kept
+            )
+            write_text(symbol_lib_path, new_text)
+            log.write(f"Deleted {removed} symbol(s).")
+        return removed
+    except Exception as e:
+        log.write(f"ERROR bulk-deleting symbols: {e}")
         return 0
 
 
@@ -1051,6 +1087,73 @@ class CardWidget(QFrame):
         self._title_right_layout.addWidget(widget)
 
 # -----------------------------
+# Flow layout (wraps its widgets to new rows as width shrinks)
+# -----------------------------
+class FlowLayout(QLayout):
+    """A layout that arranges children left-to-right and wraps to the next row
+    when it runs out of width — so a row of buttons never gets clipped."""
+    def __init__(self, parent=None, margin=0, spacing=6):
+        super().__init__(parent)
+        if parent is not None:
+            self.setContentsMargins(margin, margin, margin, margin)
+        self.setSpacing(spacing)
+        self._items = []
+
+    def addItem(self, item):
+        self._items.append(item)
+
+    def count(self):
+        return len(self._items)
+
+    def itemAt(self, i):
+        return self._items[i] if 0 <= i < len(self._items) else None
+
+    def takeAt(self, i):
+        return self._items.pop(i) if 0 <= i < len(self._items) else None
+
+    def expandingDirections(self):
+        return Qt.Orientations(Qt.Orientation(0))
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        return self._do_layout(QRect(0, 0, width, 0), True)
+
+    def setGeometry(self, rect):
+        super().setGeometry(rect)
+        self._do_layout(rect, False)
+
+    def sizeHint(self):
+        return self.minimumSize()
+
+    def minimumSize(self):
+        size = QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        m = self.contentsMargins()
+        size += QSize(m.left() + m.right(), m.top() + m.bottom())
+        return size
+
+    def _do_layout(self, rect, test_only):
+        x, y, line_height = rect.x(), rect.y(), 0
+        spacing = self.spacing()
+        for item in self._items:
+            w, h = item.sizeHint().width(), item.sizeHint().height()
+            next_x = x + w + spacing
+            if next_x - spacing > rect.right() and line_height > 0:
+                x = rect.x()
+                y = y + line_height + spacing
+                next_x = x + w + spacing
+                line_height = 0
+            if not test_only:
+                item.setGeometry(QRect(QPoint(x, y), QSize(w, h)))
+            x = next_x
+            line_height = max(line_height, h)
+        return y + line_height - rect.y()
+
+
+# -----------------------------
 # Main Window
 # -----------------------------
 class LibraryManagerWindow(QMainWindow):
@@ -1080,8 +1183,13 @@ class LibraryManagerWindow(QMainWindow):
         if _icon.exists():
             self.setWindowIcon(QIcon(str(_icon)))
 
-        # Central widget with main layout
+        # Central widget with main layout. WA_TranslucentBackground lets the
+        # root background show the desktop; the opacity slider tunes only that
+        # background's alpha (cards/text stay fully opaque).
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
         central = QWidget()
+        central.setObjectName("rootCentral")
+        self.central = central
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
         main_layout.setSpacing(12)  # consistent spacing between sections
@@ -1154,15 +1262,20 @@ class LibraryManagerWindow(QMainWindow):
         # --- Status bar (operation text + progress + result chip) ---
         self.build_status_bar()
 
-        # View settings (theme + window opacity + geometry) persisted across runs
+        # View settings (theme + background opacity + geometry) persisted across runs
         self._settings = QSettings("KiCadLibraryManager", "KiCadLibraryManager")
         theme = self._settings.value("theme", "dark")
         try:
             self._opacity_pct = int(self._settings.value("opacity", 100))
         except (TypeError, ValueError):
             self._opacity_pct = 100
+        self._opacity_pct = max(60, min(100, self._opacity_pct))
         self._apply_theme(str(theme).lower() != "light")
-        self.setWindowOpacity(max(60, min(100, self._opacity_pct)) / 100.0)
+        # Sync the slider (triggers _apply_bg_opacity via valueChanged)
+        self.opacity_slider.blockSignals(True)
+        self.opacity_slider.setValue(self._opacity_pct)
+        self.opacity_slider.blockSignals(False)
+        self._apply_bg_opacity()
         geo = self._settings.value("geometry")
         if geo is not None:
             try:
@@ -1217,32 +1330,45 @@ class LibraryManagerWindow(QMainWindow):
         h.addWidget(title)
         h.addStretch()
 
+        # Inline view controls (built straight into the top bar)
+        self.theme_btn = QToolButton()
+        self.theme_btn.setText("Light theme")
+        self.theme_btn.setToolTip("Switch between dark and light")
+        self.theme_btn.clicked.connect(self.toggle_theme)
+        h.addWidget(self.theme_btn)
+
+        opac_lbl = QLabel("Opacity")
+        opac_lbl.setObjectName("headerStatus")
+        h.addWidget(opac_lbl)
+        self.opacity_slider = QSlider(Qt.Horizontal)
+        self.opacity_slider.setRange(60, 100)
+        self.opacity_slider.setValue(100)
+        self.opacity_slider.setFixedWidth(110)
+        self.opacity_slider.setToolTip("Window background transparency")
+        self.opacity_slider.valueChanged.connect(self.set_bg_opacity)
+        h.addWidget(self.opacity_slider)
+        self.opacity_value_lbl = QLabel("100%")
+        self.opacity_value_lbl.setObjectName("headerStatus")
+        self.opacity_value_lbl.setFixedWidth(38)
+        h.addWidget(self.opacity_value_lbl)
+
+        self.about_btn = QToolButton()
+        self.about_btn.setText("?")
+        self.about_btn.setToolTip("About")
+        self.about_btn.clicked.connect(self.show_about)
+        h.addWidget(self.about_btn)
+
+        # Separator-ish spacing, then live status indicators on the far right
+        h.addSpacing(8)
         self.branch_label = QLabel("")
         self.branch_label.setObjectName("branchChip")
         h.addWidget(self.branch_label)
-
         self.activity_dot = QLabel("●")   # ●
         self.activity_dot.setObjectName("activityDot")
         self.header_status = QLabel("Idle")
         self.header_status.setObjectName("headerStatus")
         h.addWidget(self.activity_dot)
         h.addWidget(self.header_status)
-
-        # View menu: theme toggle, window opacity, About
-        view_btn = QToolButton()
-        view_btn.setText("View")
-        view_btn.setPopupMode(QToolButton.InstantPopup)
-        vm = QMenu(view_btn)
-        self.act_theme = vm.addAction("Light theme")
-        self.act_theme.triggered.connect(self.toggle_theme)
-        op_menu = vm.addMenu("Window opacity")
-        for pct in (100, 95, 90, 85, 80, 75):
-            op_menu.addAction(f"{pct}%").triggered.connect(
-                lambda _checked=False, p=pct: self.set_opacity(p))
-        vm.addSeparator()
-        vm.addAction("About").triggered.connect(self.show_about)
-        view_btn.setMenu(vm)
-        h.addWidget(view_btn)
         return bar
 
     def build_status_bar(self):
@@ -1718,48 +1844,25 @@ class LibraryManagerWindow(QMainWindow):
         self.lbl_summary.setFont(summary_font)
         layout.addWidget(self.lbl_summary)
        
-        # Action buttons
-        btn_layout = QHBoxLayout()
+        # Action buttons — a flow layout so they wrap (never clip) when narrow
+        btn_layout = FlowLayout(spacing=6)
         st = self.style()
-        btn_refresh = QPushButton("Refresh")
-        btn_refresh.setIcon(st.standardIcon(QStyle.SP_BrowserReload))
-        btn_refresh.setMaximumHeight(26)
-        btn_refresh.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Fixed)
-        btn_refresh.clicked.connect(self.refresh_library)
-        btn_layout.addWidget(btn_refresh)
-
-        btn_open = QPushButton("Open")
-        btn_open.setIcon(st.standardIcon(QStyle.SP_DirOpenIcon))
-        btn_open.setMaximumHeight(26)
-        btn_open.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Fixed)
-        btn_open.clicked.connect(self.on_tree_open)
-        btn_layout.addWidget(btn_open)
-
-        btn_kicad = QPushButton("Open in KiCad")
-        btn_kicad.setIcon(st.standardIcon(QStyle.SP_FileLinkIcon))
-        btn_kicad.setMaximumHeight(26)
-        btn_kicad.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Fixed)
-        btn_kicad.clicked.connect(self.open_in_kicad)
-        btn_layout.addWidget(btn_kicad)
-
-        btn_delete = QPushButton("Delete")
-        btn_delete.setIcon(st.standardIcon(QStyle.SP_TrashIcon))
-        btn_delete.setMaximumHeight(26)
-        btn_delete.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Fixed)
-        btn_delete.clicked.connect(self.on_tree_delete)
-        btn_layout.addWidget(btn_delete)
-
-        btn_dedupe = QPushButton("Remove Duplicates")
-        btn_dedupe.setIcon(st.standardIcon(QStyle.SP_DialogResetButton))
-        btn_dedupe.setMaximumHeight(26)
-        btn_dedupe.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Fixed)
-        btn_dedupe.clicked.connect(self.on_remove_duplicates)
-        btn_layout.addWidget(btn_dedupe)
-
-        btn_layout.addStretch()
+        actions = [
+            ("Refresh", QStyle.SP_BrowserReload, self.refresh_library),
+            ("Open", QStyle.SP_DirOpenIcon, self.on_tree_open),
+            ("Open in KiCad", QStyle.SP_FileDialogContentsView, self.open_in_kicad),
+            ("Delete", QStyle.SP_TrashIcon, self.on_tree_delete),
+            ("Remove Duplicates", QStyle.SP_DialogResetButton, self.on_remove_duplicates),
+        ]
+        for label, icon, cb in actions:
+            b = QPushButton(label)
+            b.setIcon(st.standardIcon(icon))
+            b.setMaximumHeight(26)
+            b.clicked.connect(cb)
+            btn_layout.addWidget(b)
         layout.addLayout(btn_layout)
-       
-        # Tree widget
+
+        # Tree widget (multi-select)
         self.tree = QTreeWidget()
         self.tree.setColumnCount(3)
         self.tree.setHeaderLabels(["Format", "Name", "Location"])
@@ -1769,6 +1872,7 @@ class LibraryManagerWindow(QMainWindow):
         self.tree.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.tree.setRootIsDecorated(False)
         self.tree.setAlternatingRowColors(True)
+        self.tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.tree.setIndentation(10)
         # Prefer sizing Type/Name to contents and let Location stretch
         header = self.tree.header()
@@ -2153,11 +2257,14 @@ class LibraryManagerWindow(QMainWindow):
         for k, v in c.items():
             qss = qss.replace("@" + k + "@", v)
         self.setStyleSheet(qss)
-        # keep the View-menu label and the idle dot colour in sync
-        if hasattr(self, "act_theme"):
-            self.act_theme.setText("Light theme" if dark else "Dark theme")
+        # keep the toggle button label and the idle dot colour in sync
+        if hasattr(self, "theme_btn"):
+            self.theme_btn.setText("Light theme" if dark else "Dark theme")
         if hasattr(self, "activity_dot") and not getattr(self, "_busy", False):
             self.activity_dot.setStyleSheet("color: %s;" % c["DOT_IDLE"])
+        # the background tint changed with the theme, so re-apply its alpha
+        if hasattr(self, "central"):
+            self._apply_bg_opacity()
         # repaint duplicate highlights with theme-appropriate colours
         if hasattr(self, "tree") and getattr(self, "rows", None) is not None:
             self.on_filter_change()
@@ -2172,9 +2279,22 @@ class LibraryManagerWindow(QMainWindow):
         self._apply_theme(not self._is_dark)
         self._save_view_settings()
 
-    def set_opacity(self, pct: int):
+    def _apply_bg_opacity(self):
+        """Paint ONLY the root background with the chosen alpha (cards/text
+        stay opaque). Combined with WA_TranslucentBackground this lets the
+        desktop show through the window's backdrop."""
+        hexc = self._theme["WIN_BG"].lstrip("#")
+        r, g, b = int(hexc[0:2], 16), int(hexc[2:4], 16), int(hexc[4:6], 16)
+        a = int(round(max(60, min(100, self._opacity_pct)) / 100.0 * 255))
+        self.central.setStyleSheet(
+            "QWidget#rootCentral { background-color: rgba(%d,%d,%d,%d); }" % (r, g, b, a)
+        )
+
+    def set_bg_opacity(self, pct: int):
         self._opacity_pct = max(60, min(100, int(pct)))
-        self.setWindowOpacity(self._opacity_pct / 100.0)
+        if hasattr(self, "opacity_value_lbl"):
+            self.opacity_value_lbl.setText(f"{self._opacity_pct}%")
+        self._apply_bg_opacity()
         self._save_view_settings()
 
     def _save_view_settings(self):
@@ -2285,30 +2405,44 @@ class LibraryManagerWindow(QMainWindow):
             text = f"{len(self.format_filters)} selected"
         self.format_btn.setText(text)
    
+    def _selected_rows(self):
+        return [(it, it.data(0, Qt.UserRole) or {}) for it in self.tree.selectedItems()]
+
     def open_in_kicad(self, *args):
-        """Open the selected item in KiCad (via the editor associated with the
+        """Open the selected item(s) in KiCad (via the editor associated with the
         file type). Symbols open the shared .kicad_sym in the Symbol Editor."""
-        cur = self.tree.currentItem()
-        if not cur:
+        items = self.tree.selectedItems()
+        if not items:
             QMessageBox.information(self, "Open in KiCad", "No item selected.")
             return
-        item_type = cur.text(0)
-        path = Path(cur.text(2))
-        target = Path(self.cfg["SymbolLib"]) if item_type == "Symbol" else path
-        if not target.exists():
-            QMessageBox.warning(self, "Open in KiCad", f"File not found:\n{target}")
-            return
+        # distinct targets (all symbols share one .kicad_sym -> open it once)
+        targets = []
+        for it in items:
+            t = it.text(0)
+            target = Path(self.cfg["SymbolLib"]) if t == "Symbol" else Path(it.text(2))
+            if target not in targets:
+                targets.append(target)
+        if len(targets) > 8:
+            if QMessageBox.question(
+                self, "Open in KiCad",
+                f"Open {len(targets)} items in KiCad?",
+                QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
+                return
         if find_kicad_dir() is None:
             QMessageBox.warning(
                 self, "Open in KiCad",
                 "KiCad does not appear to be installed under Program Files.\n"
                 "Opening with the default associated app instead."
             )
-        try:
-            os.startfile(str(target))   # KiCad registers .kicad_mod/.kicad_sym/.step on install
-            self.log.write(f"Open in KiCad: {target.name}")
-        except Exception as e:
-            QMessageBox.warning(self, "Open in KiCad", f"Could not open:\n{target}\n\n{e}")
+        for target in targets:
+            if not target.exists():
+                self.log.write(f"Open in KiCad: missing {target.name}")
+                continue
+            try:
+                os.startfile(str(target))   # KiCad registers .kicad_mod/.kicad_sym/.step
+                self.log.write(f"Open in KiCad: {target.name}")
+            except Exception as e:
+                self.log.write(f"Open in KiCad failed for {target.name}: {e}")
 
     def on_remove_duplicates(self):
         """One-click: keep one copy of each duplicated symbol, remove the rest."""
@@ -2372,75 +2506,79 @@ class LibraryManagerWindow(QMainWindow):
         )
    
     def on_tree_open(self):
-        """Open selected item in tree"""
-        current = self.tree.currentItem()
-        if not current:
+        """Open the selected item(s) with their default app."""
+        items = self.tree.selectedItems()
+        if not items:
             return
-       
-        path = Path(current.text(2))
-        try:
-            if path.is_file():
-                os.startfile(str(path))
-            else:
-                os.startfile(str(path if path.exists() else path.parent))
-        except Exception as e:
-            self.log.write(f"Open failed: {e}")
+        seen = set()
+        for it in items:
+            path = Path(it.text(2))
+            if str(path) in seen:
+                continue
+            seen.add(str(path))
+            try:
+                target = path if path.exists() else path.parent
+                os.startfile(str(target))
+            except Exception as e:
+                self.log.write(f"Open failed: {e}")
    
     def on_tree_delete(self):
-        """Delete selected item from tree"""
-        current = self.tree.currentItem()
-        if not current:
+        """Delete the selected item(s). Symbols are removed in a single pass so
+        deleting several (including duplicates) never hits index-shift bugs."""
+        items = self.tree.selectedItems()
+        if not items:
             QMessageBox.information(self, "Delete", "No item selected.")
             return
-       
-        row = current.data(0, Qt.UserRole) or {}
-        item_type = current.text(0)
-        name = current.text(1)
-        path = Path(current.text(2))
-        dup_count = int(row.get("dup_count", 1) or 1)
 
-        extra = ""
-        if dup_count > 1:
-            extra = (f"\n\nThis is one of {dup_count} copies — only THIS copy will be "
-                     f"deleted; the other {dup_count - 1} will remain.")
+        sym_to_remove: Dict[int, str] = {}   # sym_index -> name
+        sym_fallback: List[str] = []         # names with no index (legacy)
+        files = []                           # (name, path)
+        for it in items:
+            row = it.data(0, Qt.UserRole) or {}
+            t = it.text(0)
+            name = it.text(1)
+            if t == "Symbol":
+                idx = row.get("sym_index")
+                if idx is None:
+                    sym_fallback.append(name)
+                else:
+                    sym_to_remove[int(idx)] = name
+            elif t in ("Footprint", "Model"):
+                files.append((name, Path(it.text(2))))
+
+        total = len(items)
         reply = QMessageBox.question(
-            self,
-            "Confirm Delete",
-            f"Delete '{name}' ({item_type})?{extra}\n\nThis action cannot be undone.",
+            self, "Confirm Delete",
+            f"Delete {total} selected item(s)?\n\n"
+            f"For duplicated symbols, only the selected copies are removed.\n"
+            f"This action cannot be undone.",
             QMessageBox.Yes | QMessageBox.No
         )
-
         if reply != QMessageBox.Yes:
             return
 
-        try:
-            if item_type == "Symbol":
-                idx = row.get("sym_index")
-                if idx is None:
-                    # Fallback for an un-tagged row: legacy name-based removal.
-                    ok = remove_symbol_by_name(Path(self.cfg["SymbolLib"]), name, self.log)
-                else:
-                    ok = remove_symbol_by_index(
-                        Path(self.cfg["SymbolLib"]), int(idx), self.log, expected_name=name
-                    )
-                if not ok:
-                    QMessageBox.warning(
-                        self,
-                        "Delete Symbol",
-                        f"Symbol '{name}' could not be removed.\n"
-                        f"The library may have changed — click Refresh and try again."
-                    )
-            elif item_type in ("Footprint", "Model"):
+        errors = []
+        # Files first
+        for name, path in files:
+            try:
                 if path.exists():
                     path.unlink()
                     self.log.write(f"Deleted file: {path.name}")
                 else:
-                    QMessageBox.warning(self, "Delete", f"File not found:\n{path}")
-            else:
-                QMessageBox.warning(self, "Delete", f"Unsupported type: {item_type}")
-        except Exception as e:
-            QMessageBox.critical(self, "Delete Failed", str(e))
-       
+                    errors.append(f"{name}: file not found")
+            except Exception as e:
+                errors.append(f"{name}: {e}")
+        # Symbols by index (single rewrite)
+        if sym_to_remove:
+            removed = remove_symbols_by_indices(Path(self.cfg["SymbolLib"]), sym_to_remove, self.log)
+            if removed == 0:
+                errors.append("symbols could not be removed (library changed — refresh and retry)")
+        for nm in sym_fallback:
+            if not remove_symbol_by_name(Path(self.cfg["SymbolLib"]), nm, self.log):
+                errors.append(f"symbol '{nm}' not found")
+
+        if errors:
+            QMessageBox.warning(self, "Delete", "Some items were not deleted:\n- " + "\n- ".join(errors))
         self.refresh_library()
    
     def closeEvent(self, event):
