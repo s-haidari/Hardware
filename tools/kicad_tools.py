@@ -18,10 +18,10 @@ from pathlib import Path
 from typing import List, Optional
 
 from PyQt5.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QWidget, QLabel, QPushButton, QLineEdit,
+    QWidget, QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
     QComboBox, QCheckBox, QListWidget, QListWidgetItem, QPlainTextEdit, QTabWidget,
     QTableWidget, QTableWidgetItem, QFormLayout, QDoubleSpinBox, QFileDialog,
-    QMessageBox, QAbstractItemView, QHeaderView, QSizePolicy, QApplication, QStyle
+    QMessageBox, QAbstractItemView, QHeaderView, QSizePolicy, QApplication
 )
 from PyQt5.QtCore import Qt
 
@@ -53,7 +53,7 @@ def project_pro_file(project_dir: Path) -> Optional[Path]:
     return hits[0] if hits else None
 
 
-class KiCadToolsDialog(QDialog):
+class KiCadToolsWidget(QWidget):
     # Net-class table columns (label, NetClass attr, mm?)
     NC_COLS = [
         ("Name", "name"), ("Color", "color"), ("Clearance", "clearance"),
@@ -82,46 +82,64 @@ class KiCadToolsDialog(QDialog):
 
     def __init__(self, parent, projects_dir: str, save_dir_cb=None):
         super().__init__(parent)
-        self.setWindowTitle("KiCad Tools")
-        self.resize(900, 680)
         self._save_dir_cb = save_dir_cb
 
         root = QVBoxLayout(self)
+        root.setContentsMargins(0, 6, 0, 0)
+        root.setSpacing(10)
 
-        # --- Projects folder + discovery ---
+        # --- Projects card ---
+        pcard, pl = self._card("KiCad Projects")
         top = QHBoxLayout()
-        top.addWidget(QLabel("Projects folder:"))
+        top.addWidget(QLabel("Folder:"))
         self.dir_edit = QLineEdit(projects_dir or "")
         top.addWidget(self.dir_edit, 1)
         b_browse = QPushButton("Browse…"); b_browse.clicked.connect(self._browse)
         b_scan = QPushButton("Rescan"); b_scan.clicked.connect(self.rescan)
         top.addWidget(b_browse); top.addWidget(b_scan)
-        root.addLayout(top)
+        pl.addLayout(top)
 
         row2 = QHBoxLayout()
-        row2.addWidget(QLabel("Projects (check the ones to act on):"))
-        b_all = QPushButton("Select all"); b_all.clicked.connect(lambda: self._check_all(True))
-        b_none = QPushButton("Select none"); b_none.clicked.connect(lambda: self._check_all(False))
-        row2.addStretch(); row2.addWidget(b_all); row2.addWidget(b_none)
-        root.addLayout(row2)
+        row2.addWidget(QLabel("Check the projects to act on:"))
+        row2.addStretch()
+        b_all = QPushButton("All"); b_all.clicked.connect(lambda: self._check_all(True))
+        b_none = QPushButton("None"); b_none.clicked.connect(lambda: self._check_all(False))
+        row2.addWidget(b_all); row2.addWidget(b_none)
+        pl.addLayout(row2)
 
         self.proj_list = QListWidget()
         self.proj_list.setMaximumHeight(120)
-        root.addWidget(self.proj_list)
+        pl.addWidget(self.proj_list)
+        root.addWidget(pcard)
 
-        # --- Tabs ---
+        # --- Operations card (tabs) ---
+        ocard, ol = self._card("Operations")
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_rename_tab(), "Bulk Rename")
         self.tabs.addTab(self._build_netclass_tab(), "Net Classes")
         self.tabs.addTab(self._build_settings_tab(), "Project Settings")
-        root.addWidget(self.tabs, 1)
+        ol.addWidget(self.tabs)
+        root.addWidget(ocard, 1)
 
-        # --- Output log ---
-        root.addWidget(QLabel("Output:"))
-        self.out = QPlainTextEdit(); self.out.setReadOnly(True); self.out.setMaximumHeight(150)
-        root.addWidget(self.out)
+        # --- Output card ---
+        ccard, cl = self._card("Output")
+        self.out = QPlainTextEdit(); self.out.setReadOnly(True); self.out.setMaximumHeight(140)
+        cl.addWidget(self.out)
+        root.addWidget(ccard)
 
         self.rescan()
+
+    def _card(self, title: str):
+        """A titled card matching the library manager's cards (styled app-wide
+        via the QFrame#card / QLabel#cardTitle stylesheet rules)."""
+        frame = QFrame(); frame.setObjectName("card")
+        v = QVBoxLayout(frame); v.setContentsMargins(0, 0, 0, 0); v.setSpacing(0)
+        lbl = QLabel(title); lbl.setObjectName("cardTitle")
+        v.addWidget(lbl)
+        body = QWidget()
+        bl = QVBoxLayout(body); bl.setContentsMargins(8, 6, 8, 8); bl.setSpacing(6)
+        v.addWidget(body)
+        return frame, bl
 
     # ---------- helpers ----------
     def log(self, msg: str):

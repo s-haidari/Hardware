@@ -41,7 +41,7 @@ from PyQt5.QtWidgets import (
     QListWidget, QListWidgetItem, QAbstractItemView, QTabBar, QStackedWidget,
     QComboBox, QCheckBox, QGroupBox, QFileDialog, QMessageBox, QInputDialog,
     QHeaderView, QFrame, QScrollArea, QSizePolicy, QSplitter, QStyle,
-    QToolButton, QMenu, QProgressBar, QStatusBar, QSlider, QLayout
+    QToolButton, QMenu, QProgressBar, QStatusBar, QSlider, QLayout, QTabWidget
 )
 from PyQt5.QtCore import (
     Qt, QTimer, pyqtSignal, QThread, QMimeData, QUrl, QObject, QSettings,
@@ -1183,98 +1183,84 @@ class LibraryManagerWindow(QMainWindow):
         if _icon.exists():
             self.setWindowIcon(QIcon(str(_icon)))
 
-        # Central widget with main layout. WA_TranslucentBackground lets the
-        # root background show the desktop; the opacity slider tunes only that
-        # background's alpha (cards/text stay fully opaque).
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        # Central widget with main layout.
         central = QWidget()
         central.setObjectName("rootCentral")
         self.central = central
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
-        main_layout.setSpacing(12)  # consistent spacing between sections
+        main_layout.setSpacing(10)
         main_layout.setContentsMargins(12, 12, 12, 12)
 
-        # --- Header bar (title + live branch/activity status) ---
+        # Persisted settings (needed before building the tools tab)
+        self._settings = QSettings("KiCadLibraryManager", "KiCadLibraryManager")
+
+        # --- Header bar (shared across tabs) ---
         main_layout.addWidget(self.create_header_bar())
 
-        # --- Drop Zone ---
-        drop_group = self.create_drop_zone()
-        main_layout.addWidget(drop_group)
+        # --- "KiCAD Manager" tab: drop zone + 3-column splitter ---
+        library_tab = QWidget()
+        lib_layout = QVBoxLayout(library_tab)
+        lib_layout.setSpacing(10)
+        lib_layout.setContentsMargins(0, 6, 0, 0)
+        lib_layout.addWidget(self.create_drop_zone())
 
-        # (Log panel will be created later so we can embed the Activity tab into its title)
-
-        # --- Central splitters for robust resizing ---
         central_splitter = QSplitter(Qt.Horizontal)
         central_splitter.setHandleWidth(6)
-
-        # Left column: Workflow (now contains advanced dropdown)
         workflow = self.create_workflow()
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
         left_layout.setSpacing(8)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.addWidget(workflow)
-        left_panel.setMinimumWidth(320)
+        left_panel.setMinimumWidth(300)
         central_splitter.addWidget(left_panel)
-
-        # Middle column: Contents
         library = self.create_library_panel()
         library.setMinimumWidth(300)
         central_splitter.addWidget(library)
-
-        # Right column: Log (with embedded Log/Activity tab selector in its title)
         log_card = self.create_log_panel()
         log_card.setMinimumWidth(300)
         central_splitter.addWidget(log_card)
-
-        # Connect cross-thread signals now that the log widget exists
-        self.log_signal.connect(self.log.write)
-        self.pull_done.connect(self.refresh_library)
-        # Also refresh commits + branch status after pull completes
-        self.pull_done.connect(self.refresh_commits)
-        self.pull_done.connect(self.update_branch_status)
-
-        # Initialize watcher (needs log)
-        self.watcher = WatchController(self.cfg, self.log)
-
-        # Prevent collapsing of any of the three columns
         try:
             central_splitter.setCollapsible(0, False)
             central_splitter.setCollapsible(1, False)
             central_splitter.setCollapsible(2, False)
         except Exception:
             pass
+        central_splitter.setStretchFactor(0, 0)
+        central_splitter.setStretchFactor(1, 1)
+        central_splitter.setStretchFactor(2, 1)
+        lib_layout.addWidget(central_splitter)
 
-        # connect commits update signal to UI updater
+        # --- "KiCad Tools" tab ---
+        tools_tab = self._build_tools_tab()
+
+        # Cross-thread signal wiring (log widget now exists)
+        self.log_signal.connect(self.log.write)
+        self.pull_done.connect(self.refresh_library)
+        self.pull_done.connect(self.refresh_commits)
+        self.pull_done.connect(self.update_branch_status)
         self.commits_signal.connect(self.update_commits_list)
-
-        # Async / feedback wiring
         self.progress_signal.connect(self.set_progress)
         self.branch_signal.connect(self._on_branch_text)
         self._async_finished.connect(lambda fn: fn())
 
-        central_splitter.setStretchFactor(0, 0)
-        central_splitter.setStretchFactor(1, 1)
-        central_splitter.setStretchFactor(2, 1)
-        main_layout.addWidget(central_splitter)
+        # Initialize watcher (needs log)
+        self.watcher = WatchController(self.cfg, self.log)
+
+        # --- Top-level tabs: KiCad Tools (default) + KiCAD Manager ---
+        self.main_tabs = QTabWidget()
+        self.main_tabs.addTab(tools_tab, "KiCad Tools")
+        self.main_tabs.addTab(library_tab, "KiCAD Manager")
+        self.main_tabs.setCurrentIndex(0)   # KiCad Tools is the default tab
+        main_layout.addWidget(self.main_tabs, 1)
 
         # --- Status bar (operation text + progress + result chip) ---
         self.build_status_bar()
 
-        # View settings (theme + background opacity + geometry) persisted across runs
-        self._settings = QSettings("KiCadLibraryManager", "KiCadLibraryManager")
+        # Theme + geometry (transparency removed; dark/light only)
         theme = self._settings.value("theme", "dark")
-        try:
-            self._opacity_pct = int(self._settings.value("opacity", 100))
-        except (TypeError, ValueError):
-            self._opacity_pct = 100
-        self._opacity_pct = max(30, min(100, self._opacity_pct))
-        self._apply_theme(str(theme).lower() != "light")   # restyles with current alpha
-        self.opacity_slider.blockSignals(True)
-        self.opacity_slider.setValue(self._opacity_pct)
-        self.opacity_slider.blockSignals(False)
-        self.opacity_value_lbl.setText(f"{self._opacity_pct}%")
+        self._apply_theme(str(theme).lower() != "light")
         geo = self._settings.value("geometry")
         if geo is not None:
             try:
@@ -1283,6 +1269,24 @@ class LibraryManagerWindow(QMainWindow):
                 pass
         self.set_idle()
         self.update_branch_status()
+
+    def _build_tools_tab(self) -> QWidget:
+        """The KiCad Tools tab (rename / net classes / project settings)."""
+        try:
+            from kicad_tools import KiCadToolsWidget
+        except Exception as e:
+            w = QWidget()
+            lay = QVBoxLayout(w)
+            lay.addWidget(QLabel(f"KiCad Tools unavailable:\n{e}"))
+            return w
+        projects_dir = self._settings.value("projects_dir", "") or str(Path(self.cfg["RepoRoot"]).parent)
+
+        def _save(p):
+            try:
+                self._settings.setValue("projects_dir", p)
+            except Exception:
+                pass
+        return KiCadToolsWidget(self, projects_dir, save_dir_cb=_save)
 
         # Start an initial background pull shortly after UI shows
         QTimer.singleShot(250, self.start_initial_pull)
@@ -1337,33 +1341,18 @@ class LibraryManagerWindow(QMainWindow):
         self.theme_btn.clicked.connect(self.toggle_theme)
         h.addWidget(self.theme_btn)
 
-        opac_lbl = QLabel("Opacity")
-        opac_lbl.setObjectName("headerStatus")
-        h.addWidget(opac_lbl)
-        self.opacity_slider = QSlider(Qt.Horizontal)
-        self.opacity_slider.setRange(30, 100)
-        self.opacity_slider.setValue(100)
-        self.opacity_slider.setFixedWidth(110)
-        self.opacity_slider.setToolTip("Window background transparency")
-        self.opacity_slider.valueChanged.connect(self.set_bg_opacity)
-        h.addWidget(self.opacity_slider)
-        self.opacity_value_lbl = QLabel("100%")
-        self.opacity_value_lbl.setObjectName("headerStatus")
-        self.opacity_value_lbl.setFixedWidth(38)
-        h.addWidget(self.opacity_value_lbl)
-
         self.about_btn = QToolButton()
         self.about_btn.setText("?")
         self.about_btn.setToolTip("About")
         self.about_btn.clicked.connect(self.show_about)
         h.addWidget(self.about_btn)
 
-        # Separator-ish spacing, then live status indicators on the far right
+        # Live status: branch (once) + activity dot + activity text
         h.addSpacing(8)
         self.branch_label = QLabel("")
         self.branch_label.setObjectName("branchChip")
         h.addWidget(self.branch_label)
-        self.activity_dot = QLabel("●")   # ●
+        self.activity_dot = QLabel("●")
         self.activity_dot.setObjectName("activityDot")
         self.header_status = QLabel("Idle")
         self.header_status.setObjectName("headerStatus")
@@ -1415,7 +1404,7 @@ class LibraryManagerWindow(QMainWindow):
         self.progress.setRange(0, 0)
         self.status_label.setText("Idle")
         self.activity_dot.setStyleSheet("color: %s;" % self._theme["DOT_IDLE"])   # dim = idle
-        self.header_status.setText(self._branch_text_val or "Idle")
+        self.header_status.setText("Idle")
         if result:
             self.result_chip.setText(result)
             self.result_chip.setStyleSheet(
@@ -1423,10 +1412,9 @@ class LibraryManagerWindow(QMainWindow):
             )
 
     def _on_branch_text(self, txt: str):
+        # Branch lives only in branch_label; header_status shows activity only.
         self._branch_text_val = txt
         self.branch_label.setText(txt)
-        if not self._busy:
-            self.header_status.setText(txt or "Idle")
 
     def _emit(self, signal, *args):
         """Emit a window signal from a worker thread, unless we're shutting
@@ -1717,15 +1705,6 @@ class LibraryManagerWindow(QMainWindow):
         adv_btn.clicked.connect(adv_btn.showMenu)
         layout.addWidget(adv_btn)
 
-        # KiCad project tools (rename / net classes / project settings)
-        tools_btn = QPushButton("KiCad Tools")
-        tools_btn.setIcon(st.standardIcon(QStyle.SP_FileDialogDetailedView))
-        tools_btn.setStyleSheet(btn_style)
-        tools_btn.setMaximumHeight(34)
-        tools_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        tools_btn.clicked.connect(self.open_kicad_tools)
-        layout.addWidget(tools_btn)
-
         # Full step labels with clear descriptions and icons (all uniform style)
         buttons = [
             ("Step 0: Pull (Fast-Forward)", self.do_pull, QStyle.SP_ArrowDown),
@@ -1853,8 +1832,13 @@ class LibraryManagerWindow(QMainWindow):
         self.lbl_summary.setFont(summary_font)
         layout.addWidget(self.lbl_summary)
        
-        # Action buttons — a flow layout so they wrap (never clip) when narrow
-        btn_layout = FlowLayout(spacing=6)
+        # Action buttons — a 2-column grid with equal widths at any window size.
+        # The odd 5th button spans both columns to keep an even box.
+        btn_grid = QGridLayout()
+        btn_grid.setHorizontalSpacing(6)
+        btn_grid.setVerticalSpacing(6)
+        btn_grid.setColumnStretch(0, 1)
+        btn_grid.setColumnStretch(1, 1)
         st = self.style()
         actions = [
             ("Refresh", QStyle.SP_BrowserReload, self.refresh_library),
@@ -1863,13 +1847,17 @@ class LibraryManagerWindow(QMainWindow):
             ("Delete", QStyle.SP_TrashIcon, self.on_tree_delete),
             ("Remove Duplicates", QStyle.SP_DialogResetButton, self.on_remove_duplicates),
         ]
-        for label, icon, cb in actions:
+        for i, (label, icon, cb) in enumerate(actions):
             b = QPushButton(label)
             b.setIcon(st.standardIcon(icon))
-            b.setMaximumHeight(26)
+            b.setMaximumHeight(28)
+            b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             b.clicked.connect(cb)
-            btn_layout.addWidget(b)
-        layout.addLayout(btn_layout)
+            if i < 4:
+                btn_grid.addWidget(b, i // 2, i % 2)
+            else:
+                btn_grid.addWidget(b, 2, 0, 1, 2)   # span both columns
+        layout.addLayout(btn_grid)
 
         # Tree widget (multi-select)
         self.tree = QTreeWidget()
@@ -2270,19 +2258,16 @@ class LibraryManagerWindow(QMainWindow):
         pal.setColor(QPalette.HighlightedText, QColor(c["SEL_FG"]))
         return pal
 
-    def _build_qss(self, c: dict, alpha: int) -> str:
-        """Render the stylesheet: @@KEY@@ -> rgba with `alpha`, @KEY@ -> hex."""
+    def _build_qss(self, c: dict) -> str:
+        """Render the stylesheet (both @@KEY@@ and @KEY@ become opaque hex)."""
         qss = self._THEME_QSS
         for k, v in c.items():
-            h = v.lstrip("#")
-            r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
-            qss = qss.replace("@@" + k + "@@", "rgba(%d,%d,%d,%d)" % (r, g, b, alpha))
+            qss = qss.replace("@@" + k + "@@", v)
             qss = qss.replace("@" + k + "@", v)
         return qss
 
     def _restyle(self):
-        alpha = int(round(max(30, min(100, getattr(self, "_opacity_pct", 100))) / 100.0 * 255))
-        self.setStyleSheet(self._build_qss(self._theme, alpha))
+        self.setStyleSheet(self._build_qss(self._theme))
 
     def _apply_theme(self, dark: bool):
         self._is_dark = dark
@@ -2310,20 +2295,10 @@ class LibraryManagerWindow(QMainWindow):
         self._apply_theme(not self._is_dark)
         self._save_view_settings()
 
-    def set_bg_opacity(self, pct: int):
-        """Slider handler: re-render the stylesheet so every background uses the
-        new alpha (text/borders stay opaque). 100% = fully opaque."""
-        self._opacity_pct = max(30, min(100, int(pct)))
-        if hasattr(self, "opacity_value_lbl"):
-            self.opacity_value_lbl.setText(f"{self._opacity_pct}%")
-        self._restyle()
-        self._save_view_settings()
-
     def _save_view_settings(self):
         try:
             s = self._settings
             s.setValue("theme", "dark" if self._is_dark else "light")
-            s.setValue("opacity", int(getattr(self, "_opacity_pct", 100)))
             s.setValue("geometry", self.saveGeometry())
         except Exception:
             pass
@@ -2338,22 +2313,6 @@ class LibraryManagerWindow(QMainWindow):
             "project-settings sync.<br><br>Built with PyQt5."
         )
 
-    def open_kicad_tools(self):
-        """Open the KiCad project tools (rename / net classes / project settings)."""
-        try:
-            from kicad_tools import KiCadToolsDialog
-        except Exception as e:
-            QMessageBox.critical(self, "KiCad Tools", f"Could not load KiCad Tools:\n{e}")
-            return
-        projects_dir = self._settings.value("projects_dir", "") or str(Path(self.cfg["RepoRoot"]).parent)
-
-        def _save(p):
-            try:
-                self._settings.setValue("projects_dir", p)
-            except Exception:
-                pass
-        dlg = KiCadToolsDialog(self, projects_dir, save_dir_cb=_save)
-        dlg.exec_()
         
    
     def handle_dropped_files(self, files: List[Path]):
