@@ -23,6 +23,7 @@ Author: You
 """
 
 import os
+import re
 import sys
 import json
 import time
@@ -1029,14 +1030,39 @@ def export_catalog(cfg: Dict[str, str], log: UILog, progress_cb=None) -> Optiona
         out.append(f"- File: `{p.name}` · {kb} KB · added {r.get('date', '')}\n")
 
     out.append(f"## Symbols ({len(syms)})\n")
+    sym_cache: Dict[Path, list] = {}
+    rendered_sym = 0
     for r in syms:
-        out.append(f"- `{r['name']}`")
-    out.append("")
+        p = Path(r["path"])
+        if p not in sym_cache:
+            try:
+                sym_cache[p] = extract_symbol_blocks(read_text(p))
+            except Exception:
+                sym_cache[p] = []
+        blocks = sym_cache[p]
+        idx = r.get("sym_index")
+        rel = ""
+        try:
+            if idx is not None and 0 <= idx < len(blocks):
+                img = fp_render.render_symbol_image(blocks[idx], 300)
+                if img is not None:
+                    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", str(r["name"]))[:60]
+                    fn = assets / f"sym_{idx}_{safe}.png"
+                    img.save(str(fn))
+                    rel = f"catalog_assets/{fn.name}"
+                    rendered_sym += 1
+        except Exception:
+            pass
+        out.append(f"### {r['name']}\n")
+        if rel:
+            out.append(f"![{r['name']}]({rel})\n")
+        out.append(f"- Symbol in `{p.name}`\n")
 
     md = root / "library_catalog.md"
     write_text(md, "\n".join(out))
     log.write(f"Catalog written: {md.name} "
-              f"({rendered}/{len(fps)} footprints, {rendered_3d}/{len(models)} 3D models rendered)")
+              f"({rendered}/{len(fps)} footprints, {rendered_3d}/{len(models)} 3D models, "
+              f"{rendered_sym}/{len(syms)} symbols rendered)")
     return md
 
 def filter_rows(rows: List[Dict[str, object]], query: str, type_filter: str,
@@ -2118,10 +2144,23 @@ class LibraryManagerWindow(QMainWindow):
                     self._emit(self.preview_ready, None, f"{name}  ·  {kb} KB  ·  {date}", token)
             self._spawn(work)
 
-        else:  # Symbol
-            self.preview.setPixmap(QPixmap())
+        else:  # Symbol — render the schematic body + pins
+            row = item.data(0, Qt.UserRole) or {}
+            idx = row.get("sym_index")
             self.preview.setText("Symbol")
-            self.preview_info.setText(f"{name}  ·  in {path.name}  ·  {date}")
+            try:
+                from fp_render import render_symbol_image
+                blocks = extract_symbol_blocks(read_text(path))
+                img = None
+                if idx is not None and 0 <= idx < len(blocks):
+                    img = render_symbol_image(blocks[idx], 280)
+                if img is not None:
+                    self.preview.setPixmap(QPixmap.fromImage(img))
+                else:
+                    self.preview.setPixmap(QPixmap())
+            except Exception:
+                self.preview.setPixmap(QPixmap())
+            self.preview_info.setText(f"{name}  ·  symbol in {path.name}  ·  {date}")
    
     
    

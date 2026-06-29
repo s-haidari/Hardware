@@ -307,6 +307,99 @@ def footprint_summary(path: Path) -> Optional[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Symbol rendering — parse a .kicad_sym (symbol …) block and draw the body
+# graphics + pins, the way the schematic editor shows it. Y is up in symbols,
+# so it is flipped for display.
+# ---------------------------------------------------------------------------
+COL_SYMBODY = QColor("#c9a063")
+COL_SYMPIN = QColor("#9fb0c8")
+
+
+def render_symbol_image(block_text: str, px: int = 280) -> Optional[QImage]:
+    try:
+        root = parse_sexpr(block_text)
+        if not root or root[0] != "symbol":
+            return None
+        rects, polys, circs, arcs, pins = [], [], [], [], []
+
+        def walk(node):
+            for c in node:
+                if not (isinstance(c, list) and c):
+                    continue
+                h = c[0]
+                if h == "rectangle":
+                    s, e = _find(c, "start"), _find(c, "end")
+                    if s and e:
+                        rects.append((_f(s[1]), _f(s[2]), _f(e[1]), _f(e[2])))
+                elif h == "polyline":
+                    pts = _find(c, "pts")
+                    if pts:
+                        polys.append([(_f(xy[1]), _f(xy[2])) for xy in _findall(pts, "xy")])
+                elif h == "circle":
+                    ctr, rad = _find(c, "center"), _find(c, "radius")
+                    if ctr and rad:
+                        circs.append((_f(ctr[1]), _f(ctr[2]), _f(rad[1])))
+                elif h == "arc":
+                    s, e = _find(c, "start"), _find(c, "end")
+                    if s and e:
+                        arcs.append((_f(s[1]), _f(s[2]), _f(e[1]), _f(e[2])))
+                elif h == "pin":
+                    at, ln = _find(c, "at"), _find(c, "length")
+                    if at:
+                        ang = _f(at[3]) if len(at) > 3 else 0.0
+                        pins.append((_f(at[1]), _f(at[2]), ang, _f(ln[1]) if ln else 2.54))
+                walk(c)
+
+        walk(root)
+        xs, ys = [], []
+        for (a, b, c2, d) in rects:
+            xs += [a, c2]; ys += [b, d]
+        for pp in polys:
+            xs += [p[0] for p in pp]; ys += [p[1] for p in pp]
+        for (cx, cy, r) in circs:
+            xs += [cx - r, cx + r]; ys += [cy - r, cy + r]
+        for (x, y, ang, ln) in pins:
+            ex = x + ln * math.cos(math.radians(ang))
+            ey = y + ln * math.sin(math.radians(ang))
+            xs += [x, ex]; ys += [y, ey]
+        if not xs:
+            return None
+        x0, y0, x1, y1 = min(xs), min(ys), max(xs), max(ys)
+        span = max(x1 - x0, y1 - y0, 2.54)
+        margin = px * 0.14
+        scale = (px - 2 * margin) / span
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+
+        def T(mx, my):                          # flip Y (schematic Y is up)
+            return QPointF((mx - cx) * scale + px / 2, (cy - my) * scale + px / 2)
+
+        img = QImage(px, px, QImage.Format_ARGB32)
+        img.fill(BG)
+        p = QPainter(img)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        for (x, y, ang, ln) in pins:            # pins first (under body)
+            ex = x + ln * math.cos(math.radians(ang))
+            ey = y + ln * math.sin(math.radians(ang))
+            p.setPen(QPen(COL_SYMPIN, 1.6)); p.drawLine(T(x, y), T(ex, ey))
+            p.setPen(Qt.NoPen); p.setBrush(QBrush(COL_SYMPIN))
+            p.drawEllipse(T(x, y), 2.2, 2.2)
+        p.setBrush(QBrush(QColor(201, 160, 99, 28)))
+        for (a, b, c2, d) in rects:
+            p.setPen(QPen(COL_SYMBODY, 2)); p.drawRect(QRectF(T(a, b), T(c2, d)))
+        p.setBrush(Qt.NoBrush)
+        for pp in polys:
+            p.setPen(QPen(COL_SYMBODY, 2)); p.drawPolyline(QPolygonF([T(x, y) for (x, y) in pp]))
+        for (ccx, ccy, r) in circs:
+            p.setPen(QPen(COL_SYMBODY, 2)); p.drawEllipse(T(ccx, ccy), r * scale, r * scale)
+        for (sx, sy, ex, ey) in arcs:
+            p.setPen(QPen(COL_SYMBODY, 2)); p.drawLine(T(sx, sy), T(ex, ey))
+        p.end()
+        return img
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
 # 3D model rendering — STEP -> mesh via cascadio (OpenCASCADE, the SnapMagic
 # approach), then a small software rasteriser draws a shaded thumbnail. All
 # local, no display required. Degrades gracefully if cascadio isn't installed.
@@ -326,23 +419,31 @@ import contextlib
 
 @contextlib.contextmanager
 def _suppress_native_stderr():
-    """Silence OpenCASCADE's C-level stderr chatter (skipped-node warnings)."""
+    """Silence OpenCASCADE's C-level chatter (it writes skipped-node messages
+    to stdout). Redirects both fd 1 and fd 2 for the duration."""
     import os
     import sys
+    saved = []
+    devnull = None
     try:
-        fd = sys.stderr.fileno()
-    except Exception:
-        yield
-        return
-    saved = os.dup(fd)
-    devnull = os.open(os.devnull, os.O_WRONLY)
-    try:
-        os.dup2(devnull, fd)
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        for stream in (sys.stdout, sys.stderr):
+            try:
+                fd = stream.fileno()
+            except Exception:
+                continue
+            saved.append((fd, os.dup(fd)))
+            os.dup2(devnull, fd)
         yield
     finally:
-        os.dup2(saved, fd)
-        os.close(devnull)
-        os.close(saved)
+        for fd, dup in saved:
+            try:
+                os.dup2(dup, fd)
+                os.close(dup)
+            except Exception:
+                pass
+        if devnull is not None:
+            os.close(devnull)
 
 
 def _load_step_mesh(step_path: Path):
