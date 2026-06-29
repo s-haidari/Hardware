@@ -43,7 +43,7 @@ from PyQt5.QtWidgets import (
     QToolButton, QMenu
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread, QMimeData, QUrl
-from PyQt5.QtGui import QPalette, QColor, QDragEnterEvent, QDropEvent, QPainter, QPen, QFont
+from PyQt5.QtGui import QPalette, QColor, QBrush, QDragEnterEvent, QDropEvent, QPainter, QPen, QFont
 
 # -----------------------------
 # Optional watcher (robust handling)
@@ -316,6 +316,41 @@ def remove_symbol_by_name(symbol_lib_path: Path, name: str, log: UILog) -> bool:
         return True
     except Exception as e:
         log.write(f"ERROR deleting symbol '{name}': {e}")
+        return False
+
+
+def remove_symbol_by_index(symbol_lib_path: Path, index: int, log: UILog,
+                           expected_name: Optional[str] = None) -> bool:
+    """Remove exactly ONE symbol block, identified by its position in the file.
+
+    This is what lets a single duplicate be deleted without removing its
+    identically-named twin (unlike remove_symbol_by_name, which strips all
+    matches). If the file changed since it was scanned — so the block at
+    `index` no longer matches `expected_name` — the delete is aborted rather
+    than risk removing the wrong symbol.
+    """
+    try:
+        text = read_text(symbol_lib_path)
+        blocks = extract_symbol_blocks(text)
+        if index < 0 or index >= len(blocks):
+            log.write(f"ERROR deleting symbol: index {index} out of range "
+                      f"(library has {len(blocks)} symbols). Refresh and retry.")
+            return False
+        found_name = extract_symbol_name(blocks[index])
+        if expected_name is not None and found_name != expected_name:
+            log.write(f"WARN symbol delete aborted: expected '{expected_name}' at "
+                      f"index {index} but found '{found_name}'. Refresh and retry.")
+            return False
+        del blocks[index]
+        new_text = insert_blocks_into_target(
+            '(kicad_symbol_lib (version 20211014) (generator "LibraryManager.py"))\n)\n',
+            blocks
+        )
+        write_text(symbol_lib_path, new_text)
+        log.write(f"Deleted one copy of symbol '{found_name}' from {symbol_lib_path.name}")
+        return True
+    except Exception as e:
+        log.write(f"ERROR deleting symbol at index {index}: {e}")
         return False
 
 
@@ -698,31 +733,45 @@ def scan_library(cfg: Dict[str, str]):
             for p in sorted(mdl_dir.glob(ext)):
                 rows.append({"type": "Model", "name": p.name, "path": p})
 
-    # Symbols
+    # Symbols. sym_index is the block's position in the file, so a single
+    # duplicate can be removed without disturbing its identically-named twin.
     sym_path = Path(cfg["SymbolLib"])
     if sym_path.exists():
         try:
             text = read_text(sym_path)
             blocks = extract_symbol_blocks(text)
-            for b in blocks:
+            for i, b in enumerate(blocks):
                 nm = extract_symbol_name(b)
-                rows.append({"type": "Symbol", "name": nm, "path": sym_path})
+                rows.append({"type": "Symbol", "name": nm, "path": sym_path, "sym_index": i})
         except Exception:
             pass
+
+    # Flag duplicates: rows that share the same (type, name).
+    counts: Dict[tuple, int] = {}
+    for r in rows:
+        key = (r["type"], r["name"])
+        counts[key] = counts.get(key, 0) + 1
+    for r in rows:
+        r["dup_count"] = counts[(r["type"], r["name"])]
+        r["dup"] = r["dup_count"] > 1
 
     summary = {
         "symbols": sum(1 for r in rows if r["type"] == "Symbol"),
         "footprints": sum(1 for r in rows if r["type"] == "Footprint"),
         "models": sum(1 for r in rows if r["type"] == "Model"),
+        "duplicates": sum(1 for r in rows if r["dup"]),
         "total": len(rows),
     }
     return rows, summary
 
-def filter_rows(rows: List[Dict[str, object]], query: str, type_filter: str) -> List[Dict[str, object]]:
+def filter_rows(rows: List[Dict[str, object]], query: str, type_filter: str,
+                dup_only: bool = False) -> List[Dict[str, object]]:
     q = (query or "").strip().lower()
     tf = type_filter
     out: List[Dict[str, object]] = []
     for r in rows:
+        if dup_only and not r.get("dup"):
+            continue
         # Support a list/set of types (multi-select), or a single string
         if isinstance(tf, (list, set)):
             if len(tf) > 0 and "All" not in tf and r["type"] not in tf:
@@ -1269,6 +1318,13 @@ class LibraryManagerWindow(QMainWindow):
         search_row.addWidget(self.search_edit)
         filter_block.addLayout(search_row)
 
+        # Duplicates-only toggle
+        self.chk_dupes = QCheckBox("Duplicates only")
+        self.chk_dupes.setChecked(False)
+        self.chk_dupes.setToolTip("Show only entries that have more than one copy")
+        self.chk_dupes.stateChanged.connect(self.on_filter_change)
+        filter_block.addWidget(self.chk_dupes)
+
         # Initialize filters state
         self.format_filters = set(self.format_checks.keys())
         self.update_format_btn_text()
@@ -1593,6 +1649,7 @@ class LibraryManagerWindow(QMainWindow):
    
     def apply_light_theme(self):
         """Apply light monochrome theme"""
+        self._is_dark = False
         palette = QPalette()
         palette.setColor(QPalette.Window, QColor(245, 245, 245))
         palette.setColor(QPalette.WindowText, QColor(40, 40, 40))
@@ -1799,6 +1856,7 @@ class LibraryManagerWindow(QMainWindow):
 
     def apply_dark_theme(self):
         """Apply a dark monochrome theme"""
+        self._is_dark = True
         palette = QPalette()
         palette.setColor(QPalette.Window, QColor(30, 30, 30))
         palette.setColor(QPalette.WindowText, QColor(230, 230, 230))
@@ -1931,7 +1989,8 @@ class LibraryManagerWindow(QMainWindow):
             # fallback for older UI
             type_filter = "All"
 
-        filtered = filter_rows(self.rows, query, type_filter)
+        dup_only = bool(getattr(self, 'chk_dupes', None) and self.chk_dupes.isChecked())
+        filtered = filter_rows(self.rows, query, type_filter, dup_only=dup_only)
         self.populate_tree(filtered)
 
     def on_format_toggled(self, label: str, checked: bool):
@@ -1992,21 +2051,39 @@ class LibraryManagerWindow(QMainWindow):
     def populate_tree(self, rows: List[Dict[str, object]]):
         """Populate tree widget with filtered rows"""
         self.tree.clear()
-       
+
+        is_dark = getattr(self, "_is_dark", True)
+        dup_bg = QBrush(QColor(86, 50, 50) if is_dark else QColor(255, 224, 178))
+
         for r in rows:
             item = QTreeWidgetItem([
                 str(r["type"]),
                 str(r["name"]),
                 str(r["path"])
             ])
+            # Carry the full row (incl. sym_index) so Delete targets exactly
+            # this entry rather than every entry sharing its name.
+            item.setData(0, Qt.UserRole, r)
+            if r.get("dup"):
+                n = r.get("dup_count", 2)
+                tip = (f"Duplicate: {n} copies of this {str(r['type']).lower()} exist. "
+                       f"Deleting this row removes only this copy.")
+                for col in range(self.tree.columnCount()):
+                    item.setBackground(col, dup_bg)
+                    item.setToolTip(col, tip)
+                f = item.font(1)
+                f.setBold(True)
+                item.setFont(1, f)
             self.tree.addTopLevelItem(item)
-       
-        # Update summary label
+
+        # Update summary label (call out duplicates when present)
+        dup = self.summary.get("duplicates", 0)
+        dup_txt = f", Duplicates: {dup}" if dup else ""
         self.lbl_summary.setText(
             f"Library: {self.summary['total']} items "
             f"(Symbols: {self.summary['symbols']}, "
             f"Footprints: {self.summary['footprints']}, "
-            f"Models: {self.summary['models']})"
+            f"Models: {self.summary['models']}{dup_txt})"
         )
    
     def on_tree_open(self):
@@ -2031,28 +2108,42 @@ class LibraryManagerWindow(QMainWindow):
             QMessageBox.information(self, "Delete", "No item selected.")
             return
        
+        row = current.data(0, Qt.UserRole) or {}
         item_type = current.text(0)
         name = current.text(1)
         path = Path(current.text(2))
-       
+        dup_count = int(row.get("dup_count", 1) or 1)
+
+        extra = ""
+        if dup_count > 1:
+            extra = (f"\n\nThis is one of {dup_count} copies — only THIS copy will be "
+                     f"deleted; the other {dup_count - 1} will remain.")
         reply = QMessageBox.question(
             self,
             "Confirm Delete",
-            f"Delete '{name}' ({item_type})?\n\nThis action cannot be undone.",
+            f"Delete '{name}' ({item_type})?{extra}\n\nThis action cannot be undone.",
             QMessageBox.Yes | QMessageBox.No
         )
-       
+
         if reply != QMessageBox.Yes:
             return
-       
+
         try:
             if item_type == "Symbol":
-                ok = remove_symbol_by_name(Path(self.cfg["SymbolLib"]), name, self.log)
+                idx = row.get("sym_index")
+                if idx is None:
+                    # Fallback for an un-tagged row: legacy name-based removal.
+                    ok = remove_symbol_by_name(Path(self.cfg["SymbolLib"]), name, self.log)
+                else:
+                    ok = remove_symbol_by_index(
+                        Path(self.cfg["SymbolLib"]), int(idx), self.log, expected_name=name
+                    )
                 if not ok:
                     QMessageBox.warning(
                         self,
                         "Delete Symbol",
-                        f"Symbol '{name}' not found or could not be removed."
+                        f"Symbol '{name}' could not be removed.\n"
+                        f"The library may have changed — click Refresh and try again."
                     )
             elif item_type in ("Footprint", "Model"):
                 if path.exists():
