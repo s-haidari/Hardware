@@ -27,6 +27,7 @@ import sys
 import json
 import time
 import shutil
+import filecmp
 import subprocess
 import threading
 from pathlib import Path
@@ -42,8 +43,8 @@ from PyQt5.QtWidgets import (
     QHeaderView, QFrame, QScrollArea, QSizePolicy, QSplitter, QStyle,
     QToolButton, QMenu, QProgressBar, QStatusBar
 )
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread, QMimeData, QUrl, QObject
-from PyQt5.QtGui import QPalette, QColor, QBrush, QDragEnterEvent, QDropEvent, QPainter, QPen, QFont
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread, QMimeData, QUrl, QObject, QSettings
+from PyQt5.QtGui import QPalette, QColor, QBrush, QIcon, QDragEnterEvent, QDropEvent, QPainter, QPen, QFont
 
 # -----------------------------
 # Optional watcher (robust handling)
@@ -98,6 +99,15 @@ def detect_repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def resource_path(name: str) -> Path:
+    """Locate a bundled resource (e.g. the app icon) in both script and frozen
+    (PyInstaller) modes. When frozen, data files live under sys._MEIPASS."""
+    base = getattr(sys, "_MEIPASS", None)
+    if base:
+        return Path(base) / name
+    return Path(__file__).resolve().parent / name
+
+
 def derive_paths(repo_root: Path) -> Dict[str, str]:
     """Build the full config dict from a repo root."""
     libs = repo_root / "libs"
@@ -138,6 +148,8 @@ def _can_write_dir(path: Path) -> bool:
             pass
         return False
 
+
+APP_VERSION = "1.1.0"
 
 REPO_ROOT = detect_repo_root()
 DEFAULTS: Dict[str, str] = derive_paths(REPO_ROOT)
@@ -339,6 +351,52 @@ def remove_symbol_by_name(symbol_lib_path: Path, name: str, log: UILog) -> bool:
         return False
 
 
+def dedupe_symbol_library(symbol_lib_path: Path, log: UILog) -> int:
+    """Rewrite the symbol library keeping only the FIRST block of each name.
+
+    Returns the number of duplicate blocks removed.
+    """
+    try:
+        text = read_text(symbol_lib_path)
+        blocks = extract_symbol_blocks(text)
+        seen: set = set()
+        kept: List[str] = []
+        removed = 0
+        for b in blocks:
+            nm = extract_symbol_name(b)
+            if nm in seen:
+                removed += 1
+                continue
+            seen.add(nm)
+            kept.append(b)
+        if removed:
+            new_text = insert_blocks_into_target(
+                '(kicad_symbol_lib (version 20211014) (generator "LibraryManager.py"))\n)\n',
+                kept
+            )
+            write_text(symbol_lib_path, new_text)
+            log.write(f"Removed {removed} duplicate symbol(s); kept {len(kept)} unique.")
+        else:
+            log.write("No duplicate symbols to remove.")
+        return removed
+    except Exception as e:
+        log.write(f"ERROR removing duplicates: {e}")
+        return 0
+
+
+def find_kicad_dir() -> Optional[Path]:
+    """Locate KiCad's bin directory (highest version), or None if not installed."""
+    env = os.environ.get("KICAD_BIN")
+    if env and Path(env).exists():
+        return Path(env)
+    import glob as _glob
+    hits: List[str] = []
+    for pat in (r"C:\Program Files\KiCad\*\bin", r"C:\Program Files (x86)\KiCad\*\bin"):
+        hits += _glob.glob(pat)
+    hits.sort()
+    return Path(hits[-1]) if hits else None
+
+
 def remove_symbol_by_index(symbol_lib_path: Path, index: int, log: UILog,
                            expected_name: Optional[str] = None) -> bool:
     """Remove exactly ONE symbol block, identified by its position in the file.
@@ -446,6 +504,29 @@ def merge_symbols(target_path: Path, sources: List[Path], log: UILog):
     except Exception as e:
         log.write(f"ERROR writing merged symbols: {e}")
 
+def safe_install(src: Path, dst: Path, log: UILog, kind: str) -> str:
+    """Copy src -> dst WITHOUT clobbering a different existing file.
+
+    Returns one of: 'copied' (new file added), 'identical' (same content already
+    present, nothing to do), 'skipped' (a *different* file already exists — left
+    untouched), or 'error'. This is the overwrite protection for footprints and
+    3D models, mirroring the symbol de-dup behaviour.
+    """
+    try:
+        if dst.exists():
+            if filecmp.cmp(str(src), str(dst), shallow=False):
+                return "identical"
+            log.write(f"SKIP {kind} '{dst.name}': a different file already exists "
+                      f"(not overwritten)")
+            return "skipped"
+        shutil.copy2(src, dst)
+        log.write(f"Added {kind}: {dst.name}")
+        return "copied"
+    except Exception as e:
+        log.write(f"ERROR copy {kind} {src}: {e}")
+        return "error"
+
+
 def move_files(part_dir: Path, cfg: Dict[str, str], log: UILog):
     all_files = list(part_dir.rglob("*"))
     files = [p for p in all_files if p.is_file()]
@@ -458,23 +539,18 @@ def move_files(part_dir: Path, cfg: Dict[str, str], log: UILog):
     if sym_files:
         merge_symbols(Path(cfg["SymbolLib"]), sym_files, log)
 
-    # Footprints
+    # Footprints (overwrite-protected)
+    skipped = 0
     for m in mod_files:
-        dst = Path(cfg["FootprintLib"], m.name)
-        try:
-            shutil.copy2(m, dst)
-            log.write(f"Move footprint: {m.name}")
-        except Exception as e:
-            log.write(f"ERROR copy footprint {m}: {e}")
+        if safe_install(m, Path(cfg["FootprintLib"], m.name), log, "footprint") == "skipped":
+            skipped += 1
 
-    # 3D models
+    # 3D models (overwrite-protected)
     for mdl in model_files:
-        dst = Path(cfg["ModelLib"], mdl.name)
-        try:
-            shutil.copy2(mdl, dst)
-            log.write(f"Move 3D model: {mdl.name}")
-        except Exception as e:
-            log.write(f"ERROR copy model {mdl}: {e}")
+        if safe_install(mdl, Path(cfg["ModelLib"], mdl.name), log, "3D model") == "skipped":
+            skipped += 1
+    if skipped:
+        log.write(f"Overwrite protection: skipped {skipped} existing file(s).")
 
     # Unknown / junk -> misc
     allowed = {".kicad_sym", ".kicad_mod", ".step", ".stp", ".wrl", ".zip"}
@@ -501,7 +577,7 @@ def remove_part_artifacts(zip_path: Optional[Path], part_dir: Optional[Path], lo
         except Exception as e:
             log.write(f"WARN del zip {zip_path}: {e}")
 
-def process_zip(zip_path: Path, cfg: Dict[str, str], log: UILog):
+def process_zip(zip_path: Path, cfg: Dict[str, str], log: UILog, commit: bool = True):
     base = zip_path.stem
     log.write(f"Processing: {base}")
     if not wait_file_ready(zip_path):
@@ -513,10 +589,12 @@ def process_zip(zip_path: Path, cfg: Dict[str, str], log: UILog):
     move_files(part_dir, cfg, log)
     remove_part_artifacts(zip_path, part_dir, log)
     log.write(f"Done processing {base}")
-    # Immediately stage, commit, and push (only if something actually changed)
-    commit_msg = f"Auto-update: processed {zip_path.name}"
-    if git_stage_commit(cfg, log, message=commit_msg):
-        git_push(cfg, log)
+    # Single-zip path (e.g. the watcher) commits immediately; batch runs skip this
+    # and commit once at the end (commit=False).
+    if commit:
+        commit_msg = f"Auto-update: processed {zip_path.name}"
+        if git_stage_commit(cfg, log, message=commit_msg):
+            git_push(cfg, log)
 
 def process_existing_zips(cfg: Dict[str, str], log: UILog, refresh_cb=None, progress_cb=None):
     zips = list(Path(cfg["Downloads"]).glob("*.zip"))
@@ -526,10 +604,21 @@ def process_existing_zips(cfg: Dict[str, str], log: UILog, refresh_cb=None, prog
             refresh_cb()
         return
     total = len(zips)
+    names = []
     for i, z in enumerate(zips, 1):
         if progress_cb:
             progress_cb(i, total, z.stem)
-        process_zip(z, cfg, log)
+        names.append(z.stem)
+        process_zip(z, cfg, log, commit=False)   # defer git to one batch commit
+    # One commit + one push for the whole batch.
+    if names:
+        if len(names) == 1:
+            msg = f"Auto-update: processed {names[0]}"
+        else:
+            shown = ", ".join(names[:6]) + ("…" if len(names) > 6 else "")
+            msg = f"Auto-update: processed {len(names)} parts ({shown})"
+        if git_stage_commit(cfg, log, message=msg):
+            git_push(cfg, log)
     if refresh_cb:
         refresh_cb()
 
@@ -987,6 +1076,9 @@ class LibraryManagerWindow(QMainWindow):
 
         self.setWindowTitle("KiCad Library Manager")
         self.setMinimumSize(1040, 680)
+        _icon = resource_path("app_icon.ico")
+        if _icon.exists():
+            self.setWindowIcon(QIcon(str(_icon)))
 
         # Central widget with main layout
         central = QWidget()
@@ -1062,8 +1154,21 @@ class LibraryManagerWindow(QMainWindow):
         # --- Status bar (operation text + progress + result chip) ---
         self.build_status_bar()
 
-        # Apply dark theme by default
-        self.apply_dark_theme()
+        # View settings (theme + window opacity + geometry) persisted across runs
+        self._settings = QSettings("KiCadLibraryManager", "KiCadLibraryManager")
+        theme = self._settings.value("theme", "dark")
+        try:
+            self._opacity_pct = int(self._settings.value("opacity", 100))
+        except (TypeError, ValueError):
+            self._opacity_pct = 100
+        self._apply_theme(str(theme).lower() != "light")
+        self.setWindowOpacity(max(60, min(100, self._opacity_pct)) / 100.0)
+        geo = self._settings.value("geometry")
+        if geo is not None:
+            try:
+                self.restoreGeometry(geo)
+            except Exception:
+                pass
         self.set_idle()
         self.update_branch_status()
 
@@ -1122,6 +1227,22 @@ class LibraryManagerWindow(QMainWindow):
         self.header_status.setObjectName("headerStatus")
         h.addWidget(self.activity_dot)
         h.addWidget(self.header_status)
+
+        # View menu: theme toggle, window opacity, About
+        view_btn = QToolButton()
+        view_btn.setText("View")
+        view_btn.setPopupMode(QToolButton.InstantPopup)
+        vm = QMenu(view_btn)
+        self.act_theme = vm.addAction("Light theme")
+        self.act_theme.triggered.connect(self.toggle_theme)
+        op_menu = vm.addMenu("Window opacity")
+        for pct in (100, 95, 90, 85, 80, 75):
+            op_menu.addAction(f"{pct}%").triggered.connect(
+                lambda _checked=False, p=pct: self.set_opacity(p))
+        vm.addSeparator()
+        vm.addAction("About").triggered.connect(self.show_about)
+        view_btn.setMenu(vm)
+        h.addWidget(view_btn)
         return bar
 
     def build_status_bar(self):
@@ -1149,7 +1270,7 @@ class LibraryManagerWindow(QMainWindow):
         self._busy = True
         self.status_label.setText(msg)
         self.header_status.setText(msg)
-        self.activity_dot.setStyleSheet("color: #d0d0d0;")   # light = working
+        self.activity_dot.setStyleSheet("color: %s;" % self._theme["FG"])   # high-contrast = working
         self.result_chip.setText("")
         self.progress.setVisible(True)
         self.progress.setRange(0, 0)   # indeterminate until a count arrives
@@ -1167,12 +1288,12 @@ class LibraryManagerWindow(QMainWindow):
         self.progress.setVisible(False)
         self.progress.setRange(0, 0)
         self.status_label.setText("Idle")
-        self.activity_dot.setStyleSheet("color: #5a5a5a;")   # grey = idle
+        self.activity_dot.setStyleSheet("color: %s;" % self._theme["DOT_IDLE"])   # dim = idle
         self.header_status.setText(self._branch_text_val or "Idle")
         if result:
             self.result_chip.setText(result)
             self.result_chip.setStyleSheet(
-                "color: #d6d6d6;" if ok else "color: #ff6b6b;"
+                "color: %s;" % (self._theme["FG"] if ok else "#d9534f")
             )
 
     def _on_branch_text(self, txt: str):
@@ -1614,13 +1735,27 @@ class LibraryManagerWindow(QMainWindow):
         btn_open.clicked.connect(self.on_tree_open)
         btn_layout.addWidget(btn_open)
 
+        btn_kicad = QPushButton("Open in KiCad")
+        btn_kicad.setIcon(st.standardIcon(QStyle.SP_FileLinkIcon))
+        btn_kicad.setMaximumHeight(26)
+        btn_kicad.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Fixed)
+        btn_kicad.clicked.connect(self.open_in_kicad)
+        btn_layout.addWidget(btn_kicad)
+
         btn_delete = QPushButton("Delete")
         btn_delete.setIcon(st.standardIcon(QStyle.SP_TrashIcon))
         btn_delete.setMaximumHeight(26)
         btn_delete.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Fixed)
         btn_delete.clicked.connect(self.on_tree_delete)
         btn_layout.addWidget(btn_delete)
-       
+
+        btn_dedupe = QPushButton("Remove Duplicates")
+        btn_dedupe.setIcon(st.standardIcon(QStyle.SP_DialogResetButton))
+        btn_dedupe.setMaximumHeight(26)
+        btn_dedupe.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Fixed)
+        btn_dedupe.clicked.connect(self.on_remove_duplicates)
+        btn_layout.addWidget(btn_dedupe)
+
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
        
@@ -1644,7 +1779,7 @@ class LibraryManagerWindow(QMainWindow):
         except Exception:
             self.tree.header().setStretchLastSection(True)
 
-        self.tree.itemDoubleClicked.connect(self.on_tree_open)
+        self.tree.itemDoubleClicked.connect(self.open_in_kicad)
         layout.addWidget(self.tree)
 
         return group
@@ -1910,362 +2045,155 @@ class LibraryManagerWindow(QMainWindow):
                 self.log_signal.emit(f"ERROR checking out {sha}: {e}")
         self._spawn(_run)
    
-    def apply_light_theme(self):
-        """Apply light monochrome theme"""
-        self._is_dark = False
-        palette = QPalette()
-        palette.setColor(QPalette.Window, QColor(245, 245, 245))
-        palette.setColor(QPalette.WindowText, QColor(40, 40, 40))
-        palette.setColor(QPalette.Base, QColor(250, 250, 250))
-        palette.setColor(QPalette.AlternateBase, QColor(240, 240, 240))
-        palette.setColor(QPalette.ToolTipBase, QColor(255, 255, 255))
-        palette.setColor(QPalette.ToolTipText, QColor(40, 40, 40))
-        palette.setColor(QPalette.Text, QColor(40, 40, 40))
-        palette.setColor(QPalette.Button, QColor(240, 240, 240))
-        palette.setColor(QPalette.ButtonText, QColor(40, 40, 40))
-        palette.setColor(QPalette.BrightText, QColor(100, 100, 100))
-        palette.setColor(QPalette.Link, QColor(80, 80, 80))
-        palette.setColor(QPalette.Highlight, QColor(200, 200, 200))
-        palette.setColor(QPalette.HighlightedText, QColor(40, 40, 40))
-       
-        self.setPalette(palette)
-       
-        # Light monochrome stylesheet
-        stylesheet = """
-            QWidget {
-                background-color: #f5f5f5;
-                color: #282828;
-                font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
-            }
-            QFrame#card {
-                border: 1px solid #e0e0e0;
-                border-radius: 8px;
-                background-color: #ffffff;
-                padding: 6px;
-                margin-top: 6px;
-            }
-            QLabel#cardTitle {
-                color: #333333;
-                padding-left: 6px;
-                padding-top: 4px;
-                padding-bottom: 4px;
-                font-weight: 700;
-                font-size: 10pt;
-            }
-            QToolButton {
-                background-color: transparent;
-                border: 1px solid #e6e6e6;
-                border-radius: 6px;
-                padding: 6px 10px;
-                font-weight: 600;
-            }
-            QToolButton::menu-indicator { image: none; }
-            QMenu {
-                background-color: #ffffff;
-                border: 1px solid #e6e6e6;
-            }
-            QMenu::item {
-                padding: 6px 18px;
-            }
-            QMenu::item:selected {
-                background-color: #f3f3f3;
-            }
-            QPushButton {
-                background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0, stop:0 #e8e8e8, stop:1 #dcdcdc);
-                color: #2a2a2a;
-                border: 1px solid #b8b8b8;
-                border-radius: 4px;
-                padding: 4px 8px;
-                font-size: 8pt;
-                font-weight: 500;
-            }
-            QPushButton:hover {
-                background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0, stop:0 #f0f0f0, stop:1 #e5e5e5);
-                border: 1px solid #a8a8a8;
-            }
-            QPushButton:pressed {
-                background-color: #d8d8d8;
-            }
-            QPushButton:disabled {
-                background-color: #e0e0e0;
-                color: #888888;
-            }
-            QLineEdit, QComboBox {
-                background-color: #ffffff;
-                border: 1px solid #c0c0c0;
-                border-radius: 3px;
-                padding: 4px 6px;
-                color: #2a2a2a;
-            }
-            QLineEdit:focus, QComboBox:focus {
-                border: 1px solid #808080;
-            }
-            QSplitter::handle { background: transparent; }
-            QSplitter::handle:horizontal { background: transparent; width: 6px; }
-            QSplitter::handle:vertical { background: transparent; height: 6px; }
-            QPushButton::menu-indicator { image: none; }
-            QTreeWidget {
-                background-color: #ffffff;
-                border: 1px solid #c0c0c0;
-                border-radius: 4px;
-                color: #2a2a2a;
-                alternate-background-color: #f5f5f5;
-                gridline-color: #e8e8e8;
-            }
-            QTreeWidget::item:selected {
-                background-color: #d0d0d0;
-                color: #1a1a1a;
-            }
-            QTreeWidget::item:hover {
-                background-color: #e8e8e8;
-            }
-            QHeaderView::section {
-                background-color: #efefef;
-                color: #2a2a2a;
-                padding: 4px;
-                border: 1px solid #d0d0d0;
-                font-weight: 600;
-            }
-            QTextEdit {
-                background-color: #ffffff;
-                border: 1px solid #c0c0c0;
-                border-radius: 4px;
-                color: #404040;
-            }
-            QCheckBox {
-                color: #2a2a2a;
-            }
-            QLabel {
-                color: #2a2a2a;
-            }
-            QComboBox QAbstractItemView {
-                background-color: #ffffff;
-                color: #2a2a2a;
-                selection-background-color: #d0d0d0;
-                border: 1px solid #c0c0c0;
-            }
-            QComboBox::drop-down {
-                border: none;
-            }
-            QComboBox::down-arrow {
-                image: none;
-                border-left: 3px solid transparent;
-                border-right: 3px solid transparent;
-                border-top: 4px solid #606060;
-                margin-right: 6px;
-            }
-            QScrollBar:vertical {
-                background-color: #f5f5f5;
-                width: 12px;
-                margin: 0px;
-            }
-            QScrollBar::handle:vertical {
-                background-color: #c0c0c0;
-                min-height: 20px;
-                border-radius: 6px;
-            }
-            QScrollBar::handle:vertical:hover {
-                background-color: #a8a8a8;
-            }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
-            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
-                background: none;
-                height: 0px;
-            }
-            QScrollBar:horizontal {
-                background-color: #f5f5f5;
-                height: 12px;
-                margin: 0px;
-            }
-            QScrollBar::handle:horizontal {
-                background-color: #c0c0c0;
-                min-width: 20px;
-                border-radius: 6px;
-            }
-            QScrollBar::handle:horizontal:hover {
-                background-color: #a8a8a8;
-            }
-            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal,
-            QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
-                background: none;
-                width: 0px;
-            }
-            /* Tab bar in card titles to match pane headers (button-like tabs) */
-            QTabBar#cardTabBar {
-                background: transparent;
-                spacing: 6px;
-            }
-            QTabBar#cardTabBar::tab {
-                padding: 6px 12px;
-                font-weight: 700;
-                font-size: 10pt;
-                color: #333333;
-                border: 1px solid #dcdcdc;
-                border-radius: 6px;
-                background: #f3f3f3;
-                margin: 0 4px;
-                min-height: 26px;
-            }
-            QTabBar#cardTabBar::tab:hover {
-                background: #f7f7f7;
-            }
-            QTabBar#cardTabBar::tab:selected {
-                color: #111111;
-                background: #ffffff;
-                border-color: #cfcfcf;
-            }
-        """
-        self.setStyleSheet(stylesheet)
+    # ------------------------------------------------------------------
+    # Theming: one token-based stylesheet drives both dark and light.
+    # ------------------------------------------------------------------
+    _DARK_COLORS = {
+        "WIN_BG": "#1e1e1e", "MAIN_BG": "#1a1a1a", "FG": "#e6e6e6", "FG_DIM": "#b8b8b8",
+        "TITLE_FG": "#f4f4f4", "CARD_BG": "#232323", "BORDER": "#2e2e2e",
+        "HDR1": "#272727", "HDR2": "#202020", "CHIP_BG": "#2b2b2b", "IN_BG": "#262626",
+        "BTN_BG": "#2f2f2f", "BTN_HOVER": "#353535", "BTN_BORDER": "#3f3f3f",
+        "ACCENT": "#8a8a8a", "TREE_BG": "#1f1f1f", "TREE_ALT": "#242424",
+        "SEL_BG": "#3d3d3d", "SEL_FG": "#f5f5f5", "HOVER_BG": "#2a2a2a",
+        "SEC_BG": "#262626", "SEC_FG": "#d8d8d8", "LOG_BG": "#151515", "LOG_FG": "#d6d6d6",
+        "SCROLL": "#3a3a3a", "SCROLL_HOVER": "#777777", "ST_BG": "#1a1a1a", "ST_FG": "#b8b8b8",
+        "PROG_BG": "#262626", "PROG1": "#8a8a8a", "PROG2": "#b0b0b0",
+        "TAB_BG": "#2a2a2a", "TAB_SEL_BG": "#3d3d3d", "TAB_SEL_FG": "#f5f5f5",
+        "MENU_BG": "#2a2a2a", "MENU_SEL": "#3a3a3a", "CHK_BG": "#262626", "CHK_ON": "#9a9a9a",
+        "DOT_IDLE": "#5a5a5a",
+    }
+    _LIGHT_COLORS = {
+        "WIN_BG": "#f3f3f4", "MAIN_BG": "#e9e9ea", "FG": "#2a2a2a", "FG_DIM": "#5a5a5a",
+        "TITLE_FG": "#1a1a1a", "CARD_BG": "#ffffff", "BORDER": "#dcdcdc",
+        "HDR1": "#fcfcfc", "HDR2": "#efefef", "CHIP_BG": "#ececec", "IN_BG": "#ffffff",
+        "BTN_BG": "#efefef", "BTN_HOVER": "#e6e6e6", "BTN_BORDER": "#cfcfcf",
+        "ACCENT": "#888888", "TREE_BG": "#ffffff", "TREE_ALT": "#f5f5f5",
+        "SEL_BG": "#d2d2d2", "SEL_FG": "#1a1a1a", "HOVER_BG": "#ececec",
+        "SEC_BG": "#efefef", "SEC_FG": "#2a2a2a", "LOG_BG": "#fbfbfb", "LOG_FG": "#303030",
+        "SCROLL": "#c4c4c4", "SCROLL_HOVER": "#9a9a9a", "ST_BG": "#e9e9ea", "ST_FG": "#555555",
+        "PROG_BG": "#e6e6e6", "PROG1": "#9a9a9a", "PROG2": "#bcbcbc",
+        "TAB_BG": "#ececec", "TAB_SEL_BG": "#ffffff", "TAB_SEL_FG": "#111111",
+        "MENU_BG": "#ffffff", "MENU_SEL": "#ececec", "CHK_BG": "#ffffff", "CHK_ON": "#888888",
+        "DOT_IDLE": "#a0a0a0",
+    }
+    _THEME_QSS = """
+        QWidget { background-color: @WIN_BG@; color: @FG@; font-family: "Segoe UI","Helvetica Neue",Arial,sans-serif; }
+        QMainWindow { background-color: @MAIN_BG@; }
+        QFrame#headerBar { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 @HDR1@, stop:1 @HDR2@); border: 1px solid @BORDER@; border-radius: 10px; }
+        QLabel#appTitle { font-size: 13pt; font-weight: 800; color: @TITLE_FG@; }
+        QLabel#branchChip { color: @FG_DIM@; font-weight: 600; font-size: 9pt; background: @CHIP_BG@; border: 1px solid @BORDER@; border-radius: 9px; padding: 2px 10px; }
+        QLabel#activityDot { color: @DOT_IDLE@; font-size: 12pt; }
+        QLabel#headerStatus { color: @FG_DIM@; font-size: 9pt; }
+        QFrame#card { border: 1px solid @BORDER@; border-radius: 10px; background-color: @CARD_BG@; margin-top: 6px; }
+        QLabel#cardTitle { color: @TITLE_FG@; padding: 4px 6px; font-weight: 800; font-size: 10pt; }
+        QToolButton { background-color: transparent; border: 1px solid @BORDER@; border-radius: 6px; padding: 6px 10px; font-weight: 600; }
+        QToolButton:hover { border-color: @ACCENT@; }
+        QToolButton::menu-indicator { image: none; }
+        QMenu { background-color: @MENU_BG@; border: 1px solid @BORDER@; padding: 4px; }
+        QMenu::item { padding: 6px 18px; border-radius: 4px; }
+        QMenu::item:selected { background-color: @MENU_SEL@; color: @FG@; }
+        QPushButton { background-color: @BTN_BG@; color: @FG@; border: 1px solid @BTN_BORDER@; border-radius: 6px; padding: 6px 10px; font-size: 9pt; font-weight: 600; text-align: left; }
+        QPushButton:hover { border-color: @ACCENT@; background-color: @BTN_HOVER@; }
+        QPushButton:pressed { background-color: @MENU_SEL@; }
+        QPushButton:disabled { color: #888888; border-color: @BORDER@; }
+        QPushButton::menu-indicator { image: none; }
+        QLineEdit, QComboBox { background-color: @IN_BG@; border: 1px solid @BORDER@; border-radius: 6px; padding: 5px 8px; color: @FG@; }
+        QLineEdit:focus, QComboBox:focus { border: 1px solid @ACCENT@; }
+        QComboBox QAbstractItemView { background-color: @MENU_BG@; color: @FG@; selection-background-color: @SEL_BG@; border: 1px solid @BORDER@; }
+        QCheckBox { color: @FG@; spacing: 6px; }
+        QCheckBox::indicator { width: 15px; height: 15px; border-radius: 4px; border: 1px solid @ACCENT@; background: @CHK_BG@; }
+        QCheckBox::indicator:checked { background: @CHK_ON@; border-color: @CHK_ON@; }
+        QTreeWidget { background-color: @TREE_BG@; border: 1px solid @BORDER@; border-radius: 8px; color: @FG@; alternate-background-color: @TREE_ALT@; outline: 0; }
+        QTreeWidget::item { padding: 3px 2px; }
+        QTreeWidget::item:selected { background-color: @SEL_BG@; color: @SEL_FG@; }
+        QTreeWidget::item:hover { background-color: @HOVER_BG@; }
+        QHeaderView::section { background-color: @SEC_BG@; color: @SEC_FG@; padding: 6px; border: none; border-right: 1px solid @BORDER@; border-bottom: 1px solid @BORDER@; font-weight: 700; }
+        QTextEdit { background-color: @LOG_BG@; border: 1px solid @BORDER@; border-radius: 8px; color: @LOG_FG@; font-family: "Cascadia Mono","Consolas",monospace; font-size: 8pt; }
+        QScrollBar:vertical { background: transparent; width: 12px; margin: 2px; }
+        QScrollBar::handle:vertical { background: @SCROLL@; border-radius: 5px; min-height: 24px; }
+        QScrollBar::handle:vertical:hover { background: @SCROLL_HOVER@; }
+        QScrollBar:horizontal { background: transparent; height: 12px; margin: 2px; }
+        QScrollBar::handle:horizontal { background: @SCROLL@; border-radius: 5px; min-width: 24px; }
+        QScrollBar::handle:horizontal:hover { background: @SCROLL_HOVER@; }
+        QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
+        QScrollBar::add-page, QScrollBar::sub-page { background: none; }
+        QStatusBar { background: @ST_BG@; border-top: 1px solid @BORDER@; color: @ST_FG@; }
+        QStatusBar::item { border: none; }
+        QLabel#resultChip { font-weight: 700; padding: 0 8px; }
+        QProgressBar#opProgress { background: @PROG_BG@; border: 1px solid @BORDER@; border-radius: 7px; }
+        QProgressBar#opProgress::chunk { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 @PROG1@, stop:1 @PROG2@); border-radius: 6px; }
+        QTabBar#cardTabBar { background: transparent; spacing: 6px; }
+        QTabBar#cardTabBar::tab { padding: 6px 14px; font-weight: 700; font-size: 10pt; color: @FG_DIM@; border: 1px solid @BORDER@; border-radius: 7px; background: @TAB_BG@; margin: 0 4px; min-height: 24px; }
+        QTabBar#cardTabBar::tab:hover { background: @HOVER_BG@; }
+        QTabBar#cardTabBar::tab:selected { color: @TAB_SEL_FG@; background: @TAB_SEL_BG@; border-color: @ACCENT@; }
+        QToolTip { background: @MENU_BG@; color: @FG@; border: 1px solid @ACCENT@; padding: 4px; }
+    """
+
+    def _theme_palette(self, c):
+        pal = QPalette()
+        pal.setColor(QPalette.Window, QColor(c["WIN_BG"]))
+        pal.setColor(QPalette.WindowText, QColor(c["FG"]))
+        pal.setColor(QPalette.Base, QColor(c["IN_BG"]))
+        pal.setColor(QPalette.AlternateBase, QColor(c["TREE_ALT"]))
+        pal.setColor(QPalette.ToolTipBase, QColor(c["MENU_BG"]))
+        pal.setColor(QPalette.ToolTipText, QColor(c["FG"]))
+        pal.setColor(QPalette.Text, QColor(c["FG"]))
+        pal.setColor(QPalette.Button, QColor(c["BTN_BG"]))
+        pal.setColor(QPalette.ButtonText, QColor(c["FG"]))
+        pal.setColor(QPalette.Highlight, QColor(c["SEL_BG"]))
+        pal.setColor(QPalette.HighlightedText, QColor(c["SEL_FG"]))
+        return pal
+
+    def _apply_theme(self, dark: bool):
+        self._is_dark = dark
+        c = self._DARK_COLORS if dark else self._LIGHT_COLORS
+        self._theme = c
+        self.setPalette(self._theme_palette(c))
+        qss = self._THEME_QSS
+        for k, v in c.items():
+            qss = qss.replace("@" + k + "@", v)
+        self.setStyleSheet(qss)
+        # keep the View-menu label and the idle dot colour in sync
+        if hasattr(self, "act_theme"):
+            self.act_theme.setText("Light theme" if dark else "Dark theme")
+        if hasattr(self, "activity_dot") and not getattr(self, "_busy", False):
+            self.activity_dot.setStyleSheet("color: %s;" % c["DOT_IDLE"])
+        # repaint duplicate highlights with theme-appropriate colours
+        if hasattr(self, "tree") and getattr(self, "rows", None) is not None:
+            self.on_filter_change()
 
     def apply_dark_theme(self):
-        """Apply a dark monochrome theme"""
-        self._is_dark = True
-        palette = QPalette()
-        palette.setColor(QPalette.Window, QColor(30, 30, 30))
-        palette.setColor(QPalette.WindowText, QColor(230, 230, 230))
-        palette.setColor(QPalette.Base, QColor(24, 24, 24))
-        palette.setColor(QPalette.AlternateBase, QColor(34, 34, 34))
-        palette.setColor(QPalette.ToolTipBase, QColor(50, 50, 50))
-        palette.setColor(QPalette.ToolTipText, QColor(230, 230, 230))
-        palette.setColor(QPalette.Text, QColor(230, 230, 230))
-        palette.setColor(QPalette.Button, QColor(40, 40, 40))
-        palette.setColor(QPalette.ButtonText, QColor(230, 230, 230))
-        palette.setColor(QPalette.BrightText, QColor(255, 80, 80))
-        palette.setColor(QPalette.Link, QColor(120, 160, 200))
-        palette.setColor(QPalette.Highlight, QColor(64, 64, 64))
-        palette.setColor(QPalette.HighlightedText, QColor(230, 230, 230))
-        self.setPalette(palette)
+        self._apply_theme(True)
 
-        # Neutral light-gray dark theme. Plain string (literal hex) — no f-string,
-        # so CSS braces don't need escaping.
-        stylesheet = """
-            QWidget {
-                background-color: #1e1e1e;
-                color: #e6e6e6;
-                font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
-            }
-            QMainWindow { background-color: #1a1a1a; }
+    def apply_light_theme(self):
+        self._apply_theme(False)
 
-            /* Header bar */
-            QFrame#headerBar {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #272727, stop:1 #202020);
-                border: 1px solid #2e2e2e;
-                border-radius: 10px;
-            }
-            QLabel#appTitle { font-size: 13pt; font-weight: 800; color: #f4f4f4; }
-            QLabel#branchChip {
-                color: #d2d2d2; font-weight: 600; font-size: 9pt;
-                background: #2b2b2b; border: 1px solid #3a3a3a;
-                border-radius: 9px; padding: 2px 10px;
-            }
-            QLabel#activityDot { color: #5a5a5a; font-size: 12pt; }
-            QLabel#headerStatus { color: #b8b8b8; font-size: 9pt; }
+    def toggle_theme(self):
+        self._apply_theme(not self._is_dark)
+        self._save_view_settings()
 
-            /* Cards */
-            QFrame#card {
-                border: 1px solid #2e2e2e;
-                border-radius: 10px;
-                background-color: #232323;
-                margin-top: 6px;
-            }
-            QLabel#cardTitle {
-                color: #f0f0f0; padding: 4px 6px;
-                font-weight: 800; font-size: 10pt;
-            }
-            QToolButton {
-                background-color: transparent; border: 1px solid #2f2f2f;
-                border-radius: 6px; padding: 6px 10px; font-weight: 600;
-            }
-            QToolButton:hover { border-color: #8a8a8a; }
-            QToolButton::menu-indicator { image: none; }
-            QMenu { background-color: #2a2a2a; border: 1px solid #383838; padding: 4px; }
-            QMenu::item { padding: 6px 18px; border-radius: 4px; }
-            QMenu::item:selected { background-color: #3a3a3a; color: #f0f0f0; }
+    def set_opacity(self, pct: int):
+        self._opacity_pct = max(60, min(100, int(pct)))
+        self.setWindowOpacity(self._opacity_pct / 100.0)
+        self._save_view_settings()
 
-            /* Buttons */
-            QPushButton {
-                background-color: #2f2f2f; color: #e8e8e8;
-                border: 1px solid #3f3f3f; border-radius: 6px;
-                padding: 6px 10px; font-size: 9pt; font-weight: 600;
-                text-align: left;
-            }
-            QPushButton:hover { border-color: #8a8a8a; background-color: #353535; }
-            QPushButton:pressed { background-color: #2a2a2a; }
-            QPushButton:disabled { color: #777777; border-color: #333333; }
-            QPushButton::menu-indicator { image: none; }
+    def _save_view_settings(self):
+        try:
+            s = self._settings
+            s.setValue("theme", "dark" if self._is_dark else "light")
+            s.setValue("opacity", int(getattr(self, "_opacity_pct", 100)))
+            s.setValue("geometry", self.saveGeometry())
+        except Exception:
+            pass
 
-            QLineEdit, QComboBox {
-                background-color: #262626; border: 1px solid #353535;
-                border-radius: 6px; padding: 5px 8px; color: #e6e6e6;
-            }
-            QLineEdit:focus, QComboBox:focus { border: 1px solid #8a8a8a; }
-            QCheckBox { color: #d8d8d8; spacing: 6px; }
-            QCheckBox::indicator {
-                width: 15px; height: 15px; border-radius: 4px;
-                border: 1px solid #4a4a4a; background: #262626;
-            }
-            QCheckBox::indicator:checked { background: #9a9a9a; border-color: #9a9a9a; }
-
-            /* Tree */
-            QTreeWidget {
-                background-color: #1f1f1f; border: 1px solid #2e2e2e;
-                border-radius: 8px; color: #e6e6e6;
-                alternate-background-color: #242424; outline: 0;
-            }
-            QTreeWidget::item { padding: 3px 2px; }
-            QTreeWidget::item:selected { background-color: #3d3d3d; color: #f5f5f5; }
-            QTreeWidget::item:hover { background-color: #2a2a2a; }
-            QHeaderView::section {
-                background-color: #262626; color: #d8d8d8; padding: 6px;
-                border: none; border-right: 1px solid #303030;
-                border-bottom: 1px solid #303030; font-weight: 700;
-            }
-
-            QTextEdit {
-                background-color: #151515; border: 1px solid #2e2e2e;
-                border-radius: 8px; color: #d6d6d6;
-                font-family: "Cascadia Mono", "Consolas", monospace; font-size: 8pt;
-            }
-
-            /* Scrollbars */
-            QScrollBar:vertical { background: transparent; width: 12px; margin: 2px; }
-            QScrollBar::handle:vertical { background: #3a3a3a; border-radius: 5px; min-height: 24px; }
-            QScrollBar::handle:vertical:hover { background: #777777; }
-            QScrollBar:horizontal { background: transparent; height: 12px; margin: 2px; }
-            QScrollBar::handle:horizontal { background: #3a3a3a; border-radius: 5px; min-width: 24px; }
-            QScrollBar::handle:horizontal:hover { background: #777777; }
-            QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
-            QScrollBar::add-page, QScrollBar::sub-page { background: none; }
-
-            /* Status bar + progress */
-            QStatusBar { background: #1a1a1a; border-top: 1px solid #2c2c2c; color: #b8b8b8; }
-            QStatusBar::item { border: none; }
-            QLabel#resultChip { font-weight: 700; padding: 0 8px; }
-            QProgressBar#opProgress {
-                background: #262626; border: 1px solid #353535; border-radius: 7px;
-            }
-            QProgressBar#opProgress::chunk {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #8a8a8a, stop:1 #b0b0b0);
-                border-radius: 6px;
-            }
-
-            /* Tab bar in card titles */
-            QTabBar#cardTabBar { background: transparent; spacing: 6px; }
-            QTabBar#cardTabBar::tab {
-                padding: 6px 14px; font-weight: 700; font-size: 10pt; color: #cfcfcf;
-                border: 1px solid #3a3a3a; border-radius: 7px; background: #2a2a2a;
-                margin: 0 4px; min-height: 24px;
-            }
-            QTabBar#cardTabBar::tab:hover { background: #343434; }
-            QTabBar#cardTabBar::tab:selected {
-                color: #f5f5f5;
-                background: #3d3d3d;
-                border-color: #555555;
-            }
-
-            QToolTip { background: #2a2a2a; color: #e6e6e6; border: 1px solid #8a8a8a; padding: 4px; }
-        """
-        self.setStyleSheet(stylesheet)
+    def show_about(self):
+        QMessageBox.about(
+            self, "About KiCad Library Manager",
+            f"<b>KiCad Library Manager</b><br>Version {APP_VERSION}<br><br>"
+            "Drop vendor ZIPs to merge symbols, footprints and 3D models into the "
+            "shared library, with one-click git sync.<br><br>"
+            "Built with PyQt5."
+        )
         
    
     def handle_dropped_files(self, files: List[Path]):
@@ -2357,12 +2285,59 @@ class LibraryManagerWindow(QMainWindow):
             text = f"{len(self.format_filters)} selected"
         self.format_btn.setText(text)
    
+    def open_in_kicad(self, *args):
+        """Open the selected item in KiCad (via the editor associated with the
+        file type). Symbols open the shared .kicad_sym in the Symbol Editor."""
+        cur = self.tree.currentItem()
+        if not cur:
+            QMessageBox.information(self, "Open in KiCad", "No item selected.")
+            return
+        item_type = cur.text(0)
+        path = Path(cur.text(2))
+        target = Path(self.cfg["SymbolLib"]) if item_type == "Symbol" else path
+        if not target.exists():
+            QMessageBox.warning(self, "Open in KiCad", f"File not found:\n{target}")
+            return
+        if find_kicad_dir() is None:
+            QMessageBox.warning(
+                self, "Open in KiCad",
+                "KiCad does not appear to be installed under Program Files.\n"
+                "Opening with the default associated app instead."
+            )
+        try:
+            os.startfile(str(target))   # KiCad registers .kicad_mod/.kicad_sym/.step on install
+            self.log.write(f"Open in KiCad: {target.name}")
+        except Exception as e:
+            QMessageBox.warning(self, "Open in KiCad", f"Could not open:\n{target}\n\n{e}")
+
+    def on_remove_duplicates(self):
+        """One-click: keep one copy of each duplicated symbol, remove the rest."""
+        n = self.summary.get("duplicates", 0)
+        if not n:
+            QMessageBox.information(self, "Remove Duplicates", "No duplicates found.")
+            return
+        reply = QMessageBox.question(
+            self, "Remove Duplicates",
+            f"{n} duplicate row(s) detected.\n\n"
+            f"Remove all duplicates, keeping one copy of each? This cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+        removed = dedupe_symbol_library(Path(self.cfg["SymbolLib"]), self.log)
+        QMessageBox.information(
+            self, "Remove Duplicates",
+            f"Removed {removed} duplicate symbol(s)." if removed else "Nothing to remove."
+        )
+        self.refresh_library()
+
     def populate_tree(self, rows: List[Dict[str, object]]):
         """Populate tree widget with filtered rows"""
         self.tree.clear()
 
         is_dark = getattr(self, "_is_dark", True)
-        dup_bg = QBrush(QColor(86, 50, 50) if is_dark else QColor(255, 224, 178))
+        # Neutral slate tint so duplicates stand out without a colour accent.
+        dup_bg = QBrush(QColor(58, 62, 70) if is_dark else QColor(224, 228, 236))
 
         for r in rows:
             item = QTreeWidgetItem([
@@ -2386,13 +2361,14 @@ class LibraryManagerWindow(QMainWindow):
             self.tree.addTopLevelItem(item)
 
         # Update summary label (call out duplicates when present)
-        dup = self.summary.get("duplicates", 0)
+        s = self.summary
+        dup = s.get("duplicates", 0)
         dup_txt = f", Duplicates: {dup}" if dup else ""
         self.lbl_summary.setText(
-            f"Library: {self.summary['total']} items "
-            f"(Symbols: {self.summary['symbols']}, "
-            f"Footprints: {self.summary['footprints']}, "
-            f"Models: {self.summary['models']}{dup_txt})"
+            f"Library: {s.get('total', 0)} items "
+            f"(Symbols: {s.get('symbols', 0)}, "
+            f"Footprints: {s.get('footprints', 0)}, "
+            f"Models: {s.get('models', 0)}{dup_txt})"
         )
    
     def on_tree_open(self):
@@ -2471,6 +2447,7 @@ class LibraryManagerWindow(QMainWindow):
         """Handle window close: stop background work cleanly so no worker
         thread touches the UI after the window is destroyed."""
         self._closing = True
+        self._save_view_settings()
         try:
             if hasattr(self, "auto_pull_timer"):
                 self.auto_pull_timer.stop()
@@ -2510,6 +2487,9 @@ def main():
         pass
 
     app.setApplicationName("KiCad Library Manager")
+    _icon = resource_path("app_icon.ico")
+    if _icon.exists():
+        app.setWindowIcon(QIcon(str(_icon)))
    
     window = LibraryManagerWindow(cfg)
     window.show()
