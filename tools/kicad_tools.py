@@ -22,7 +22,7 @@ from PyQt5.QtWidgets import (
     QComboBox, QCheckBox, QListWidget, QListWidgetItem, QPlainTextEdit, QTabWidget,
     QTableWidget, QTableWidgetItem, QFormLayout, QDoubleSpinBox, QFileDialog,
     QMessageBox, QAbstractItemView, QHeaderView, QSizePolicy, QApplication,
-    QColorDialog, QScrollArea
+    QColorDialog, QScrollArea, QSplitter, QGridLayout
 )
 from PyQt5.QtGui import QColor
 from PyQt5.QtCore import Qt
@@ -114,8 +114,8 @@ class KiCadToolsWidget(QWidget):
         root.setContentsMargins(0, 6, 0, 0)
         root.setSpacing(10)
 
-        # --- Projects card ---
-        pcard, pl = self._card("KICAD Projects")
+        # --- Folder row (full width) ---
+        fcard, fl = self._card("KICAD Projects Folder")
         top = QHBoxLayout()
         top.addWidget(QLabel("Folder:"))
         self.dir_edit = QLineEdit(projects_dir or "")
@@ -123,33 +123,48 @@ class KiCadToolsWidget(QWidget):
         b_browse = QPushButton("Browse…"); b_browse.clicked.connect(self._browse)
         b_scan = QPushButton("Rescan"); b_scan.clicked.connect(self.rescan)
         top.addWidget(b_browse); top.addWidget(b_scan)
-        pl.addLayout(top)
+        fl.addLayout(top)
+        root.addWidget(fcard)
 
-        row2 = QHBoxLayout()
-        row2.addWidget(QLabel("Check the projects to act on:"))
-        row2.addStretch()
-        b_all = QPushButton("All"); b_all.clicked.connect(lambda: self._check_all(True))
-        b_none = QPushButton("None"); b_none.clicked.connect(lambda: self._check_all(False))
-        row2.addWidget(b_all); row2.addWidget(b_none)
-        pl.addLayout(row2)
+        # --- Main area: projects sidebar | operations (resizable) ---
+        split = QSplitter(Qt.Horizontal)
+        split.setHandleWidth(6)
 
+        lcard, ll = self._card("Projects")
+        rowh = QHBoxLayout()
+        rowh.addWidget(QLabel("Check to act on:"))
+        rowh.addStretch()
+        b_all = QPushButton("All"); b_all.setMaximumWidth(60); b_all.clicked.connect(lambda: self._check_all(True))
+        b_none = QPushButton("None"); b_none.setMaximumWidth(60); b_none.clicked.connect(lambda: self._check_all(False))
+        rowh.addWidget(b_all); rowh.addWidget(b_none)
+        ll.addLayout(rowh)
         self.proj_list = QListWidget()
-        self.proj_list.setMaximumHeight(120)
-        pl.addWidget(self.proj_list)
-        root.addWidget(pcard)
+        ll.addWidget(self.proj_list, 1)
+        lcard.setMinimumWidth(240)
+        split.addWidget(lcard)
 
-        # --- Operations card (tabs) ---
         ocard, ol = self._card("Operations")
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_rename_tab(), "Bulk Rename")
         self.tabs.addTab(self._build_netclass_tab(), "Net Classes")
         self.tabs.addTab(self._build_settings_tab(), "Project Settings")
         ol.addWidget(self.tabs)
-        root.addWidget(ocard, 1)
+        ocard.setMinimumWidth(420)
+        split.addWidget(ocard)
 
-        # --- Output card ---
+        split.setStretchFactor(0, 0)
+        split.setStretchFactor(1, 1)
+        split.setSizes([280, 640])
+        try:
+            split.setCollapsible(0, False)
+            split.setCollapsible(1, False)
+        except Exception:
+            pass
+        root.addWidget(split, 1)
+
+        # --- Output (full width, short) ---
         ccard, cl = self._card("Output")
-        self.out = QPlainTextEdit(); self.out.setReadOnly(True); self.out.setMaximumHeight(140)
+        self.out = QPlainTextEdit(); self.out.setReadOnly(True); self.out.setMaximumHeight(130)
         cl.addWidget(self.out)
         root.addWidget(ccard)
 
@@ -213,50 +228,58 @@ class KiCadToolsWidget(QWidget):
 
     # ============================================================== RENAME
     def _build_rename_tab(self) -> QWidget:
-        w = QWidget(); v = QVBoxLayout(w)
-        form = QHBoxLayout()
-        form.addWidget(QLabel("Operation:"))
+        w = QWidget(); v = QVBoxLayout(w); v.setSpacing(8)
+
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignRight)
         self.op_combo = QComboBox()
         self.op_combo.addItems([
             "Add tag prefix", "Remove tag prefix", "Strip all tags",
             "Reset to unannotated (lib_id)", "Custom find / replace",
         ])
         self.op_combo.currentIndexChanged.connect(self._op_changed)
-        form.addWidget(self.op_combo, 1)
-        v.addLayout(form)
+        form.addRow("Operation:", self.op_combo)
 
-        self.tag_edit = QLineEdit(); self.tag_edit.setPlaceholderText("Tag e.g. SH-  or  CG-")
+        self.tag_edit = QLineEdit(); self.tag_edit.setPlaceholderText("e.g.  SH-   or   CG-")
         self.find_edit = QLineEdit(); self.find_edit.setPlaceholderText("Find text")
         self.repl_edit = QLineEdit(); self.repl_edit.setPlaceholderText("Replace with")
-        f2 = QFormLayout()
-        f2.addRow("Tag:", self.tag_edit)
-        f2.addRow("Find:", self.find_edit)
-        f2.addRow("Replace:", self.repl_edit)
-        v.addLayout(f2)
+        form.addRow("Tag:", self.tag_edit)
+        form.addRow("Find:", self.find_edit)
+        form.addRow("Replace:", self.repl_edit)
+        self._rename_form = form
+        v.addLayout(form)
 
-        scope = QHBoxLayout()
-        self.chk_sch_labels = QCheckBox("Schematic labels/nets"); self.chk_sch_labels.setChecked(True)
+        scope_box = QFrame(); scope_box.setObjectName("card")
+        sb = QVBoxLayout(scope_box); sb.setContentsMargins(10, 8, 10, 8); sb.setSpacing(4)
+        sb.addWidget(QLabel("Scope"))
+        self.chk_sch_labels = QCheckBox("Schematic labels / nets"); self.chk_sch_labels.setChecked(True)
         self.chk_sch_refs = QCheckBox("Schematic references"); self.chk_sch_refs.setChecked(True)
         self.chk_pcb_refs = QCheckBox("PCB references"); self.chk_pcb_refs.setChecked(True)
-        scope.addWidget(self.chk_sch_labels); scope.addWidget(self.chk_sch_refs); scope.addWidget(self.chk_pcb_refs)
-        scope.addStretch()
-        v.addLayout(scope)
+        sb.addWidget(self.chk_sch_labels); sb.addWidget(self.chk_sch_refs); sb.addWidget(self.chk_pcb_refs)
+        v.addWidget(scope_box)
+
+        v.addStretch(1)
 
         btns = QHBoxLayout()
         b_prev = QPushButton("Preview"); b_prev.clicked.connect(lambda: self._run_rename(apply=False))
-        b_apply = QPushButton("Apply (creates .bak)"); b_apply.clicked.connect(lambda: self._run_rename(apply=True))
-        b_erc = QPushButton("Run ERC (kicad-cli)"); b_erc.clicked.connect(self._run_erc)
+        b_apply = QPushButton("Apply  (creates .bak)"); b_apply.clicked.connect(lambda: self._run_rename(apply=True))
+        b_erc = QPushButton("Run ERC"); b_erc.clicked.connect(self._run_erc)
         btns.addWidget(b_prev); btns.addWidget(b_apply); btns.addStretch(); btns.addWidget(b_erc)
         v.addLayout(btns)
-        v.addStretch()
         self._op_changed()
         return w
 
+    def _row_visible(self, field, vis):
+        field.setVisible(vis)
+        lbl = self._rename_form.labelForField(field)
+        if lbl is not None:
+            lbl.setVisible(vis)
+
     def _op_changed(self):
         idx = self.op_combo.currentIndex()
-        self.tag_edit.setVisible(idx in (0, 1))
-        self.find_edit.setVisible(idx == 4)
-        self.repl_edit.setVisible(idx == 4)
+        self._row_visible(self.tag_edit, idx in (0, 1))
+        self._row_visible(self.find_edit, idx == 4)
+        self._row_visible(self.repl_edit, idx == 4)
 
     def _rename_params(self):
         idx = self.op_combo.currentIndex()

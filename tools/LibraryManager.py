@@ -1324,8 +1324,9 @@ class LibraryManagerWindow(QMainWindow):
         bar = QFrame()
         bar.setObjectName("headerBar")
         bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        bar.setMinimumHeight(54)
         h = QHBoxLayout(bar)
-        h.setContentsMargins(10, 4, 12, 0)
+        h.setContentsMargins(12, 6, 12, 6)
         h.setSpacing(8)
 
         # The section tabs ARE the title (KICAD Manager / KICAD Tools)
@@ -1335,7 +1336,8 @@ class LibraryManagerWindow(QMainWindow):
         self.title_tabs.addTab("KICAD Tools")
         self.title_tabs.setExpanding(False)
         self.title_tabs.setDrawBase(False)
-        h.addWidget(self.title_tabs)
+        self.title_tabs.setMinimumHeight(40)
+        h.addWidget(self.title_tabs, 0, Qt.AlignVCenter)
         h.addStretch()
 
         # Inline view controls (built straight into the top bar)
@@ -2192,8 +2194,8 @@ class LibraryManagerWindow(QMainWindow):
         QFrame#headerBar { background: transparent; border: none; }
         QLabel#appTitle { font-size: 13pt; font-weight: 800; color: @TITLE_FG@; }
         QTabBar#titleTabs { background: transparent; qproperty-drawBase: 0; }
-        QTabBar#titleTabs::tab { background: transparent; border: none; padding: 6px 14px; margin-right: 2px; font-size: 12pt; font-weight: 800; color: @FG_DIM@; }
-        QTabBar#titleTabs::tab:selected { color: @TITLE_FG@; border-bottom: 2px solid @ACCENT@; }
+        QTabBar#titleTabs::tab { background: transparent; border: none; padding: 8px 16px; margin-right: 2px; min-height: 24px; font-size: 12pt; font-weight: 800; color: @FG_DIM@; }
+        QTabBar#titleTabs::tab:selected { color: @TITLE_FG@; border-bottom: 3px solid @ACCENT@; }
         QTabBar#titleTabs::tab:hover { color: @TITLE_FG@; }
         QLabel#branchChip { color: @FG_DIM@; font-weight: 600; font-size: 9pt; }
         QLabel#activityDot { color: @DOT_IDLE@; font-size: 12pt; }
@@ -2216,9 +2218,7 @@ class LibraryManagerWindow(QMainWindow):
         QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox { background-color: @@IN_BG@@; border: 1px solid @BORDER@; border-radius: 6px; padding: 5px 8px; color: @FG@; }
         QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus { border: 1px solid @ACCENT@; }
         QComboBox QAbstractItemView { background-color: @@MENU_BG@@; color: @FG@; selection-background-color: @SEL_BG@; border: 1px solid @BORDER@; }
-        QCheckBox { color: @FG@; spacing: 6px; }
-        QCheckBox::indicator { width: 15px; height: 15px; border-radius: 4px; border: 1px solid @ACCENT@; background: @@CHK_BG@@; }
-        QCheckBox::indicator:checked { background: @CHK_ON@; border-color: @CHK_ON@; }
+        QCheckBox { color: @FG@; spacing: 7px; }
         QTreeWidget, QTableWidget, QListWidget { background-color: @@TREE_BG@@; border: 1px solid @BORDER@; border-radius: 8px; color: @FG@; alternate-background-color: @@TREE_ALT@@; outline: 0; }
         QTreeWidget::item, QTableWidget::item { padding: 3px 2px; }
         QTreeWidget::item:selected, QTableWidget::item:selected, QListWidget::item:selected { background-color: @SEL_BG@; color: @SEL_FG@; }
