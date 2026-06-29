@@ -69,31 +69,79 @@ except Exception:
 # -----------------------------
 # Configuration (edit defaults)
 # -----------------------------
-DEFAULTS: Dict[str, str] = {
-    "RepoRoot":     r"C:\Users\developer\Documents\GitHub\Hardware",
-    "Downloads":    r"C:\Users\developer\Documents\GitHub\Hardware\downloads",
-    "Libs":         r"C:\Users\developer\Documents\GitHub\Hardware\libs",
-    "SymbolLib":    r"C:\Users\developer\Documents\GitHub\Hardware\libs\MySymbols.kicad_sym",
-    "FootprintLib": r"C:\Users\developer\Documents\GitHub\Hardware\libs\MyFootprints.pretty",
-    "ModelLib":     r"C:\Users\developer\Documents\GitHub\Hardware\libs\My3DModels",
-    "MiscDir":      r"C:\Users\developer\Documents\GitHub\Hardware\misc",
-    "LogFile":      r"C:\Users\developer\Documents\GitHub\Hardware\tools\ui_python.log",
-    "PythonExe":    sys.executable
-}
+def detect_repo_root() -> Path:
+    """Repo root = the parent of the tools/ directory that holds this script.
 
-CONFIG_PATH = Path(DEFAULTS["RepoRoot"], "tools", "config.json")
+    Deriving everything from the script's own location makes the app portable:
+    it works from any clone, machine, or Windows username without editing paths.
+    """
+    return Path(__file__).resolve().parent.parent
+
+
+def derive_paths(repo_root: Path) -> Dict[str, str]:
+    """Build the full config dict from a repo root."""
+    libs = repo_root / "libs"
+    return {
+        "RepoRoot":     str(repo_root),
+        "Downloads":    str(repo_root / "downloads"),
+        "Libs":         str(libs),
+        "SymbolLib":    str(libs / "MySymbols.kicad_sym"),
+        "FootprintLib": str(libs / "MyFootprints.pretty"),
+        "ModelLib":     str(libs / "My3DModels"),
+        "MiscDir":      str(repo_root / "misc"),
+        "LogFile":      str(repo_root / "tools" / "ui_python.log"),
+        "PythonExe":    sys.executable,
+    }
+
+
+def _can_write_dir(path: Path) -> bool:
+    """Probe *real* writability by creating the dir and a temp file.
+
+    os.access() is unreliable on Windows (it ignores ACLs), so we actually try
+    to write. This is what lets the app reject another user's protected folder
+    instead of failing later with 'Permission denied'.
+    """
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        return False
+    probe = path / ".kicadmgr_write_test.tmp"
+    try:
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+        return True
+    except Exception:
+        try:
+            if probe.exists():
+                probe.unlink()
+        except Exception:
+            pass
+        return False
+
+
+REPO_ROOT = detect_repo_root()
+DEFAULTS: Dict[str, str] = derive_paths(REPO_ROOT)
+CONFIG_PATH = REPO_ROOT / "tools" / "config.json"
 
 
 # -----------------------------
 # Utilities / logging
 # -----------------------------
 def load_config() -> Dict[str, str]:
-    cfg = DEFAULTS.copy()
+    # Always start from paths derived from this script's own location, so the
+    # app works regardless of which machine/user/clone it runs from. config.json
+    # may override Downloads/PythonExe, but only if the override is genuinely
+    # writable (a stale path to another user's folder is ignored, not honored).
+    cfg = derive_paths(REPO_ROOT)
     try:
         if CONFIG_PATH.exists():
             with open(CONFIG_PATH, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            cfg.update(data)
+            dl = data.get("Downloads")
+            if dl and Path(dl).resolve() != Path(cfg["Downloads"]).resolve() and _can_write_dir(Path(dl)):
+                cfg["Downloads"] = str(Path(dl))
+            if data.get("PythonExe"):
+                cfg["PythonExe"] = data["PythonExe"]
     except Exception as e:
         print(f"WARNING: failed to read config.json: {e}")
    
@@ -911,18 +959,29 @@ class LibraryManagerWindow(QMainWindow):
         new = QFileDialog.getExistingDirectory(self, "Select folder", start)
         if not new:
             return
-        self.cfg[key] = str(Path(new))
+        new_path = Path(new)
+        if not _can_write_dir(new_path):
+            QMessageBox.warning(self, "Change Folder", f"Folder is not writable:\n{new_path}")
+            return
+        if key == 'RepoRoot':
+            # Re-derive every path from the new root so the whole app stays consistent.
+            self.cfg = derive_paths(new_path)
+        else:
+            self.cfg[key] = str(new_path)
         save_config(self.cfg)
         # Ensure directory exists
         Path(self.cfg[key]).mkdir(parents=True, exist_ok=True)
         # Keep button label short; full path shown in the menu and tooltip
         btn.setText("Root" if key == 'RepoRoot' else "Downloads")
         btn.setToolTip(self.cfg[key])
-        # Update menu path display if present
-        if key == 'RepoRoot' and hasattr(self, 'repo_path_action'):
-            self.repo_path_action.setText(self.cfg[key])
-        if key == 'Downloads' and hasattr(self, 'dl_path_action'):
-            self.dl_path_action.setText(self.cfg[key])
+        # Update menu path displays if present
+        if hasattr(self, 'repo_path_action'):
+            self.repo_path_action.setText(self.cfg['RepoRoot'])
+        if hasattr(self, 'dl_path_action'):
+            self.dl_path_action.setText(self.cfg['Downloads'])
+        # Reflect new paths in the library view
+        if key == 'RepoRoot':
+            self.refresh_library()
 
     def start_initial_pull(self):
         """Start a background thread to pull latest from GitHub and refresh library."""
@@ -958,9 +1017,7 @@ class LibraryManagerWindow(QMainWindow):
                         self.log_signal.emit(f"ERROR running git pull: {e}")
                     
 
-                self.log_signal.emit("Auto-pull: finished")
-                # Signal main thread to refresh library
-                self.pull_done.emit()
+                _run_git(["pull", "--ff-only"])
             except Exception as e:
                 self.log_signal.emit(f"Auto-pull failed: {e}")
 
@@ -1350,7 +1407,7 @@ class LibraryManagerWindow(QMainWindow):
             except Exception as e:
                 self.log_signal.emit(f"ERROR refreshing commits: {e}")
                 self.commits_signal.emit([])
-            threading.Thread(target=_run, daemon=True).start()
+        threading.Thread(target=_run, daemon=True).start()
 
     def _on_commit_selection_changed(self):
         has = bool(self.commits_list.currentItem())

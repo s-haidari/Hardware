@@ -1,12 +1,14 @@
 # --- Parameters (must be first) --------------------------------------------
+# Defaults derive from this script's own location ($PSScriptRoot = ...\Hardware\tools),
+# so the importer is portable across machines/usernames with no edits.
 param(
-    [string]$RepoRoot     = "C:\Users\developer\Documents\GitHub\Hardware",
-    [string]$Downloads    = "C:\Users\developer\Documents\GitHub\Hardware\downloads",
-    [string]$Libs         = "C:\Users\developer\Documents\GitHub\Hardware\libs",
-    [string]$SymbolLib    = "C:\Users\developer\Documents\GitHub\Hardware\libs\MySymbols.kicad_sym",
-    [string]$FootprintLib = "C:\Users\developer\Documents\GitHub\Hardware\libs\MyFootprints.pretty",
-    [string]$ModelLib     = "C:\Users\developer\Documents\GitHub\Hardware\libs\My3DModels",
-    [string]$MiscDir      = "C:\Users\developer\Documents\GitHub\Hardware\misc",
+    [string]$RepoRoot     = (Split-Path -Parent $PSScriptRoot),
+    [string]$Downloads    = (Join-Path (Split-Path -Parent $PSScriptRoot) "downloads"),
+    [string]$Libs         = (Join-Path (Split-Path -Parent $PSScriptRoot) "libs"),
+    [string]$SymbolLib    = (Join-Path (Split-Path -Parent $PSScriptRoot) "libs\MySymbols.kicad_sym"),
+    [string]$FootprintLib = (Join-Path (Split-Path -Parent $PSScriptRoot) "libs\MyFootprints.pretty"),
+    [string]$ModelLib     = (Join-Path (Split-Path -Parent $PSScriptRoot) "libs\My3DModels"),
+    [string]$MiscDir      = (Join-Path (Split-Path -Parent $PSScriptRoot) "misc"),
     [string]$PythonExe    = "python"
 )
 
