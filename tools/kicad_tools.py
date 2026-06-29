@@ -24,8 +24,22 @@ from PyQt5.QtWidgets import (
     QMessageBox, QAbstractItemView, QHeaderView, QSizePolicy, QApplication,
     QColorDialog, QScrollArea, QToolButton, QMenu, QWidgetAction, QStyle
 )
-from PyQt5.QtGui import QColor
+from PyQt5.QtGui import QColor, QIcon, QImage, QPixmap
 from PyQt5.QtCore import Qt
+
+
+def _gray_icon(style, sp, size: int = 16) -> QIcon:
+    """Desaturated standard icon so all glyphs share one neutral style."""
+    pm = style.standardIcon(sp).pixmap(size, size)
+    img = pm.toImage().convertToFormat(QImage.Format_ARGB32)
+    for y in range(img.height()):
+        for x in range(img.width()):
+            c = img.pixelColor(x, y)
+            if c.alpha() == 0:
+                continue
+            g = int(0.299 * c.red() + 0.587 * c.green() + 0.114 * c.blue())
+            img.setPixelColor(x, y, QColor(g, g, g, c.alpha()))
+    return QIcon(QPixmap.fromImage(img))
 
 import nd_wizard as wiz
 from nd_netclass_manager import NetClass, NetClassManager, create_vault_standard_template
@@ -136,17 +150,16 @@ class KiCadToolsWidget(QWidget):
         top.addWidget(QLabel("Folder:"))
         self.dir_edit = QLineEdit(projects_dir or "")
         top.addWidget(self.dir_edit, 1)
-        b_browse = QPushButton("Browse…"); b_browse.setIcon(st.standardIcon(QStyle.SP_DirOpenIcon)); b_browse.clicked.connect(self._browse)
-        b_scan = QPushButton("Rescan"); b_scan.setIcon(st.standardIcon(QStyle.SP_BrowserReload)); b_scan.clicked.connect(self.rescan)
+        b_browse = QPushButton("Browse…"); b_browse.setIcon(_gray_icon(st,QStyle.SP_DirOpenIcon)); b_browse.clicked.connect(self._browse)
+        b_scan = QPushButton("Rescan"); b_scan.setIcon(_gray_icon(st,QStyle.SP_BrowserReload)); b_scan.clicked.connect(self.rescan)
         top.addWidget(b_browse); top.addWidget(b_scan)
         pl.addLayout(top)
 
         row2 = QHBoxLayout()
-        row2.addWidget(QLabel("Apply to:"))
         self.proj_btn = QToolButton()
         self.proj_btn.setPopupMode(QToolButton.InstantPopup)
-        self.proj_btn.setText("No projects")
-        self.proj_btn.setMinimumWidth(220)
+        self.proj_btn.setText("Select Projects")
+        self.proj_btn.setMinimumWidth(200)
         self.proj_btn.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         proj_menu = QMenu(self.proj_btn)
         picker = QWidget()
@@ -228,15 +241,8 @@ class KiCadToolsWidget(QWidget):
         self.log(f"Found {len(projs)} KICAD project(s) under {path or '(unset)'}")
 
     def _update_selection(self):
-        total = self.proj_list.count()
-        sel = sum(1 for i in range(total)
-                  if self.proj_list.item(i).checkState() == Qt.Checked)
-        if total == 0:
-            self.proj_btn.setText("No Projects")
-        elif sel == total:
-            self.proj_btn.setText(f"All {total} Projects")
-        else:
-            self.proj_btn.setText(f"{sel} of {total} Selected")
+        # Button stays "Select Projects"; the dropdown's checkmarks show the picks.
+        self.proj_btn.setText("Select Projects")
 
     def _check_all(self, on: bool):
         for i in range(self.proj_list.count()):
@@ -292,11 +298,11 @@ class KiCadToolsWidget(QWidget):
 
         st = self.style()
         btns = QHBoxLayout()
-        b_prev = QPushButton("Preview"); b_prev.setIcon(st.standardIcon(QStyle.SP_FileDialogContentsView))
+        b_prev = QPushButton("Preview"); b_prev.setIcon(_gray_icon(st,QStyle.SP_FileDialogContentsView))
         b_prev.clicked.connect(lambda: self._run_rename(apply=False))
-        b_apply = QPushButton("Apply  (Creates .bak)"); b_apply.setIcon(st.standardIcon(QStyle.SP_DialogApplyButton))
+        b_apply = QPushButton("Apply  (Creates .bak)"); b_apply.setIcon(_gray_icon(st,QStyle.SP_DialogApplyButton))
         b_apply.clicked.connect(lambda: self._run_rename(apply=True))
-        b_erc = QPushButton("Run ERC"); b_erc.setIcon(st.standardIcon(QStyle.SP_MediaPlay))
+        b_erc = QPushButton("Run ERC"); b_erc.setIcon(_gray_icon(st,QStyle.SP_MediaPlay))
         b_erc.clicked.connect(self._run_erc)
         btns.addWidget(b_prev); btns.addWidget(b_apply); btns.addStretch(); btns.addWidget(b_erc)
         v.addLayout(btns)
@@ -408,14 +414,15 @@ class KiCadToolsWidget(QWidget):
             ("Load from Project", QStyle.SP_DirOpenIcon, self._nc_load_project),
             ("Add", QStyle.SP_FileDialogNewFolder, self._nc_add),
             ("Remove", QStyle.SP_TrashIcon, self._nc_remove),
+            ("Sort by Priority", QStyle.SP_ArrowDown, self._nc_sort_by_priority),
             ("Import…", QStyle.SP_ArrowDown, self._nc_import),
             ("Export…", QStyle.SP_ArrowUp, self._nc_export),
         ]:
-            b = QPushButton(label); b.setIcon(st.standardIcon(icon)); b.clicked.connect(fn)
+            b = QPushButton(label); b.setIcon(_gray_icon(st,icon)); b.clicked.connect(fn)
             bar.addWidget(b)
         bar.addStretch()
         b_sync = QPushButton("Sync to Selected Projects")
-        b_sync.setIcon(st.standardIcon(QStyle.SP_BrowserReload)); b_sync.clicked.connect(self._nc_sync)
+        b_sync.setIcon(_gray_icon(st,QStyle.SP_BrowserReload)); b_sync.clicked.connect(self._nc_sync)
         bar.addWidget(b_sync)
         v.addLayout(bar)
 
@@ -457,6 +464,10 @@ class KiCadToolsWidget(QWidget):
                 self.nc_table.setItem(r, col, QTableWidgetItem(txt))
             else:
                 self.nc_table.setItem(r, col, QTableWidgetItem("" if val is None else str(val)))
+
+    def _nc_sort_by_priority(self):
+        """Re-display the current rows sorted by their Priority column."""
+        self._nc_set_rows(self._nc_manager_from_table())
 
     def _nc_set_rows(self, manager: NetClassManager):
         self.nc_table.setRowCount(0)
@@ -589,10 +600,10 @@ class KiCadToolsWidget(QWidget):
         st = self.style()
         outer = QWidget(); ov = QVBoxLayout(outer)
         bar = QHBoxLayout()
-        b_load = QPushButton("Load from Project"); b_load.setIcon(st.standardIcon(QStyle.SP_DirOpenIcon))
+        b_load = QPushButton("Load from Project"); b_load.setIcon(_gray_icon(st,QStyle.SP_DirOpenIcon))
         b_load.clicked.connect(self._ps_load)
         bar.addWidget(b_load); bar.addStretch()
-        b_sync = QPushButton("Sync to Selected Projects"); b_sync.setIcon(st.standardIcon(QStyle.SP_BrowserReload))
+        b_sync = QPushButton("Sync to Selected Projects"); b_sync.setIcon(_gray_icon(st,QStyle.SP_BrowserReload))
         b_sync.clicked.connect(self._ps_sync)
         bar.addWidget(b_sync)
         ov.addLayout(bar)

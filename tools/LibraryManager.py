@@ -47,7 +47,10 @@ from PyQt5.QtCore import (
     Qt, QTimer, pyqtSignal, QThread, QMimeData, QUrl, QObject, QSettings,
     QRect, QSize, QPoint
 )
-from PyQt5.QtGui import QPalette, QColor, QBrush, QIcon, QDragEnterEvent, QDropEvent, QPainter, QPen, QFont
+from PyQt5.QtGui import (
+    QPalette, QColor, QBrush, QIcon, QImage, QPixmap,
+    QDragEnterEvent, QDropEvent, QPainter, QPen, QFont
+)
 
 # -----------------------------
 # Optional watcher (robust handling)
@@ -109,6 +112,22 @@ def resource_path(name: str) -> Path:
     if base:
         return Path(base) / name
     return Path(__file__).resolve().parent / name
+
+
+def gray_icon(style, sp, size: int = 16) -> QIcon:
+    """Return a desaturated (grayscale) version of a Qt standard icon so every
+    button glyph shares one neutral, monochrome style instead of the colorful
+    native shell icons."""
+    pm = style.standardIcon(sp).pixmap(size, size)
+    img = pm.toImage().convertToFormat(QImage.Format_ARGB32)
+    for y in range(img.height()):
+        for x in range(img.width()):
+            c = img.pixelColor(x, y)
+            if c.alpha() == 0:
+                continue
+            g = int(0.299 * c.red() + 0.587 * c.green() + 0.114 * c.blue())
+            img.setPixelColor(x, y, QColor(g, g, g, c.alpha()))
+    return QIcon(QPixmap.fromImage(img))
 
 
 def derive_paths(repo_root: Path) -> Dict[str, str]:
@@ -868,29 +887,37 @@ def scan_library(cfg: Dict[str, str]):
     """
     rows: List[Dict[str, object]] = []
 
+    def _date(p: Path) -> str:
+        try:
+            return time.strftime("%Y-%m-%d", time.localtime(p.stat().st_mtime))
+        except Exception:
+            return ""
+
     # Footprints
     fp_dir = Path(cfg["FootprintLib"])
     if fp_dir.exists():
         for p in sorted(fp_dir.glob("*.kicad_mod")):
-            rows.append({"type": "Footprint", "name": p.stem, "path": p})
+            rows.append({"type": "Footprint", "name": p.stem, "path": p, "date": _date(p)})
 
     # Models
     mdl_dir = Path(cfg["ModelLib"])
     if mdl_dir.exists():
         for ext in ("*.step", "*.stp", "*.wrl"):
             for p in sorted(mdl_dir.glob(ext)):
-                rows.append({"type": "Model", "name": p.name, "path": p})
+                rows.append({"type": "Model", "name": p.name, "path": p, "date": _date(p)})
 
     # Symbols. sym_index is the block's position in the file, so a single
     # duplicate can be removed without disturbing its identically-named twin.
     sym_path = Path(cfg["SymbolLib"])
     if sym_path.exists():
         try:
+            sym_date = _date(sym_path)
             text = read_text(sym_path)
             blocks = extract_symbol_blocks(text)
             for i, b in enumerate(blocks):
                 nm = extract_symbol_name(b)
-                rows.append({"type": "Symbol", "name": nm, "path": sym_path, "sym_index": i})
+                rows.append({"type": "Symbol", "name": nm, "path": sym_path,
+                             "sym_index": i, "date": sym_date})
         except Exception:
             pass
 
@@ -1350,12 +1377,6 @@ class LibraryManagerWindow(QMainWindow):
         self.theme_btn.clicked.connect(self.toggle_theme)
         h.addWidget(self.theme_btn)
 
-        self.about_btn = QToolButton()
-        self.about_btn.setText("?")
-        self.about_btn.setToolTip("About")
-        self.about_btn.clicked.connect(self.show_about)
-        h.addWidget(self.about_btn)
-
         # Live status: branch (once) + activity dot + activity text
         h.addSpacing(8)
         self.branch_label = QLabel("")
@@ -1699,7 +1720,7 @@ class LibraryManagerWindow(QMainWindow):
         # Advanced dropdown placed above the step buttons; full-width and sized like the steps
         adv_menu = QMenu()
         adv_btn = QPushButton("Advanced")
-        adv_btn.setIcon(st.standardIcon(QStyle.SP_FileDialogDetailedView))
+        adv_btn.setIcon(gray_icon(st, QStyle.SP_FileDialogDetailedView))
         adv_btn.setMaximumHeight(34)
         adv_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         adv_btn.setStyleSheet(btn_style)
@@ -1732,7 +1753,7 @@ class LibraryManagerWindow(QMainWindow):
 
         for text, callback, icon in buttons:
             btn = QPushButton(text)
-            btn.setIcon(st.standardIcon(icon))
+            btn.setIcon(gray_icon(st, icon))
             btn.setStyleSheet(btn_style)
             btn.setMaximumHeight(36)
             btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -1865,7 +1886,7 @@ class LibraryManagerWindow(QMainWindow):
         ]
         for i, (label, icon, cb) in enumerate(actions):
             b = QPushButton(label)
-            b.setIcon(st.standardIcon(icon))
+            b.setIcon(gray_icon(st, icon))
             b.setMaximumHeight(28)
             b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             b.clicked.connect(cb)
@@ -1875,24 +1896,26 @@ class LibraryManagerWindow(QMainWindow):
                 btn_grid.addWidget(b, 2, 0, 1, 2)   # span both columns
         layout.addLayout(btn_grid)
 
-        # Tree widget (multi-select)
+        # Tree widget (multi-select). Date is the LAST column so path stays text(2).
         self.tree = QTreeWidget()
-        self.tree.setColumnCount(3)
-        self.tree.setHeaderLabels(["Format", "Name", "Location"])
+        self.tree.setColumnCount(4)
+        self.tree.setHeaderLabels(["Format", "Name", "Location", "Date"])
         self.tree.setColumnWidth(0, 130)
         self.tree.setColumnWidth(1, 260)
-        self.tree.setColumnWidth(2, 420)
+        self.tree.setColumnWidth(2, 380)
+        self.tree.setColumnWidth(3, 92)
         self.tree.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.tree.setRootIsDecorated(False)
         self.tree.setAlternatingRowColors(True)
         self.tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.tree.setIndentation(10)
-        # Prefer sizing Type/Name to contents and let Location stretch
+        # Size Type/Name/Date to contents and let Location stretch
         header = self.tree.header()
         try:
             header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
             header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
             header.setSectionResizeMode(2, QHeaderView.Stretch)
+            header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
         except Exception:
             self.tree.header().setStretchLastSection(True)
 
@@ -2198,7 +2221,7 @@ class LibraryManagerWindow(QMainWindow):
     }
     # @@KEY@@ -> background hex, @KEY@ -> text/border hex (substituted in _build_qss).
     _THEME_QSS = """
-        QWidget { color: @FG@; font-family: "Segoe UI","Helvetica Neue",Arial,sans-serif; font-size: 9pt; }
+        QWidget { color: @FG@; font-family: "Inter","Segoe UI Variable Text","Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif; font-size: 9pt; }
         QMainWindow { background: transparent; }
         QWidget#rootCentral { background-color: @@WIN_BG@@; }
         QFrame#headerBar { background: transparent; border: none; }
@@ -2342,18 +2365,6 @@ class LibraryManagerWindow(QMainWindow):
         except Exception:
             pass
 
-    def show_about(self):
-        QMessageBox.about(
-            self, "About KICAD Manager",
-            f"<b>KICAD Manager</b><br>Version {APP_VERSION}<br><br>"
-            "Drop vendor ZIPs to merge symbols, footprints and 3D models into the "
-            "shared library, with one-click git sync.<br><br>"
-            "Includes KICAD project tools: bulk rename, net-class sync, and "
-            "project-settings sync.<br><br>Built with PyQt5."
-        )
-
-        
-   
     def handle_dropped_files(self, files: List[Path]):
         """Handle files dropped into drop zone"""
         copied = []
@@ -2515,7 +2526,8 @@ class LibraryManagerWindow(QMainWindow):
             item = QTreeWidgetItem([
                 str(r["type"]),
                 str(r["name"]),
-                str(r["path"])
+                str(r["path"]),
+                str(r.get("date", "")),
             ])
             # Carry the full row (incl. sym_index) so Delete targets exactly
             # this entry rather than every entry sharing its name.
@@ -2656,9 +2668,14 @@ def main():
         app.setStyle('Fusion')
     except Exception:
         pass
-    # Use a clear UI font
+    # Modern UI font: prefer Inter, else Windows 11's Segoe UI Variable, else Segoe UI
     try:
-        app.setFont(QFont('Segoe UI', 10))
+        from PyQt5.QtGui import QFontDatabase
+        fams = set(QFontDatabase().families())
+        for fam in ("Inter", "Segoe UI Variable Text", "Segoe UI"):
+            if fam in fams:
+                app.setFont(QFont(fam, 10))
+                break
     except Exception:
         pass
 
