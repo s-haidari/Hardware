@@ -40,9 +40,9 @@ from PyQt5.QtWidgets import (
     QListWidget, QListWidgetItem, QAbstractItemView, QTabBar, QStackedWidget,
     QComboBox, QCheckBox, QGroupBox, QFileDialog, QMessageBox, QInputDialog,
     QHeaderView, QFrame, QScrollArea, QSizePolicy, QSplitter, QStyle,
-    QToolButton, QMenu
+    QToolButton, QMenu, QProgressBar, QStatusBar
 )
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread, QMimeData, QUrl
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread, QMimeData, QUrl, QObject
 from PyQt5.QtGui import QPalette, QColor, QBrush, QDragEnterEvent, QDropEvent, QPainter, QPen, QFont
 
 # -----------------------------
@@ -184,28 +184,42 @@ def save_config(cfg: Dict[str, str]):
         print(f"WARNING: failed to write config.json: {e}")
 
 
-class UILog:
-    """Thread-safe logger that writes to both file and QTextEdit"""
+class UILog(QObject):
+    """Logger that writes to a file and the GUI log pane.
+
+    Safe to call from ANY thread: the file write is guarded by a lock, and the
+    GUI append is marshalled to the main thread through a Qt signal (when the
+    signal is emitted from a worker thread, Qt delivers it as a queued call on
+    the thread that owns this object — the GUI thread). This is what makes the
+    async git workers and the file watcher safe.
+    """
+    _append = pyqtSignal(str)
+
     def __init__(self, text_widget: QTextEdit, logfile: Path):
+        super().__init__()
         self.text = text_widget
         self.file = logfile
+        self._lock = threading.Lock()
         self.file.parent.mkdir(parents=True, exist_ok=True)
         if not self.file.exists():
             self.file.touch()
+        self._append.connect(self._do_append)
+
+    def _do_append(self, line: str):
+        """Runs on the GUI thread."""
+        self.text.append(line)
+        self.text.verticalScrollBar().setValue(self.text.verticalScrollBar().maximum())
 
     def write(self, msg: str):
         ts = time.strftime("%Y-%m-%d %H:%M:%S")
-        line = f"[{ts}] {msg}\n"
-       
-        try:
-            with open(self.file, "a", encoding="utf-8") as f:
-                f.write(line)
-        except Exception:
-            pass
-       
-        # Append to text widget (thread-safe via Qt signal/slot mechanism)
-        self.text.append(f"[{ts}] {msg}")
-        self.text.verticalScrollBar().setValue(self.text.verticalScrollBar().maximum())
+        line = f"[{ts}] {msg}"
+        with self._lock:
+            try:
+                with open(self.file, "a", encoding="utf-8") as f:
+                    f.write(line + "\n")
+            except Exception:
+                pass
+        self._append.emit(line)
 
 
 # -----------------------------
@@ -498,14 +512,17 @@ def process_zip(zip_path: Path, cfg: Dict[str, str], log: UILog):
     if git_stage_commit(cfg, log, message=commit_msg):
         git_push(cfg, log)
 
-def process_existing_zips(cfg: Dict[str, str], log: UILog, refresh_cb=None):
+def process_existing_zips(cfg: Dict[str, str], log: UILog, refresh_cb=None, progress_cb=None):
     zips = list(Path(cfg["Downloads"]).glob("*.zip"))
     if not zips:
         log.write("No ZIPs found in downloads")
         if refresh_cb:
             refresh_cb()
         return
-    for z in zips:
+    total = len(zips)
+    for i, z in enumerate(zips, 1):
+        if progress_cb:
+            progress_cb(i, total, z.stem)
         process_zip(z, cfg, log)
     if refresh_cb:
         refresh_cb()
@@ -946,22 +963,34 @@ class LibraryManagerWindow(QMainWindow):
     log_signal = pyqtSignal(str)
     pull_done = pyqtSignal()
     commits_signal = pyqtSignal(list)
+    # UI feedback / async plumbing
+    progress_signal = pyqtSignal(int, int, str)   # done, total, name (from workers)
+    branch_signal = pyqtSignal(str)               # branch + ahead/behind text
+    _async_finished = pyqtSignal(object)          # carries a callable to run on GUI thread
+
     def __init__(self, cfg: Dict[str, str]):
         super().__init__()
         self.cfg = cfg
         self.rows = []
         self.summary = {}
         self.process_on_drop = True
-       
-        self.setWindowTitle("KiCAD Manager")
-        self.setMinimumSize(960, 620)
-       
+        self._busy = False
+        self._branch_text_val = ""
+        self._closing = False
+        self._workers = []   # tracked background threads (joined on close)
+
+        self.setWindowTitle("KiCad Library Manager")
+        self.setMinimumSize(1040, 680)
+
         # Central widget with main layout
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
         main_layout.setSpacing(12)  # consistent spacing between sections
         main_layout.setContentsMargins(12, 12, 12, 12)
+
+        # --- Header bar (title + live branch/activity status) ---
+        main_layout.addWidget(self.create_header_bar())
 
         # --- Drop Zone ---
         drop_group = self.create_drop_zone()
@@ -996,8 +1025,9 @@ class LibraryManagerWindow(QMainWindow):
         # Connect cross-thread signals now that the log widget exists
         self.log_signal.connect(self.log.write)
         self.pull_done.connect(self.refresh_library)
-        # Also refresh commits after pull completes
+        # Also refresh commits + branch status after pull completes
         self.pull_done.connect(self.refresh_commits)
+        self.pull_done.connect(self.update_branch_status)
 
         # Initialize watcher (needs log)
         self.watcher = WatchController(self.cfg, self.log)
@@ -1013,13 +1043,23 @@ class LibraryManagerWindow(QMainWindow):
         # connect commits update signal to UI updater
         self.commits_signal.connect(self.update_commits_list)
 
+        # Async / feedback wiring
+        self.progress_signal.connect(self.set_progress)
+        self.branch_signal.connect(self._on_branch_text)
+        self._async_finished.connect(lambda fn: fn())
+
         central_splitter.setStretchFactor(0, 0)
         central_splitter.setStretchFactor(1, 1)
         central_splitter.setStretchFactor(2, 1)
         main_layout.addWidget(central_splitter)
 
+        # --- Status bar (operation text + progress + result chip) ---
+        self.build_status_bar()
+
         # Apply dark theme by default
         self.apply_dark_theme()
+        self.set_idle()
+        self.update_branch_status()
 
         # Start an initial background pull shortly after UI shows
         QTimer.singleShot(250, self.start_initial_pull)
@@ -1048,6 +1088,215 @@ class LibraryManagerWindow(QMainWindow):
         layout.addLayout(h)
 
         return card
+
+    # -------------------------------------------------------------------
+    # Header bar + status bar + feedback
+    # -------------------------------------------------------------------
+    def create_header_bar(self) -> QWidget:
+        """Top strip: app title on the left, live branch + activity on the right."""
+        bar = QFrame()
+        bar.setObjectName("headerBar")
+        bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        h = QHBoxLayout(bar)
+        h.setContentsMargins(14, 8, 14, 8)
+        h.setSpacing(8)
+
+        title = QLabel("KiCad Library Manager")
+        title.setObjectName("appTitle")
+        h.addWidget(title)
+        h.addStretch()
+
+        self.branch_label = QLabel("")
+        self.branch_label.setObjectName("branchChip")
+        h.addWidget(self.branch_label)
+
+        self.activity_dot = QLabel("●")   # ●
+        self.activity_dot.setObjectName("activityDot")
+        self.header_status = QLabel("Idle")
+        self.header_status.setObjectName("headerStatus")
+        h.addWidget(self.activity_dot)
+        h.addWidget(self.header_status)
+        return bar
+
+    def build_status_bar(self):
+        """Bottom status bar: operation text, progress bar, last-result chip."""
+        sb = QStatusBar()
+        self.setStatusBar(sb)
+
+        self.status_label = QLabel("Idle")
+        sb.addWidget(self.status_label, 1)
+
+        self.progress = QProgressBar()
+        self.progress.setObjectName("opProgress")
+        self.progress.setMaximumWidth(220)
+        self.progress.setMaximumHeight(14)
+        self.progress.setTextVisible(False)
+        self.progress.setVisible(False)
+        sb.addPermanentWidget(self.progress)
+
+        self.result_chip = QLabel("")
+        self.result_chip.setObjectName("resultChip")
+        sb.addPermanentWidget(self.result_chip)
+
+    def set_busy(self, msg: str):
+        """Enter a busy state (call on the GUI thread)."""
+        self._busy = True
+        self.status_label.setText(msg)
+        self.header_status.setText(msg)
+        self.activity_dot.setStyleSheet("color: #F59E0B;")   # amber = working
+        self.result_chip.setText("")
+        self.progress.setVisible(True)
+        self.progress.setRange(0, 0)   # indeterminate until a count arrives
+
+    def set_progress(self, done: int, total: int, name: str):
+        """Determinate progress update (GUI-thread slot for progress_signal)."""
+        self.progress.setVisible(True)
+        self.progress.setRange(0, max(total, 1))
+        self.progress.setValue(done)
+        self.status_label.setText(f"{name}  ({done}/{total})")
+
+    def set_idle(self, result: Optional[str] = None, ok: bool = True):
+        """Return to idle (call on the GUI thread)."""
+        self._busy = False
+        self.progress.setVisible(False)
+        self.progress.setRange(0, 0)
+        self.status_label.setText("Idle")
+        self.activity_dot.setStyleSheet("color: #5a5a5a;")   # grey = idle
+        self.header_status.setText(self._branch_text_val or "Idle")
+        if result:
+            self.result_chip.setText(result)
+            self.result_chip.setStyleSheet(
+                "color: #F59E0B;" if ok else "color: #ff6b6b;"
+            )
+
+    def _on_branch_text(self, txt: str):
+        self._branch_text_val = txt
+        self.branch_label.setText(txt)
+        if not self._busy:
+            self.header_status.setText(txt or "Idle")
+
+    def _emit(self, signal, *args):
+        """Emit a window signal from a worker thread, unless we're shutting
+        down (avoids touching a destroyed C++ object during teardown)."""
+        if self._closing:
+            return
+        try:
+            signal.emit(*args)
+        except RuntimeError:
+            pass
+
+    def _spawn(self, target):
+        """Start a tracked daemon thread so closeEvent can join it cleanly."""
+        self._workers = [t for t in self._workers if t.is_alive()]
+        th = threading.Thread(target=target, daemon=True)
+        self._workers.append(th)
+        th.start()
+        return th
+
+    def update_branch_status(self):
+        """Fetch branch + ahead/behind in the background and update the header."""
+        def _work():
+            try:
+                b = run_hidden(
+                    ["git", "-C", self.cfg["RepoRoot"], "rev-parse", "--abbrev-ref", "HEAD"],
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8"
+                ).stdout.strip()
+                counts = run_hidden(
+                    ["git", "-C", self.cfg["RepoRoot"], "rev-list", "--left-right", "--count",
+                     "origin/main...HEAD"],
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8"
+                ).stdout.strip()
+                behind = ahead = "0"
+                parts = counts.split()
+                if len(parts) == 2:
+                    behind, ahead = parts
+                txt = b or "main"
+                extras = []
+                if ahead not in ("", "0"):
+                    extras.append(f"↑{ahead}")   # ↑ahead
+                if behind not in ("", "0"):
+                    extras.append(f"↓{behind}")  # ↓behind
+                if extras:
+                    txt += "   " + " ".join(extras)
+                self._emit(self.branch_signal, txt)
+            except Exception:
+                self._emit(self.branch_signal, "")
+        self._spawn(_work)
+
+    def run_async(self, fn, busy_msg: str, success_msg: Optional[str] = None,
+                  refresh: bool = False):
+        """Run blocking work (git/processing) off the GUI thread so the window
+        stays responsive. UI updates happen on the GUI thread via signals."""
+        self.set_busy(busy_msg)
+
+        def _work():
+            ok = True
+            try:
+                fn()
+            except Exception as e:
+                ok = False
+                self._emit(self.log_signal, f"ERROR: {e}")
+
+            def _finish():
+                self.set_idle(success_msg if ok else "Error - see log", ok)
+                self.update_branch_status()
+                if refresh:
+                    self.refresh_library()
+                    self.refresh_commits()
+            self._emit(self._async_finished, _finish)
+
+        self._spawn(_work)
+
+    # ----- async action handlers (dialogs run here on the GUI thread) -----
+    def do_pull(self):
+        self.run_async(lambda: git_pull(self.cfg, self.log),
+                       "Pulling…", "Pulled ✓", refresh=True)
+
+    def do_push(self):
+        self.run_async(lambda: git_push(self.cfg, self.log),
+                       "Pushing…", "Pushed ✓")
+
+    def do_stage_commit(self):
+        self.run_async(lambda: git_stage_commit(self.cfg, self.log),
+                       "Committing…", "Committed ✓", refresh=True)
+
+    def do_process_zips(self):
+        def work():
+            process_existing_zips(
+                self.cfg, self.log, refresh_cb=None,
+                progress_cb=lambda d, t, n: self._emit(self.progress_signal, d, t, n)
+            )
+        self.run_async(work, "Processing ZIPs…", "Processed ✓", refresh=True)
+
+    def do_commit_push(self):
+        default = f"Library update {time.strftime('%Y-%m-%d %H:%M:%S')}"
+        msg, ok = QInputDialog.getText(self, "Commit Message", "Enter commit message:", text=default)
+        if not ok:
+            self.log.write("Commit: canceled by user")
+            return
+        message = msg.strip() or default
+
+        def work():
+            if git_stage_commit(self.cfg, self.log, message=message):
+                git_push(self.cfg, self.log)
+            else:
+                self.log.write("Push skipped: nothing was committed")
+        self.run_async(work, "Commit & Push…", "Pushed ✓", refresh=True)
+
+    def do_process_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Select extracted part folder", self.cfg["Downloads"])
+        if not folder:
+            return
+        folder_path = Path(folder)
+
+        def work():
+            self.log.write(f"Manual process folder: {folder_path}")
+            move_files(folder_path, self.cfg, self.log)
+            self.log.write("Done manual processing")
+            if git_stage_commit(self.cfg, self.log,
+                                message=f"Auto-update: processed folder {folder_path.name}"):
+                git_push(self.cfg, self.log)
+        self.run_async(work, "Processing folder…", "Processed ✓", refresh=True)
 
     def change_path(self, key: str, btn: QPushButton):
         """Allow user to change a configured path (RepoRoot or Downloads)"""
@@ -1117,7 +1366,7 @@ class LibraryManagerWindow(QMainWindow):
             except Exception as e:
                 self.log_signal.emit(f"Auto-pull failed: {e}")
 
-        threading.Thread(target=_pull, daemon=True).start()
+        self._spawn(_pull)
     def _periodic_pull(self):
         def _pull():
             try:
@@ -1142,7 +1391,7 @@ class LibraryManagerWindow(QMainWindow):
                     self.pull_done.emit()
             except Exception as e:
                 self.log_signal.emit(f"Periodic auto-pull failed: {e}")
-        threading.Thread(target=_pull, daemon=True).start()
+        self._spawn(_pull)
     def create_drop_zone(self) -> CardWidget:
         """Create drag-and-drop zone"""
         card = CardWidget("Drop Zone")
@@ -1188,17 +1437,20 @@ class LibraryManagerWindow(QMainWindow):
             }
         """
 
+        st = self.style()
+
         # Advanced dropdown placed above the step buttons; full-width and sized like the steps
         adv_menu = QMenu()
         adv_btn = QPushButton("Advanced")
+        adv_btn.setIcon(st.standardIcon(QStyle.SP_FileDialogDetailedView))
         adv_btn.setMaximumHeight(34)
         adv_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         adv_btn.setStyleSheet(btn_style)
         adv_actions = [
-            ("Pull", lambda: git_pull(self.cfg, self.log)),
-            ("Push", lambda: git_push(self.cfg, self.log)),
-            ("Stage and Commit", lambda: git_stage_commit(self.cfg, self.log)),
-            ("Process Folder", lambda: process_folder_dialog(self.cfg, self.log, self.refresh_library)),
+            ("Pull", self.do_pull),
+            ("Push", self.do_push),
+            ("Stage and Commit", self.do_stage_commit),
+            ("Process Folder", self.do_process_folder),
             ("Start Watcher", lambda: self.watcher.start()),
             ("Stop Watcher", lambda: self.watcher.stop()),
             ("Open Libraries", lambda: os.startfile(self.cfg["Libs"])),
@@ -1212,19 +1464,23 @@ class LibraryManagerWindow(QMainWindow):
         adv_btn.clicked.connect(adv_btn.showMenu)
         layout.addWidget(adv_btn)
 
-        # Full step labels with clear descriptions
+        # Full step labels with clear descriptions, icons, and (Step 2) a primary accent
         buttons = [
-            ("Step 0: Pull (Fast-Forward)", lambda: git_pull(self.cfg, self.log)),
-            ("Step 1: Open Downloads", lambda: os.startfile(self.cfg["Downloads"])),
-            ("Step 2: Process ZIPs", lambda: process_existing_zips(self.cfg, self.log, self.refresh_library)),
-            ("Step 3: Clean Leftovers", lambda: clean_leftovers(self.cfg, self.log, self.refresh_library)),
-            ("Step 4: Stage, Commit, Push", lambda: commit_and_push(self.cfg, self.log)),
+            ("Step 0: Pull (Fast-Forward)", self.do_pull, QStyle.SP_ArrowDown, False),
+            ("Step 1: Open Downloads", lambda: os.startfile(self.cfg["Downloads"]), QStyle.SP_DirOpenIcon, False),
+            ("Step 2: Process ZIPs", self.do_process_zips, QStyle.SP_MediaPlay, True),
+            ("Step 3: Clean Leftovers", lambda: clean_leftovers(self.cfg, self.log, self.refresh_library), QStyle.SP_TrashIcon, False),
+            ("Step 4: Stage, Commit, Push", self.do_commit_push, QStyle.SP_ArrowUp, False),
         ]
 
-        for text, callback in buttons:
+        for text, callback, icon, primary in buttons:
             btn = QPushButton(text)
-            btn.setStyleSheet(btn_style)
-            btn.setMaximumHeight(34)
+            btn.setIcon(st.standardIcon(icon))
+            if primary:
+                btn.setObjectName("primaryBtn")   # amber-filled accent button
+            else:
+                btn.setStyleSheet(btn_style)
+            btn.setMaximumHeight(36)
             btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             btn.clicked.connect(callback)
             layout.addWidget(btn)
@@ -1340,20 +1596,24 @@ class LibraryManagerWindow(QMainWindow):
        
         # Action buttons
         btn_layout = QHBoxLayout()
+        st = self.style()
         btn_refresh = QPushButton("Refresh")
-        btn_refresh.setMaximumHeight(24)
+        btn_refresh.setIcon(st.standardIcon(QStyle.SP_BrowserReload))
+        btn_refresh.setMaximumHeight(26)
         btn_refresh.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Fixed)
         btn_refresh.clicked.connect(self.refresh_library)
         btn_layout.addWidget(btn_refresh)
-       
+
         btn_open = QPushButton("Open")
-        btn_open.setMaximumHeight(24)
+        btn_open.setIcon(st.standardIcon(QStyle.SP_DirOpenIcon))
+        btn_open.setMaximumHeight(26)
         btn_open.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Fixed)
         btn_open.clicked.connect(self.on_tree_open)
         btn_layout.addWidget(btn_open)
-       
+
         btn_delete = QPushButton("Delete")
-        btn_delete.setMaximumHeight(24)
+        btn_delete.setIcon(st.standardIcon(QStyle.SP_TrashIcon))
+        btn_delete.setMaximumHeight(26)
         btn_delete.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Fixed)
         btn_delete.clicked.connect(self.on_tree_delete)
         btn_layout.addWidget(btn_delete)
@@ -1510,7 +1770,7 @@ class LibraryManagerWindow(QMainWindow):
             except Exception as e:
                 self.log_signal.emit(f"ERROR refreshing commits: {e}")
                 self.commits_signal.emit([])
-        threading.Thread(target=_run, daemon=True).start()
+        self._spawn(_run)
 
     def _on_commit_selection_changed(self):
         has = bool(self.commits_list.currentItem())
@@ -1550,7 +1810,7 @@ class LibraryManagerWindow(QMainWindow):
             except Exception as e:
                 self.log_signal.emit(f"ERROR showing commit {h}: {e}")
 
-        threading.Thread(target=_run_show, daemon=True).start()
+        self._spawn(_run_show)
 
     def get_selected_commit_hash(self) -> Optional[str]:
         it = self.commits_list.currentItem()
@@ -1622,7 +1882,7 @@ class LibraryManagerWindow(QMainWindow):
                     self.log_signal.emit(line)
             except Exception as e:
                 self.log_signal.emit(f"ERROR showing diff for {sha}: {e}")
-        threading.Thread(target=_run, daemon=True).start()
+        self._spawn(_run)
 
     def checkout_selected_commit(self):
         sha = self.get_selected_commit_hash()
@@ -1645,7 +1905,7 @@ class LibraryManagerWindow(QMainWindow):
                     self.log_signal.emit(line)
             except Exception as e:
                 self.log_signal.emit(f"ERROR checking out {sha}: {e}")
-        threading.Thread(target=_run, daemon=True).start()
+        self._spawn(_run)
    
     def apply_light_theme(self):
         """Apply light monochrome theme"""
@@ -1873,90 +2133,144 @@ class LibraryManagerWindow(QMainWindow):
         palette.setColor(QPalette.HighlightedText, QColor(230, 230, 230))
         self.setPalette(palette)
 
+        # Amber-accented dark theme. Plain string (literal hex) — no f-string,
+        # so CSS braces don't need escaping.
         stylesheet = """
             QWidget {
                 background-color: #1e1e1e;
                 color: #e6e6e6;
                 font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
             }
+            QMainWindow { background-color: #1a1a1a; }
+
+            /* Header bar */
+            QFrame#headerBar {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #272727, stop:1 #202020);
+                border: 1px solid #2e2e2e;
+                border-radius: 10px;
+            }
+            QLabel#appTitle { font-size: 13pt; font-weight: 800; color: #f4f4f4; }
+            QLabel#branchChip {
+                color: #d2d2d2; font-weight: 600; font-size: 9pt;
+                background: #2b2b2b; border: 1px solid #3a3a3a;
+                border-radius: 9px; padding: 2px 10px;
+            }
+            QLabel#activityDot { color: #5a5a5a; font-size: 12pt; }
+            QLabel#headerStatus { color: #b8b8b8; font-size: 9pt; }
+
+            /* Cards */
             QFrame#card {
                 border: 1px solid #2e2e2e;
-                border-radius: 8px;
+                border-radius: 10px;
                 background-color: #232323;
-                padding: 6px;
                 margin-top: 6px;
             }
             QLabel#cardTitle {
-                color: #e6e6e6;
-                padding-left: 6px;
-                padding-top: 4px;
-                padding-bottom: 4px;
-                font-weight: 700;
-                font-size: 10pt;
+                color: #f0f0f0; padding: 4px 6px;
+                font-weight: 800; font-size: 10pt;
             }
             QToolButton {
-                background-color: transparent;
-                border: 1px solid #2f2f2f;
-                border-radius: 6px;
-                padding: 6px 10px;
-                font-weight: 600;
+                background-color: transparent; border: 1px solid #2f2f2f;
+                border-radius: 6px; padding: 6px 10px; font-weight: 600;
             }
-            QMenu {
-                background-color: #2a2a2a;
-                border: 1px solid #333333;
-            }
+            QToolButton:hover { border-color: #F59E0B; }
+            QToolButton::menu-indicator { image: none; }
+            QMenu { background-color: #2a2a2a; border: 1px solid #383838; padding: 4px; }
+            QMenu::item { padding: 6px 18px; border-radius: 4px; }
+            QMenu::item:selected { background-color: #3a3a3a; color: #F59E0B; }
+
+            /* Standard buttons */
             QPushButton {
-                background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0, stop:0 #3a3a3a, stop:1 #2e2e2e);
-                color: #e6e6e6;
-                border: 1px solid #444444;
-                border-radius: 4px;
-                padding: 4px 8px;
-                font-size: 8pt;
-                font-weight: 500;
+                background-color: #2f2f2f; color: #e8e8e8;
+                border: 1px solid #3f3f3f; border-radius: 6px;
+                padding: 6px 10px; font-size: 9pt; font-weight: 600;
+                text-align: left;
             }
-            QPushButton:hover { border: 1px solid #5a5a5a; }
+            QPushButton:hover { border-color: #F59E0B; background-color: #353535; }
+            QPushButton:pressed { background-color: #2a2a2a; }
+            QPushButton:disabled { color: #777777; border-color: #333333; }
+            QPushButton::menu-indicator { image: none; }
+
+            /* Primary (amber) action button */
+            QPushButton#primaryBtn {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #F6A823, stop:1 #E0900B);
+                color: #1a1200; border: 1px solid #c97f08;
+                border-radius: 6px; padding: 7px 12px;
+                font-size: 9pt; font-weight: 800; text-align: left;
+            }
+            QPushButton#primaryBtn:hover { background: #FBBF24; }
+            QPushButton#primaryBtn:pressed { background: #D97706; }
+
             QLineEdit, QComboBox {
-                background-color: #262626;
-                border: 1px solid #333333;
-                border-radius: 3px;
-                padding: 4px 6px;
-                color: #e6e6e6;
+                background-color: #262626; border: 1px solid #353535;
+                border-radius: 6px; padding: 5px 8px; color: #e6e6e6;
             }
+            QLineEdit:focus, QComboBox:focus { border: 1px solid #F59E0B; }
+            QCheckBox { color: #d8d8d8; spacing: 6px; }
+            QCheckBox::indicator {
+                width: 15px; height: 15px; border-radius: 4px;
+                border: 1px solid #4a4a4a; background: #262626;
+            }
+            QCheckBox::indicator:checked { background: #F59E0B; border-color: #F59E0B; }
+
+            /* Tree */
             QTreeWidget {
-                background-color: #1f1f1f;
-                border: 1px solid #2e2e2e;
-                border-radius: 4px;
-                color: #e6e6e6;
-                alternate-background-color: #232323;
+                background-color: #1f1f1f; border: 1px solid #2e2e2e;
+                border-radius: 8px; color: #e6e6e6;
+                alternate-background-color: #242424; outline: 0;
             }
-            QHeaderView::section { background-color: #242424; color: #e6e6e6; padding: 4px; border: 1px solid #2f2f2f; font-weight: 600; }
-            QTextEdit { background-color: #141414; border: 1px solid #2e2e2e; color: #e6e6e6; }
-            QScrollBar:vertical { background-color: #1e1e1e; width: 12px; }
-            QScrollBar::handle:vertical { background-color: #444444; border-radius: 6px; }
-            /* Tab bar in card titles to match pane headers (button-like tabs) */
-            QTabBar#cardTabBar {
-                background: transparent;
-                spacing: 6px;
+            QTreeWidget::item { padding: 3px 2px; }
+            QTreeWidget::item:selected { background-color: #4a3a16; color: #ffe6b0; }
+            QTreeWidget::item:hover { background-color: #2a2a2a; }
+            QHeaderView::section {
+                background-color: #262626; color: #d8d8d8; padding: 6px;
+                border: none; border-right: 1px solid #303030;
+                border-bottom: 1px solid #303030; font-weight: 700;
             }
-            QTabBar#cardTabBar::tab {
-                padding: 6px 12px;
-                font-weight: 700;
-                font-size: 10pt;
-                color: #e6e6e6;
-                border: 1px solid #3a3a3a;
+
+            QTextEdit {
+                background-color: #151515; border: 1px solid #2e2e2e;
+                border-radius: 8px; color: #d6d6d6;
+                font-family: "Cascadia Mono", "Consolas", monospace; font-size: 8pt;
+            }
+
+            /* Scrollbars */
+            QScrollBar:vertical { background: transparent; width: 12px; margin: 2px; }
+            QScrollBar::handle:vertical { background: #3a3a3a; border-radius: 5px; min-height: 24px; }
+            QScrollBar::handle:vertical:hover { background: #F59E0B; }
+            QScrollBar:horizontal { background: transparent; height: 12px; margin: 2px; }
+            QScrollBar::handle:horizontal { background: #3a3a3a; border-radius: 5px; min-width: 24px; }
+            QScrollBar::handle:horizontal:hover { background: #F59E0B; }
+            QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
+            QScrollBar::add-page, QScrollBar::sub-page { background: none; }
+
+            /* Status bar + progress */
+            QStatusBar { background: #1a1a1a; border-top: 1px solid #2c2c2c; color: #b8b8b8; }
+            QStatusBar::item { border: none; }
+            QLabel#resultChip { font-weight: 700; padding: 0 8px; }
+            QProgressBar#opProgress {
+                background: #262626; border: 1px solid #353535; border-radius: 7px;
+            }
+            QProgressBar#opProgress::chunk {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #F6A823, stop:1 #FBBF24);
                 border-radius: 6px;
-                background: #2b2b2b;
-                margin: 0 4px;
-                min-height: 26px;
             }
-            QTabBar#cardTabBar::tab:hover {
-                background: #343434;
+
+            /* Tab bar in card titles */
+            QTabBar#cardTabBar { background: transparent; spacing: 6px; }
+            QTabBar#cardTabBar::tab {
+                padding: 6px 14px; font-weight: 700; font-size: 10pt; color: #cfcfcf;
+                border: 1px solid #3a3a3a; border-radius: 7px; background: #2a2a2a;
+                margin: 0 4px; min-height: 24px;
             }
+            QTabBar#cardTabBar::tab:hover { background: #343434; }
             QTabBar#cardTabBar::tab:selected {
-                color: #ffffff;
-                background: #3a3a3a;
-                border-color: #4a4a4a;
+                color: #1a1200;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #F6A823, stop:1 #E0900B);
+                border-color: #c97f08;
             }
+
+            QToolTip { background: #2a2a2a; color: #e6e6e6; border: 1px solid #F59E0B; padding: 4px; }
         """
         self.setStyleSheet(stylesheet)
         
@@ -1973,7 +2287,9 @@ class LibraryManagerWindow(QMainWindow):
                 self.log.write(f"ERROR copying {f}: {e}")
        
         if copied and self.process_on_drop:
-            process_existing_zips(self.cfg, self.log, refresh_cb=self.refresh_library)
+            self.do_process_zips()
+        elif copied:
+            self.refresh_library()
    
     def refresh_library(self):
         """Refresh library contents display"""
@@ -2159,8 +2475,25 @@ class LibraryManagerWindow(QMainWindow):
         self.refresh_library()
    
     def closeEvent(self, event):
-        """Handle window close event"""
-        self.watcher.stop()
+        """Handle window close: stop background work cleanly so no worker
+        thread touches the UI after the window is destroyed."""
+        self._closing = True
+        try:
+            if hasattr(self, "auto_pull_timer"):
+                self.auto_pull_timer.stop()
+        except Exception:
+            pass
+        try:
+            self.watcher.stop()
+        except Exception:
+            pass
+        # Let in-flight workers finish (or give up after a short wait) so none
+        # outlive the window and emit into a deleted object.
+        for t in list(self._workers):
+            try:
+                t.join(timeout=3.0)
+            except Exception:
+                pass
         event.accept()
 
 
@@ -2182,14 +2515,8 @@ def main():
         app.setFont(QFont('Segoe UI', 10))
     except Exception:
         pass
-    # Try to apply a modern material theme if available
-    try:
-        from qt_material import apply_stylesheet
-        apply_stylesheet(app, theme='light_cyan.xml')
-    except Exception:
-        pass
 
-    app.setApplicationName("KiCAD Manager")
+    app.setApplicationName("KiCad Library Manager")
    
     window = LibraryManagerWindow(cfg)
     window.show()
