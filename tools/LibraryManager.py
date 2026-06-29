@@ -67,6 +67,20 @@ except Exception:
         def __init__(self, *_, **__): pass
 
 # -----------------------------
+# Subprocess helper (no flashing console windows on Windows)
+# -----------------------------
+# When the GUI runs under pythonw.exe (no console), each child process would
+# otherwise pop its own console window. CREATE_NO_WINDOW suppresses that flash.
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def run_hidden(cmd, **kwargs):
+    """subprocess.run wrapper that never flashes a console window."""
+    kwargs["creationflags"] = kwargs.get("creationflags", 0) | _NO_WINDOW
+    return subprocess.run(cmd, **kwargs)
+
+
+# -----------------------------
 # Configuration (edit defaults)
 # -----------------------------
 def detect_repo_root() -> Path:
@@ -342,7 +356,11 @@ def merge_symbols(target_path: Path, sources: List[Path], log: UILog):
         return
     ensure_target_header(target_path)
     target_text = read_text(target_path)
+    # Skip symbols already in the library so re-processing a part doesn't
+    # create duplicate entries.
+    existing_names = {extract_symbol_name(b) for b in extract_symbol_blocks(target_text)}
     total_blocks: List[str] = []
+    skipped = 0
     for src in sources:
         try:
             src_text = read_text(src)
@@ -350,17 +368,26 @@ def merge_symbols(target_path: Path, sources: List[Path], log: UILog):
             log.write(f"WARN read symbol {src}: {e}")
             continue
         blocks = extract_symbol_blocks(src_text)
-        if blocks:
-            total_blocks.extend(blocks)
-        elif "(symbol" in src_text:
-            total_blocks.append(src_text.strip())
+        if not blocks and "(symbol" in src_text:
+            blocks = [src_text.strip()]
+        for b in blocks:
+            nm = extract_symbol_name(b)
+            if nm in existing_names:
+                skipped += 1
+                continue
+            existing_names.add(nm)
+            total_blocks.append(b)
     if not total_blocks:
-        log.write("No symbols found in source files.")
+        if skipped:
+            log.write(f"No new symbols to merge ({skipped} duplicate(s) skipped).")
+        else:
+            log.write("No symbols found in source files.")
         return
     new_text = insert_blocks_into_target(target_text, total_blocks)
     try:
         write_text(target_path, new_text)
-        log.write(f"Merged {len(total_blocks)} symbol(s) into {target_path}")
+        suffix = f" ({skipped} duplicate(s) skipped)" if skipped else ""
+        log.write(f"Merged {len(total_blocks)} symbol(s) into {target_path}{suffix}")
     except Exception as e:
         log.write(f"ERROR writing merged symbols: {e}")
 
@@ -431,10 +458,10 @@ def process_zip(zip_path: Path, cfg: Dict[str, str], log: UILog):
     move_files(part_dir, cfg, log)
     remove_part_artifacts(zip_path, part_dir, log)
     log.write(f"Done processing {base}")
-    # Immediately stage, commit, and push
+    # Immediately stage, commit, and push (only if something actually changed)
     commit_msg = f"Auto-update: processed {zip_path.name}"
-    git_stage_commit(cfg, log, message=commit_msg)
-    git_push(cfg, log)
+    if git_stage_commit(cfg, log, message=commit_msg):
+        git_push(cfg, log)
 
 def process_existing_zips(cfg: Dict[str, str], log: UILog, refresh_cb=None):
     zips = list(Path(cfg["Downloads"]).glob("*.zip"))
@@ -456,9 +483,9 @@ def process_folder_dialog(cfg: Dict[str, str], log: UILog, refresh_cb=None):
     log.write(f"Manual process folder: {folder_path}")
     move_files(folder_path, cfg, log)
     log.write("Done manual processing")
-    # Immediately stage, commit, and push
-    git_stage_commit(cfg, log, message=f"Auto-update: processed folder {folder_path.name}")
-    git_push(cfg, log)
+    # Immediately stage, commit, and push (only if something actually changed)
+    if git_stage_commit(cfg, log, message=f"Auto-update: processed folder {folder_path.name}"):
+        git_push(cfg, log)
     if refresh_cb:
         refresh_cb()
 
@@ -507,7 +534,7 @@ def clean_leftovers(cfg: Dict[str, str], log: UILog, refresh_cb=None):
 # -----------------------------
 def run_git(args: List[str], cfg: Dict[str, str], log: UILog):
     try:
-        proc = subprocess.run(
+        proc = run_hidden(
             ["git", "-C", cfg["RepoRoot"], *args],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -531,11 +558,29 @@ def git_push(cfg: Dict[str, str], log: UILog):
     log.write("Git push...")
     run_git(["push"], cfg, log)
 
-def git_stage_commit(cfg: Dict[str, str], log: UILog, message: Optional[str] = None):
+def git_has_staged_changes(cfg: Dict[str, str]) -> bool:
+    """True if there is something staged to commit. Avoids the noisy
+    'nothing to commit' ERROR (git exits non-zero when there's nothing)."""
+    try:
+        proc = run_hidden(
+            ["git", "-C", cfg["RepoRoot"], "diff", "--cached", "--quiet"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+        return proc.returncode != 0
+    except Exception:
+        return True
+
+
+def git_stage_commit(cfg: Dict[str, str], log: UILog, message: Optional[str] = None) -> bool:
+    """Stage everything and commit. Returns True only if a commit was made."""
     run_git(["add", "-A"], cfg, log)
+    if not git_has_staged_changes(cfg):
+        log.write("Nothing to commit (working tree clean)")
+        return False
     if not message:
         message = f"Library update {time.strftime('%Y-%m-%d %H:%M:%S')}"
     run_git(["commit", "-m", message], cfg, log)
+    return True
 
 def commit_and_push(cfg: Dict[str, str], log: UILog):
     """Combined action: Stage all, prompt for commit message, commit, then push"""
@@ -544,8 +589,10 @@ def commit_and_push(cfg: Dict[str, str], log: UILog):
     if not ok:
         log.write("Commit: canceled by user")
         return
-    git_stage_commit(cfg, log, message=msg.strip() or default)
-    git_push(cfg, log)
+    if git_stage_commit(cfg, log, message=msg.strip() or default):
+        git_push(cfg, log)
+    else:
+        log.write("Push skipped: nothing was committed")
 
 
 # -----------------------------
@@ -993,7 +1040,7 @@ class LibraryManagerWindow(QMainWindow):
                 
                 def _run_git(args):
                     try:
-                        proc = subprocess.run(
+                        proc = run_hidden(
                             ["git", "-C", self.cfg["RepoRoot"], "pull", "--ff-only"],
                             stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT,
@@ -1026,7 +1073,7 @@ class LibraryManagerWindow(QMainWindow):
         def _pull():
             try:
                 self.log_signal.emit("Periodic auto-pull: checking for updates...")
-                proc = subprocess.run(
+                proc = run_hidden(
                     ["git", "-C", self.cfg["RepoRoot"], "pull", "--ff-only"],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
@@ -1377,7 +1424,7 @@ class LibraryManagerWindow(QMainWindow):
         """Fetch recent commits from git in a background thread and emit results."""
         def _run():
             try:
-                proc = subprocess.run(
+                proc = run_hidden(
                     ["git", "-C", self.cfg["RepoRoot"], "log", "--pretty=format:%h%x09%ad%x09%an%x09%s", "--date=short", "-n", "50"],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
@@ -1434,7 +1481,7 @@ class LibraryManagerWindow(QMainWindow):
 
         def _run_show():
             try:
-                proc = subprocess.run(
+                proc = run_hidden(
                     ["git", "-C", self.cfg["RepoRoot"], "show", "--pretty=format:%H%n%an%n%ad%n%B", h],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
@@ -1462,7 +1509,7 @@ class LibraryManagerWindow(QMainWindow):
 
     def get_github_repo_url(self) -> Optional[str]:
         try:
-            proc = subprocess.run(
+            proc = run_hidden(
                 ["git", "-C", self.cfg["RepoRoot"], "config", "--get", "remote.origin.url"],
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8"
             )
@@ -1510,7 +1557,7 @@ class LibraryManagerWindow(QMainWindow):
             return
         def _run():
             try:
-                proc = subprocess.run(
+                proc = run_hidden(
                     ["git", "-C", self.cfg["RepoRoot"], "show", sha],
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8"
                 )
@@ -1533,7 +1580,7 @@ class LibraryManagerWindow(QMainWindow):
             return
         def _run():
             try:
-                proc = subprocess.run(
+                proc = run_hidden(
                     ["git", "-C", self.cfg["RepoRoot"], "checkout", sha],
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8"
                 )
