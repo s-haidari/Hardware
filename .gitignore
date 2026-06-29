@@ -23,6 +23,7 @@ dist/
 *.spec
 *.manifest
 *.pyz
+*.exe
 
 # --- Logs & caches ---
 *.log

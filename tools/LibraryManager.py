@@ -84,11 +84,17 @@ def run_hidden(cmd, **kwargs):
 # Configuration (edit defaults)
 # -----------------------------
 def detect_repo_root() -> Path:
-    """Repo root = the parent of the tools/ directory that holds this script.
+    """Where the library lives.
 
-    Deriving everything from the script's own location makes the app portable:
-    it works from any clone, machine, or Windows username without editing paths.
+    Deriving this from the app's own location makes it portable across machines,
+    usernames, and clones with no edits.
+      * Normal script: repo root = parent of the tools/ folder holding this file.
+      * Frozen .exe (PyInstaller): repo root = the folder containing the .exe,
+        so dropping the exe into a repo checkout "just works". (sys._MEIPASS is a
+        throwaway temp dir, so we must NOT use __file__ when frozen.)
     """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent.parent
 
 
@@ -1143,7 +1149,7 @@ class LibraryManagerWindow(QMainWindow):
         self._busy = True
         self.status_label.setText(msg)
         self.header_status.setText(msg)
-        self.activity_dot.setStyleSheet("color: #F59E0B;")   # amber = working
+        self.activity_dot.setStyleSheet("color: #d0d0d0;")   # light = working
         self.result_chip.setText("")
         self.progress.setVisible(True)
         self.progress.setRange(0, 0)   # indeterminate until a count arrives
@@ -1166,7 +1172,7 @@ class LibraryManagerWindow(QMainWindow):
         if result:
             self.result_chip.setText(result)
             self.result_chip.setStyleSheet(
-                "color: #F59E0B;" if ok else "color: #ff6b6b;"
+                "color: #d6d6d6;" if ok else "color: #ff6b6b;"
             )
 
     def _on_branch_text(self, txt: str):
@@ -1464,22 +1470,19 @@ class LibraryManagerWindow(QMainWindow):
         adv_btn.clicked.connect(adv_btn.showMenu)
         layout.addWidget(adv_btn)
 
-        # Full step labels with clear descriptions, icons, and (Step 2) a primary accent
+        # Full step labels with clear descriptions and icons (all uniform style)
         buttons = [
-            ("Step 0: Pull (Fast-Forward)", self.do_pull, QStyle.SP_ArrowDown, False),
-            ("Step 1: Open Downloads", lambda: os.startfile(self.cfg["Downloads"]), QStyle.SP_DirOpenIcon, False),
-            ("Step 2: Process ZIPs", self.do_process_zips, QStyle.SP_MediaPlay, True),
-            ("Step 3: Clean Leftovers", lambda: clean_leftovers(self.cfg, self.log, self.refresh_library), QStyle.SP_TrashIcon, False),
-            ("Step 4: Stage, Commit, Push", self.do_commit_push, QStyle.SP_ArrowUp, False),
+            ("Step 0: Pull (Fast-Forward)", self.do_pull, QStyle.SP_ArrowDown),
+            ("Step 1: Open Downloads", lambda: os.startfile(self.cfg["Downloads"]), QStyle.SP_DirOpenIcon),
+            ("Step 2: Process ZIPs", self.do_process_zips, QStyle.SP_MediaPlay),
+            ("Step 3: Clean Leftovers", lambda: clean_leftovers(self.cfg, self.log, self.refresh_library), QStyle.SP_TrashIcon),
+            ("Step 4: Stage, Commit, Push", self.do_commit_push, QStyle.SP_ArrowUp),
         ]
 
-        for text, callback, icon, primary in buttons:
+        for text, callback, icon in buttons:
             btn = QPushButton(text)
             btn.setIcon(st.standardIcon(icon))
-            if primary:
-                btn.setObjectName("primaryBtn")   # amber-filled accent button
-            else:
-                btn.setStyleSheet(btn_style)
+            btn.setStyleSheet(btn_style)
             btn.setMaximumHeight(36)
             btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             btn.clicked.connect(callback)
@@ -2133,7 +2136,7 @@ class LibraryManagerWindow(QMainWindow):
         palette.setColor(QPalette.HighlightedText, QColor(230, 230, 230))
         self.setPalette(palette)
 
-        # Amber-accented dark theme. Plain string (literal hex) — no f-string,
+        # Neutral light-gray dark theme. Plain string (literal hex) — no f-string,
         # so CSS braces don't need escaping.
         stylesheet = """
             QWidget {
@@ -2173,45 +2176,35 @@ class LibraryManagerWindow(QMainWindow):
                 background-color: transparent; border: 1px solid #2f2f2f;
                 border-radius: 6px; padding: 6px 10px; font-weight: 600;
             }
-            QToolButton:hover { border-color: #F59E0B; }
+            QToolButton:hover { border-color: #8a8a8a; }
             QToolButton::menu-indicator { image: none; }
             QMenu { background-color: #2a2a2a; border: 1px solid #383838; padding: 4px; }
             QMenu::item { padding: 6px 18px; border-radius: 4px; }
-            QMenu::item:selected { background-color: #3a3a3a; color: #F59E0B; }
+            QMenu::item:selected { background-color: #3a3a3a; color: #f0f0f0; }
 
-            /* Standard buttons */
+            /* Buttons */
             QPushButton {
                 background-color: #2f2f2f; color: #e8e8e8;
                 border: 1px solid #3f3f3f; border-radius: 6px;
                 padding: 6px 10px; font-size: 9pt; font-weight: 600;
                 text-align: left;
             }
-            QPushButton:hover { border-color: #F59E0B; background-color: #353535; }
+            QPushButton:hover { border-color: #8a8a8a; background-color: #353535; }
             QPushButton:pressed { background-color: #2a2a2a; }
             QPushButton:disabled { color: #777777; border-color: #333333; }
             QPushButton::menu-indicator { image: none; }
-
-            /* Primary (amber) action button */
-            QPushButton#primaryBtn {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #F6A823, stop:1 #E0900B);
-                color: #1a1200; border: 1px solid #c97f08;
-                border-radius: 6px; padding: 7px 12px;
-                font-size: 9pt; font-weight: 800; text-align: left;
-            }
-            QPushButton#primaryBtn:hover { background: #FBBF24; }
-            QPushButton#primaryBtn:pressed { background: #D97706; }
 
             QLineEdit, QComboBox {
                 background-color: #262626; border: 1px solid #353535;
                 border-radius: 6px; padding: 5px 8px; color: #e6e6e6;
             }
-            QLineEdit:focus, QComboBox:focus { border: 1px solid #F59E0B; }
+            QLineEdit:focus, QComboBox:focus { border: 1px solid #8a8a8a; }
             QCheckBox { color: #d8d8d8; spacing: 6px; }
             QCheckBox::indicator {
                 width: 15px; height: 15px; border-radius: 4px;
                 border: 1px solid #4a4a4a; background: #262626;
             }
-            QCheckBox::indicator:checked { background: #F59E0B; border-color: #F59E0B; }
+            QCheckBox::indicator:checked { background: #9a9a9a; border-color: #9a9a9a; }
 
             /* Tree */
             QTreeWidget {
@@ -2220,7 +2213,7 @@ class LibraryManagerWindow(QMainWindow):
                 alternate-background-color: #242424; outline: 0;
             }
             QTreeWidget::item { padding: 3px 2px; }
-            QTreeWidget::item:selected { background-color: #4a3a16; color: #ffe6b0; }
+            QTreeWidget::item:selected { background-color: #3d3d3d; color: #f5f5f5; }
             QTreeWidget::item:hover { background-color: #2a2a2a; }
             QHeaderView::section {
                 background-color: #262626; color: #d8d8d8; padding: 6px;
@@ -2237,10 +2230,10 @@ class LibraryManagerWindow(QMainWindow):
             /* Scrollbars */
             QScrollBar:vertical { background: transparent; width: 12px; margin: 2px; }
             QScrollBar::handle:vertical { background: #3a3a3a; border-radius: 5px; min-height: 24px; }
-            QScrollBar::handle:vertical:hover { background: #F59E0B; }
+            QScrollBar::handle:vertical:hover { background: #777777; }
             QScrollBar:horizontal { background: transparent; height: 12px; margin: 2px; }
             QScrollBar::handle:horizontal { background: #3a3a3a; border-radius: 5px; min-width: 24px; }
-            QScrollBar::handle:horizontal:hover { background: #F59E0B; }
+            QScrollBar::handle:horizontal:hover { background: #777777; }
             QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
             QScrollBar::add-page, QScrollBar::sub-page { background: none; }
 
@@ -2252,7 +2245,7 @@ class LibraryManagerWindow(QMainWindow):
                 background: #262626; border: 1px solid #353535; border-radius: 7px;
             }
             QProgressBar#opProgress::chunk {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #F6A823, stop:1 #FBBF24);
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #8a8a8a, stop:1 #b0b0b0);
                 border-radius: 6px;
             }
 
@@ -2265,12 +2258,12 @@ class LibraryManagerWindow(QMainWindow):
             }
             QTabBar#cardTabBar::tab:hover { background: #343434; }
             QTabBar#cardTabBar::tab:selected {
-                color: #1a1200;
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #F6A823, stop:1 #E0900B);
-                border-color: #c97f08;
+                color: #f5f5f5;
+                background: #3d3d3d;
+                border-color: #555555;
             }
 
-            QToolTip { background: #2a2a2a; color: #e6e6e6; border: 1px solid #F59E0B; padding: 4px; }
+            QToolTip { background: #2a2a2a; color: #e6e6e6; border: 1px solid #8a8a8a; padding: 4px; }
         """
         self.setStyleSheet(stylesheet)
         
