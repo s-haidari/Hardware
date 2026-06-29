@@ -22,7 +22,7 @@ from PyQt5.QtWidgets import (
     QComboBox, QCheckBox, QListWidget, QListWidgetItem, QPlainTextEdit, QTabWidget,
     QTableWidget, QTableWidgetItem, QFormLayout, QDoubleSpinBox, QFileDialog,
     QMessageBox, QAbstractItemView, QHeaderView, QSizePolicy, QApplication,
-    QColorDialog, QScrollArea, QSplitter, QGridLayout
+    QColorDialog, QScrollArea, QToolButton, QMenu, QWidgetAction
 )
 from PyQt5.QtGui import QColor
 from PyQt5.QtCore import Qt
@@ -129,8 +129,8 @@ class KiCadToolsWidget(QWidget):
         root.setContentsMargins(0, 6, 0, 0)
         root.setSpacing(10)
 
-        # --- Folder row (full width) ---
-        fcard, fl = self._card("KICAD Projects Folder")
+        # --- Projects card: folder + a compact multi-select dropdown ---
+        pcard, pl = self._card("KICAD Projects")
         top = QHBoxLayout()
         top.addWidget(QLabel("Folder:"))
         self.dir_edit = QLineEdit(projects_dir or "")
@@ -138,51 +138,49 @@ class KiCadToolsWidget(QWidget):
         b_browse = QPushButton("Browse…"); b_browse.clicked.connect(self._browse)
         b_scan = QPushButton("Rescan"); b_scan.clicked.connect(self.rescan)
         top.addWidget(b_browse); top.addWidget(b_scan)
-        fl.addLayout(top)
-        root.addWidget(fcard)
+        pl.addLayout(top)
 
-        # --- Main area: projects sidebar | operations (resizable) ---
-        split = QSplitter(Qt.Horizontal)
-        split.setHandleWidth(6)
-
-        lcard, ll = self._card("Projects")
-        rowh = QHBoxLayout()
-        self.sel_label = QLabel("0 of 0 selected")
-        self.sel_label.setStyleSheet("font-weight: 700;")
-        rowh.addWidget(self.sel_label)
-        rowh.addStretch()
-        b_all = QPushButton("All"); b_all.setMaximumWidth(60); b_all.clicked.connect(lambda: self._check_all(True))
-        b_none = QPushButton("None"); b_none.setMaximumWidth(60); b_none.clicked.connect(lambda: self._check_all(False))
-        rowh.addWidget(b_all); rowh.addWidget(b_none)
-        ll.addLayout(rowh)
+        row2 = QHBoxLayout()
+        row2.addWidget(QLabel("Apply to:"))
+        self.proj_btn = QToolButton()
+        self.proj_btn.setPopupMode(QToolButton.InstantPopup)
+        self.proj_btn.setText("No projects")
+        self.proj_btn.setMinimumWidth(220)
+        self.proj_btn.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+        proj_menu = QMenu(self.proj_btn)
+        picker = QWidget()
+        pv = QVBoxLayout(picker); pv.setContentsMargins(8, 8, 8, 8); pv.setSpacing(6)
+        hb = QHBoxLayout()
+        b_all = QPushButton("All"); b_all.clicked.connect(lambda: self._check_all(True))
+        b_none = QPushButton("None"); b_none.clicked.connect(lambda: self._check_all(False))
+        hb.addWidget(b_all); hb.addWidget(b_none); hb.addStretch()
+        pv.addLayout(hb)
         self.proj_list = QListWidget()
+        self.proj_list.setMinimumWidth(340)
+        self.proj_list.setMinimumHeight(140)
+        self.proj_list.setMaximumHeight(280)
         self.proj_list.itemChanged.connect(lambda *_: self._update_selection())
-        ll.addWidget(self.proj_list, 1)
-        lcard.setMinimumWidth(240)
-        split.addWidget(lcard)
+        pv.addWidget(self.proj_list)
+        wa = QWidgetAction(proj_menu); wa.setDefaultWidget(picker)
+        proj_menu.addAction(wa)
+        self.proj_btn.setMenu(proj_menu)
+        row2.addWidget(self.proj_btn)
+        row2.addStretch()
+        pl.addLayout(row2)
+        root.addWidget(pcard)
 
+        # --- Operations card (fills the rest) ---
         ocard, ol = self._card("Operations")
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_rename_tab(), "Bulk Rename")
         self.tabs.addTab(self._build_netclass_tab(), "Net Classes")
         self.tabs.addTab(self._build_settings_tab(), "Project Settings")
         ol.addWidget(self.tabs)
-        ocard.setMinimumWidth(420)
-        split.addWidget(ocard)
-
-        split.setStretchFactor(0, 0)
-        split.setStretchFactor(1, 1)
-        split.setSizes([280, 640])
-        try:
-            split.setCollapsible(0, False)
-            split.setCollapsible(1, False)
-        except Exception:
-            pass
-        root.addWidget(split, 1)
+        root.addWidget(ocard, 1)
 
         # --- Output (full width, short) ---
         ccard, cl = self._card("Output")
-        self.out = QPlainTextEdit(); self.out.setReadOnly(True); self.out.setMaximumHeight(130)
+        self.out = QPlainTextEdit(); self.out.setReadOnly(True); self.out.setMaximumHeight(110)
         cl.addWidget(self.out)
         root.addWidget(ccard)
 
@@ -232,7 +230,12 @@ class KiCadToolsWidget(QWidget):
         total = self.proj_list.count()
         sel = sum(1 for i in range(total)
                   if self.proj_list.item(i).checkState() == Qt.Checked)
-        self.sel_label.setText(f"{sel} of {total} selected")
+        if total == 0:
+            self.proj_btn.setText("No Projects")
+        elif sel == total:
+            self.proj_btn.setText(f"All {total} Projects")
+        else:
+            self.proj_btn.setText(f"{sel} of {total} Selected")
 
     def _check_all(self, on: bool):
         for i in range(self.proj_list.count()):
@@ -288,7 +291,7 @@ class KiCadToolsWidget(QWidget):
 
         btns = QHBoxLayout()
         b_prev = QPushButton("Preview"); b_prev.clicked.connect(lambda: self._run_rename(apply=False))
-        b_apply = QPushButton("Apply  (creates .bak)"); b_apply.clicked.connect(lambda: self._run_rename(apply=True))
+        b_apply = QPushButton("Apply  (Creates .bak)"); b_apply.clicked.connect(lambda: self._run_rename(apply=True))
         b_erc = QPushButton("Run ERC"); b_erc.clicked.connect(self._run_erc)
         btns.addWidget(b_prev); btns.addWidget(b_apply); btns.addStretch(); btns.addWidget(b_erc)
         v.addLayout(btns)
@@ -395,24 +398,27 @@ class KiCadToolsWidget(QWidget):
         w = QWidget(); v = QVBoxLayout(w)
         bar = QHBoxLayout()
         for label, fn in [
-            ("Load vault template", self._nc_load_template),
-            ("Load from project", self._nc_load_project),
+            ("Load Vault Template", self._nc_load_template),
+            ("Load from Project", self._nc_load_project),
             ("Add", self._nc_add), ("Remove", self._nc_remove),
             ("Import…", self._nc_import), ("Export…", self._nc_export),
         ]:
             b = QPushButton(label); b.clicked.connect(fn); bar.addWidget(b)
         bar.addStretch()
-        b_sync = QPushButton("Sync to selected projects"); b_sync.clicked.connect(self._nc_sync)
+        b_sync = QPushButton("Sync to Selected Projects"); b_sync.clicked.connect(self._nc_sync)
         bar.addWidget(b_sync)
         v.addLayout(bar)
 
         self.nc_table = QTableWidget(0, len(self.NC_COLS))
         self.nc_table.setHorizontalHeaderLabels([c[0] for c in self.NC_COLS])
-        self.nc_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        # Size every column to its content so text is never truncated; the table
+        # scrolls horizontally instead of forcing the window wider.
+        self.nc_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.nc_table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.nc_table.cellDoubleClicked.connect(self._nc_cell_clicked)
         v.addWidget(self.nc_table, 1)
-        v.addWidget(QLabel("Distances in mm; thicknesses in mm. Double-click a Color "
-                           "cell to pick. A .bak is written on sync."))
+        v.addWidget(QLabel("Distances/thicknesses in mm. Double-click a Color cell to "
+                           "pick. A .bak is written on sync."))
         return w
 
     def _nc_set_color_item(self, r, col, hexv):
@@ -566,9 +572,9 @@ class KiCadToolsWidget(QWidget):
     def _build_settings_tab(self) -> QWidget:
         outer = QWidget(); ov = QVBoxLayout(outer)
         bar = QHBoxLayout()
-        b_load = QPushButton("Load from project"); b_load.clicked.connect(self._ps_load)
+        b_load = QPushButton("Load from Project"); b_load.clicked.connect(self._ps_load)
         bar.addWidget(b_load); bar.addStretch()
-        b_sync = QPushButton("Sync to selected projects"); b_sync.clicked.connect(self._ps_sync)
+        b_sync = QPushButton("Sync to Selected Projects"); b_sync.clicked.connect(self._ps_sync)
         bar.addWidget(b_sync)
         ov.addLayout(bar)
 

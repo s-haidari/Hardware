@@ -2226,7 +2226,10 @@ class LibraryManagerWindow(QMainWindow):
         QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox { background-color: @@IN_BG@@; border: 1px solid @BORDER@; border-radius: 6px; padding: 5px 8px; color: @FG@; }
         QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus { border: 1px solid @ACCENT@; }
         QComboBox QAbstractItemView { background-color: @@MENU_BG@@; color: @FG@; selection-background-color: @SEL_BG@; border: 1px solid @BORDER@; }
-        QCheckBox { color: @FG@; spacing: 7px; }
+        QCheckBox { color: @FG@; spacing: 8px; }
+        QCheckBox::indicator { width: 17px; height: 17px; border: 1px solid @ACCENT@; border-radius: 4px; background: @@IN_BG@@; }
+        QCheckBox::indicator:hover { border-color: @FG_DIM@; }
+        QCheckBox::indicator:checked { image: url(@CHECK_IMG@); background: @@SEC_BG@@; border-color: @FG_DIM@; }
         QTreeWidget, QTableWidget, QListWidget { background-color: @@TREE_BG@@; border: 1px solid @BORDER@; border-radius: 8px; color: @FG@; alternate-background-color: @@TREE_ALT@@; outline: 0; }
         QTreeWidget::item, QTableWidget::item { padding: 3px 2px; }
         QTreeWidget::item:selected, QTableWidget::item:selected, QListWidget::item:selected { background-color: @SEL_BG@; color: @SEL_FG@; }
@@ -2281,6 +2284,9 @@ class LibraryManagerWindow(QMainWindow):
         for k, v in c.items():
             qss = qss.replace("@@" + k + "@@", v)
             qss = qss.replace("@" + k + "@", v)
+        # checkmark image (theme-specific), forward-slashed for Qt stylesheet url()
+        check = resource_path("check_dark.png" if self._is_dark else "check_light.png")
+        qss = qss.replace("@CHECK_IMG@", str(check).replace("\\", "/"))
         return qss
 
     def _restyle(self):
