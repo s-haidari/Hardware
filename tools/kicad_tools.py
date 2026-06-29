@@ -21,8 +21,10 @@ from PyQt5.QtWidgets import (
     QWidget, QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
     QComboBox, QCheckBox, QListWidget, QListWidgetItem, QPlainTextEdit, QTabWidget,
     QTableWidget, QTableWidgetItem, QFormLayout, QDoubleSpinBox, QFileDialog,
-    QMessageBox, QAbstractItemView, QHeaderView, QSizePolicy, QApplication
+    QMessageBox, QAbstractItemView, QHeaderView, QSizePolicy, QApplication,
+    QColorDialog, QScrollArea
 )
+from PyQt5.QtGui import QColor
 from PyQt5.QtCore import Qt
 
 import nd_wizard as wiz
@@ -54,30 +56,54 @@ def project_pro_file(project_dir: Path) -> Optional[Path]:
 
 
 class KiCadToolsWidget(QWidget):
-    # Net-class table columns (label, NetClass attr, mm?)
+    LINE_STYLES = ["solid", "dashed", "dotted", "dash_dot"]
+
+    # Net-class table columns (label, NetClass attr, kind) — every field KiCad
+    # exposes. mm for distances; "color"/"linestyle" get special editors.
     NC_COLS = [
-        ("Name", "name"), ("Color", "color"), ("Clearance", "clearance"),
-        ("Track", "track_width"), ("Via Ø", "via_diameter"),
-        ("Via drill", "via_drill"), ("Priority", "priority"),
+        ("Name", "name", "text"),
+        ("Clearance", "clearance", "num"),
+        ("Track Width", "track_width", "num"),
+        ("Via Size", "via_diameter", "num"),
+        ("Via Hole", "via_drill", "num"),
+        ("Diff Pair Width", "diff_pair_width", "num"),
+        ("Diff Pair Gap", "diff_pair_gap", "num"),
+        ("Wire Thickness", "wire_thickness", "num"),
+        ("Bus Thickness", "bus_thickness", "num"),
+        ("Color", "color", "color"),
+        ("Line Style", "line_style", "linestyle"),
+        ("Priority", "priority", "num"),
     ]
-    # Project-settings fields shown (attr, label) — all in mils
-    PS_FIELDS = [
-        ("schematic_text_size", "Schematic text (mil)"),
-        ("schematic_line_width", "Schematic line (mil)"),
-        ("pcb_text_size", "PCB text size (mil)"),
-        ("pcb_text_thickness", "PCB text thickness (mil)"),
-        ("silk_text_size", "Silk text size (mil)"),
-        ("silk_text_thickness", "Silk text thickness (mil)"),
-        ("copper_text_size", "Copper text size (mil)"),
-        ("copper_text_thickness", "Copper text thickness (mil)"),
-        ("fab_text_size", "Fab text size (mil)"),
-        ("fab_text_thickness", "Fab text thickness (mil)"),
-        ("default_clearance", "Default clearance (mil)"),
-        ("default_track_width", "Default track width (mil)"),
-        ("default_via_diameter", "Default via Ø (mil)"),
-        ("default_via_drill", "Default via drill (mil)"),
-        ("solder_mask_clearance", "Solder mask clearance (mil)"),
-        ("solder_paste_margin", "Solder paste margin (mil)"),
+    # Project settings grouped like KiCad's dialog (all values in mils).
+    PS_GROUPS = [
+        ("Schematic", [
+            ("schematic_text_size", "Text size"),
+            ("schematic_line_width", "Line width"),
+            ("pin_symbol_size", "Pin symbol size"),
+            ("junction_size", "Junction size"),
+        ]),
+        ("PCB Text Boxes", [
+            ("pcb_text_size", "Text size"),
+            ("pcb_text_thickness", "Text thickness"),
+        ]),
+        ("Footprint Text", [
+            ("silk_text_size", "Silkscreen size"),
+            ("silk_text_thickness", "Silkscreen thickness"),
+            ("copper_text_size", "Copper size"),
+            ("copper_text_thickness", "Copper thickness"),
+            ("fab_text_size", "Fab size"),
+            ("fab_text_thickness", "Fab thickness"),
+        ]),
+        ("Design Rules", [
+            ("default_clearance", "Clearance"),
+            ("default_track_width", "Track width"),
+            ("default_via_diameter", "Via diameter"),
+            ("default_via_drill", "Via drill"),
+        ]),
+        ("Solder Mask / Paste", [
+            ("solder_mask_clearance", "Mask clearance"),
+            ("solder_paste_margin", "Paste margin"),
+        ]),
     ]
 
     def __init__(self, parent, projects_dir: str, save_dir_cb=None):
@@ -89,7 +115,7 @@ class KiCadToolsWidget(QWidget):
         root.setSpacing(10)
 
         # --- Projects card ---
-        pcard, pl = self._card("KiCad Projects")
+        pcard, pl = self._card("KICAD Projects")
         top = QHBoxLayout()
         top.addWidget(QLabel("Folder:"))
         self.dir_edit = QLineEdit(projects_dir or "")
@@ -148,7 +174,7 @@ class KiCadToolsWidget(QWidget):
         QApplication.processEvents()
 
     def _browse(self):
-        d = QFileDialog.getExistingDirectory(self, "Select KiCad projects folder", self.dir_edit.text() or "")
+        d = QFileDialog.getExistingDirectory(self, "Select KICAD projects folder", self.dir_edit.text() or "")
         if d:
             self.dir_edit.setText(d)
             self.rescan()
@@ -166,7 +192,7 @@ class KiCadToolsWidget(QWidget):
             it.setCheckState(Qt.Checked)
             it.setData(Qt.UserRole, str(pro) if pro else "")
             self.proj_list.addItem(it)
-        self.log(f"Found {len(projs)} KiCad project(s) under {path or '(unset)'}")
+        self.log(f"Found {len(projs)} KICAD project(s) under {path or '(unset)'}")
 
     def _check_all(self, on: bool):
         for i in range(self.proj_list.count()):
@@ -298,7 +324,7 @@ class KiCadToolsWidget(QWidget):
             QMessageBox.information(self, "ERC", "No projects selected."); return
         kdir = wiz_find_kicad_cli()
         if not kdir:
-            QMessageBox.warning(self, "ERC", "kicad-cli not found (install KiCad)."); return
+            QMessageBox.warning(self, "ERC", "kicad-cli not found (install KICAD)."); return
         self.log("\n=== ERC (kicad-cli) ===")
         for pro in pros:
             schs = wiz.list_schematics(pro.parent)
@@ -334,21 +360,48 @@ class KiCadToolsWidget(QWidget):
         self.nc_table = QTableWidget(0, len(self.NC_COLS))
         self.nc_table.setHorizontalHeaderLabels([c[0] for c in self.NC_COLS])
         self.nc_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.nc_table.cellDoubleClicked.connect(self._nc_cell_clicked)
         v.addWidget(self.nc_table, 1)
-        v.addWidget(QLabel("Track/clearance/via values are in mm. A .bak is written on sync."))
+        v.addWidget(QLabel("Distances in mm; thicknesses in mm. Double-click a Color "
+                           "cell to pick. A .bak is written on sync."))
         return w
 
+    def _nc_set_color_item(self, r, col, hexv):
+        hexv = hexv or "#808080"
+        it = QTableWidgetItem(hexv)
+        qc = QColor(hexv)
+        it.setBackground(qc)
+        it.setForeground(QColor("#000000") if qc.lightness() > 128 else QColor("#ffffff"))
+        self.nc_table.setItem(r, col, it)
+
+    def _nc_make_row(self, r, values: dict):
+        for col, (label, attr, kind) in enumerate(self.NC_COLS):
+            val = values.get(attr)
+            if kind == "color":
+                self._nc_set_color_item(r, col, val or "#808080")
+            elif kind == "linestyle":
+                combo = QComboBox()
+                combo.addItems(self.LINE_STYLES)
+                combo.setCurrentText(val if val in self.LINE_STYLES else "solid")
+                self.nc_table.setCellWidget(r, col, combo)
+            else:
+                self.nc_table.setItem(r, col, QTableWidgetItem("" if val is None else str(val)))
+
     def _nc_set_rows(self, manager: NetClassManager):
-        names = manager.list_netclasses()
         self.nc_table.setRowCount(0)
-        for name in names:
+        for name in manager.list_netclasses():
             nc = manager.get_netclass(name)
             r = self.nc_table.rowCount()
             self.nc_table.insertRow(r)
-            vals = [nc.name, nc.color, nc.clearance, nc.track_width,
-                    nc.via_diameter, nc.via_drill, nc.priority]
-            for col, val in enumerate(vals):
-                self.nc_table.setItem(r, col, QTableWidgetItem(str(val)))
+            self._nc_make_row(r, {attr: getattr(nc, attr, None) for _, attr, _ in self.NC_COLS})
+
+    def _nc_cell_clicked(self, r, col):
+        if self.NC_COLS[col][2] == "color":
+            it = self.nc_table.item(r, col)
+            cur = QColor(it.text()) if (it and it.text()) else QColor("#808080")
+            chosen = QColorDialog.getColor(cur, self, "Net class color")
+            if chosen.isValid():
+                self._nc_set_color_item(r, col, chosen.name())
 
     def _nc_load_template(self):
         self._nc_set_rows(create_vault_standard_template())
@@ -367,8 +420,12 @@ class KiCadToolsWidget(QWidget):
 
     def _nc_add(self):
         r = self.nc_table.rowCount(); self.nc_table.insertRow(r)
-        for col, val in enumerate(["NewClass", "#808080", "0.127", "0.2", "0.8", "0.4", "0"]):
-            self.nc_table.setItem(r, col, QTableWidgetItem(val))
+        self._nc_make_row(r, {
+            "name": "NewClass", "clearance": 0.127, "track_width": 0.2,
+            "via_diameter": 0.8, "via_drill": 0.4, "diff_pair_width": None,
+            "diff_pair_gap": None, "wire_thickness": 0.1524, "bus_thickness": 0.3048,
+            "color": "#808080", "line_style": "solid", "priority": 0,
+        })
 
     def _nc_remove(self):
         rows = sorted({i.row() for i in self.nc_table.selectedItems()}, reverse=True)
@@ -378,21 +435,41 @@ class KiCadToolsWidget(QWidget):
     def _nc_manager_from_table(self) -> NetClassManager:
         m = NetClassManager()
         for r in range(self.nc_table.rowCount()):
-            def cell(c, d=""):
-                it = self.nc_table.item(r, c)
-                return it.text().strip() if it and it.text().strip() else d
-            name = cell(0)
-            if not name:
+            row = {}
+            for col, (label, attr, kind) in enumerate(self.NC_COLS):
+                if kind == "linestyle":
+                    cw = self.nc_table.cellWidget(r, col)
+                    row[attr] = cw.currentText() if cw else "solid"
+                else:
+                    it = self.nc_table.item(r, col)
+                    row[attr] = it.text().strip() if it else ""
+            if not row.get("name"):
                 continue
+
+            def fnum(key, d):
+                s = row.get(key, "")
+                try:
+                    return float(s) if s != "" else None
+                except ValueError:
+                    return d
             try:
                 nc = NetClass(
-                    name=name, color=cell(1, "#808080"),
-                    clearance=float(cell(2, "0.127")), track_width=float(cell(3, "0.2")),
-                    via_diameter=float(cell(4, "0.8")), via_drill=float(cell(5, "0.4")),
-                    priority=int(float(cell(6, "0"))))
+                    name=row["name"],
+                    color=row.get("color") or "#808080",
+                    line_style=row.get("line_style") or "solid",
+                    wire_thickness=fnum("wire_thickness", 0.1524) or 0.1524,
+                    bus_thickness=fnum("bus_thickness", 0.3048) or 0.3048,
+                    clearance=fnum("clearance", 0.127) or 0.127,
+                    track_width=fnum("track_width", 0.2) or 0.2,
+                    via_diameter=fnum("via_diameter", 0.8) or 0.8,
+                    via_drill=fnum("via_drill", 0.4) or 0.4,
+                    diff_pair_width=fnum("diff_pair_width", None),
+                    diff_pair_gap=fnum("diff_pair_gap", None),
+                    priority=int(fnum("priority", 0) or 0),
+                )
                 m.add_netclass(nc)
-            except ValueError:
-                self.log(f"Skipping row {r+1}: invalid number.")
+            except Exception:
+                self.log(f"Skipping row {r + 1}: invalid value.")
         return m
 
     def _nc_sync(self):
@@ -430,26 +507,35 @@ class KiCadToolsWidget(QWidget):
 
     # ========================================================= PROJECT SETTINGS
     def _build_settings_tab(self) -> QWidget:
-        w = QWidget(); v = QVBoxLayout(w)
+        outer = QWidget(); ov = QVBoxLayout(outer)
         bar = QHBoxLayout()
         b_load = QPushButton("Load from project"); b_load.clicked.connect(self._ps_load)
         bar.addWidget(b_load); bar.addStretch()
         b_sync = QPushButton("Sync to selected projects"); b_sync.clicked.connect(self._ps_sync)
         bar.addWidget(b_sync)
-        v.addLayout(bar)
+        ov.addLayout(bar)
 
-        form = QFormLayout()
+        # Grouped like KiCad's dialog, in a scroll area so it never squishes.
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.NoFrame)
+        inner = QWidget(); form = QFormLayout(inner)
+        form.setLabelAlignment(Qt.AlignRight)
         self.ps_spins = {}
         defaults = ProjectSettings()
-        for attr, label in self.PS_FIELDS:
-            sp = QDoubleSpinBox(); sp.setRange(-1000, 100000); sp.setDecimals(2); sp.setSingleStep(1.0)
-            sp.setValue(float(getattr(defaults, attr)))
-            self.ps_spins[attr] = sp
-            form.addRow(label, sp)
-        v.addLayout(form)
-        v.addWidget(QLabel("Values are in mils (KiCad's drawing default unit). Grid is per-project (.kicad_prl) and not synced."))
-        v.addStretch()
-        return w
+        for section, fields in self.PS_GROUPS:
+            hdr = QLabel(section)
+            hdr.setStyleSheet("font-weight: 800; padding-top: 8px;")
+            form.addRow(hdr)
+            for attr, label in fields:
+                sp = QDoubleSpinBox()
+                sp.setRange(-1000, 100000); sp.setDecimals(2); sp.setSingleStep(1.0)
+                sp.setSuffix(" mil")
+                sp.setValue(float(getattr(defaults, attr)))
+                self.ps_spins[attr] = sp
+                form.addRow(label, sp)
+        scroll.setWidget(inner)
+        ov.addWidget(scroll, 1)
+        ov.addWidget(QLabel("Values are in mils. Grid is per-project (.kicad_prl) and not synced."))
+        return outer
 
     def _ps_load(self):
         pros = self.selected_pro_files()
@@ -482,7 +568,7 @@ class KiCadToolsWidget(QWidget):
 
 
 def wiz_find_kicad_cli() -> Optional[str]:
-    """Locate kicad-cli.exe next to a KiCad install, or on PATH."""
+    """Locate kicad-cli.exe next to a KICAD install, or on PATH."""
     import glob as _glob
     for pat in (r"C:\Program Files\KiCad\*\bin\kicad-cli.exe",
                 r"C:\Program Files (x86)\KiCad\*\bin\kicad-cli.exe"):

@@ -1177,7 +1177,7 @@ class LibraryManagerWindow(QMainWindow):
         self._closing = False
         self._workers = []   # tracked background threads (joined on close)
 
-        self.setWindowTitle("KiCAD Manager")
+        self.setWindowTitle("KICAD Manager")
         self.setMinimumSize(1040, 680)
         _icon = resource_path("app_icon.ico")
         if _icon.exists():
@@ -1198,7 +1198,7 @@ class LibraryManagerWindow(QMainWindow):
         # --- Header bar (shared across tabs) ---
         main_layout.addWidget(self.create_header_bar())
 
-        # --- "KiCAD Manager" tab: drop zone + 3-column splitter ---
+        # --- "KICAD Manager" tab: drop zone + 3-column splitter ---
         library_tab = QWidget()
         lib_layout = QVBoxLayout(library_tab)
         lib_layout.setSpacing(10)
@@ -1248,12 +1248,13 @@ class LibraryManagerWindow(QMainWindow):
         # Initialize watcher (needs log)
         self.watcher = WatchController(self.cfg, self.log)
 
-        # --- Top-level tabs: KiCad Tools (default) + KiCAD Manager ---
-        self.main_tabs = QTabWidget()
-        self.main_tabs.addTab(tools_tab, "KiCad Tools")
-        self.main_tabs.addTab(library_tab, "KiCAD Manager")
-        self.main_tabs.setCurrentIndex(0)   # KiCad Tools is the default tab
-        main_layout.addWidget(self.main_tabs, 1)
+        # --- Content: a stacked widget driven by the title-bar tabs ---
+        self.main_stack = QStackedWidget()
+        self.main_stack.addWidget(library_tab)   # index 0 -> "KICAD Manager"
+        self.main_stack.addWidget(tools_tab)     # index 1 -> "KICAD Tools"
+        self.title_tabs.currentChanged.connect(self.main_stack.setCurrentIndex)
+        self.title_tabs.setCurrentIndex(0)       # KICAD Manager is the default
+        main_layout.addWidget(self.main_stack, 1)
 
         # --- Status bar (operation text + progress + result chip) ---
         self.build_status_bar()
@@ -1270,14 +1271,25 @@ class LibraryManagerWindow(QMainWindow):
         self.set_idle()
         self.update_branch_status()
 
+        # Start an initial background pull shortly after UI shows
+        QTimer.singleShot(250, self.start_initial_pull)
+        # Initial library scan (will run after pull completes via refresh)
+        self.refresh_library()
+        self.log.write("UI started")
+        # Auto-pull every 5 minutes
+        self.auto_pull_timer = QTimer(self)
+        self.auto_pull_timer.setInterval(300000)  # 5 minutes
+        self.auto_pull_timer.timeout.connect(self._periodic_pull)
+        self.auto_pull_timer.start()
+
     def _build_tools_tab(self) -> QWidget:
-        """The KiCad Tools tab (rename / net classes / project settings)."""
+        """The KICAD Tools tab (rename / net classes / project settings)."""
         try:
             from kicad_tools import KiCadToolsWidget
         except Exception as e:
             w = QWidget()
             lay = QVBoxLayout(w)
-            lay.addWidget(QLabel(f"KiCad Tools unavailable:\n{e}"))
+            lay.addWidget(QLabel(f"KICAD Tools unavailable:\n{e}"))
             return w
         projects_dir = self._settings.value("projects_dir", "") or str(Path(self.cfg["RepoRoot"]).parent)
 
@@ -1287,19 +1299,6 @@ class LibraryManagerWindow(QMainWindow):
             except Exception:
                 pass
         return KiCadToolsWidget(self, projects_dir, save_dir_cb=_save)
-
-        # Start an initial background pull shortly after UI shows
-        QTimer.singleShot(250, self.start_initial_pull)
-
-        # Initial library scan (will run after pull completes via refresh)
-        self.refresh_library()
-
-        self.log.write("UI started")
-        # Auto-pull every 5 minutes
-        self.auto_pull_timer = QTimer(self)
-        self.auto_pull_timer.setInterval(300000)  # 5 minutes
-        self.auto_pull_timer.timeout.connect(self._periodic_pull)
-        self.auto_pull_timer.start()
    
     def create_header(self) -> CardWidget:
         """Create header with repo info"""
@@ -1320,17 +1319,23 @@ class LibraryManagerWindow(QMainWindow):
     # Header bar + status bar + feedback
     # -------------------------------------------------------------------
     def create_header_bar(self) -> QWidget:
-        """Top strip: app title on the left, live branch + activity on the right."""
+        """Top strip: the two section tabs act as the title, with live status
+        and view controls on the right."""
         bar = QFrame()
         bar.setObjectName("headerBar")
         bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         h = QHBoxLayout(bar)
-        h.setContentsMargins(14, 8, 14, 8)
+        h.setContentsMargins(10, 4, 12, 0)
         h.setSpacing(8)
 
-        title = QLabel("KiCAD Manager")
-        title.setObjectName("appTitle")
-        h.addWidget(title)
+        # The section tabs ARE the title (KICAD Manager / KICAD Tools)
+        self.title_tabs = QTabBar()
+        self.title_tabs.setObjectName("titleTabs")
+        self.title_tabs.addTab("KICAD Manager")
+        self.title_tabs.addTab("KICAD Tools")
+        self.title_tabs.setExpanding(False)
+        self.title_tabs.setDrawBase(False)
+        h.addWidget(self.title_tabs)
         h.addStretch()
 
         # Inline view controls (built straight into the top bar)
@@ -1843,7 +1848,7 @@ class LibraryManagerWindow(QMainWindow):
         actions = [
             ("Refresh", QStyle.SP_BrowserReload, self.refresh_library),
             ("Open", QStyle.SP_DirOpenIcon, self.on_tree_open),
-            ("Open in KiCad", QStyle.SP_FileDialogContentsView, self.open_in_kicad),
+            ("Open in KICAD", QStyle.SP_FileDialogContentsView, self.open_in_kicad),
             ("Delete", QStyle.SP_TrashIcon, self.on_tree_delete),
             ("Remove Duplicates", QStyle.SP_DialogResetButton, self.on_remove_duplicates),
         ]
@@ -2186,6 +2191,10 @@ class LibraryManagerWindow(QMainWindow):
         QWidget#rootCentral { background-color: @@WIN_BG@@; }
         QFrame#headerBar { background: transparent; border: none; }
         QLabel#appTitle { font-size: 13pt; font-weight: 800; color: @TITLE_FG@; }
+        QTabBar#titleTabs { background: transparent; qproperty-drawBase: 0; }
+        QTabBar#titleTabs::tab { background: transparent; border: none; padding: 6px 14px; margin-right: 2px; font-size: 12pt; font-weight: 800; color: @FG_DIM@; }
+        QTabBar#titleTabs::tab:selected { color: @TITLE_FG@; border-bottom: 2px solid @ACCENT@; }
+        QTabBar#titleTabs::tab:hover { color: @TITLE_FG@; }
         QLabel#branchChip { color: @FG_DIM@; font-weight: 600; font-size: 9pt; }
         QLabel#activityDot { color: @DOT_IDLE@; font-size: 12pt; }
         QLabel#headerStatus { color: @FG_DIM@; font-size: 9pt; }
@@ -2305,11 +2314,11 @@ class LibraryManagerWindow(QMainWindow):
 
     def show_about(self):
         QMessageBox.about(
-            self, "About KiCAD Manager",
-            f"<b>KiCAD Manager</b><br>Version {APP_VERSION}<br><br>"
+            self, "About KICAD Manager",
+            f"<b>KICAD Manager</b><br>Version {APP_VERSION}<br><br>"
             "Drop vendor ZIPs to merge symbols, footprints and 3D models into the "
             "shared library, with one-click git sync.<br><br>"
-            "Includes KiCad project tools: bulk rename, net-class sync, and "
+            "Includes KICAD project tools: bulk rename, net-class sync, and "
             "project-settings sync.<br><br>Built with PyQt5."
         )
 
@@ -2412,7 +2421,7 @@ class LibraryManagerWindow(QMainWindow):
         file type). Symbols open the shared .kicad_sym in the Symbol Editor."""
         items = self.tree.selectedItems()
         if not items:
-            QMessageBox.information(self, "Open in KiCad", "No item selected.")
+            QMessageBox.information(self, "Open in KICAD", "No item selected.")
             return
         # distinct targets (all symbols share one .kicad_sym -> open it once)
         targets = []
@@ -2423,25 +2432,25 @@ class LibraryManagerWindow(QMainWindow):
                 targets.append(target)
         if len(targets) > 8:
             if QMessageBox.question(
-                self, "Open in KiCad",
-                f"Open {len(targets)} items in KiCad?",
+                self, "Open in KICAD",
+                f"Open {len(targets)} items in KICAD?",
                 QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
                 return
         if find_kicad_dir() is None:
             QMessageBox.warning(
-                self, "Open in KiCad",
-                "KiCad does not appear to be installed under Program Files.\n"
+                self, "Open in KICAD",
+                "KICAD does not appear to be installed under Program Files.\n"
                 "Opening with the default associated app instead."
             )
         for target in targets:
             if not target.exists():
-                self.log.write(f"Open in KiCad: missing {target.name}")
+                self.log.write(f"Open in KICAD: missing {target.name}")
                 continue
             try:
                 os.startfile(str(target))   # KiCad registers .kicad_mod/.kicad_sym/.step
-                self.log.write(f"Open in KiCad: {target.name}")
+                self.log.write(f"Open in KICAD: {target.name}")
             except Exception as e:
-                self.log.write(f"Open in KiCad failed for {target.name}: {e}")
+                self.log.write(f"Open in KICAD failed for {target.name}: {e}")
 
     def on_remove_duplicates(self):
         """One-click: keep one copy of each duplicated symbol, remove the rest."""
@@ -2623,7 +2632,7 @@ def main():
     except Exception:
         pass
 
-    app.setApplicationName("KiCad Library Manager")
+    app.setApplicationName("KICAD Manager")
     _icon = resource_path("app_icon.ico")
     if _icon.exists():
         app.setWindowIcon(QIcon(str(_icon)))
