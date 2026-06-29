@@ -1,0 +1,9 @@
+Manufacturer=Texas Instruments
+PartNumber=TPS61023DRLT
+PartCategory=Integrated Circuit
+PackageCategory=SO Transistor Flat Lead
+PinCount=6
+Version=1.1
+Released=2020-08-07 05:53:26
+Downloaded=2026-06-29 21:09:29
+3D=Y

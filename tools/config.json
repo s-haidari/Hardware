@@ -1,4 +1,5 @@
 {
+<<<<<<< Updated upstream
   "RepoRoot": "C:\\Users\\developer\\Documents\\GitHub\\Hardware",
   "Downloads": "C:\\Users\\developer\\Documents\\GitHub\\Hardware\\downloads",
   "Libs": "C:\\Users\\developer\\Documents\\GitHub\\Hardware\\libs",
@@ -7,5 +8,15 @@
   "ModelLib": "C:\\Users\\developer\\Documents\\GitHub\\Hardware\\libs\\My3DModels",
   "MiscDir": "C:\\Users\\developer\\Documents\\GitHub\\Hardware\\misc",
   "LogFile": "C:\\Users\\developer\\Documents\\GitHub\\Hardware\\tools\\ui_python.log",
+=======
+  "RepoRoot": "C:\\git\\Hardware",
+  "Downloads": "C:\\git\\Hardware\\downloads",
+  "Libs": "C:\\git\\Hardware\\libs",
+  "SymbolLib": "C:\\git\\Hardware\\libs\\MySymbols.kicad_sym",
+  "FootprintLib": "C:\\git\\Hardware\\libs\\MyFootprints.pretty",
+  "ModelLib": "C:\\git\\Hardware\\libs\\My3DModels",
+  "MiscDir": "C:\\git\\Hardware\\misc",
+  "LogFile": "C:\\git\\Hardware\\tools\\ui_python.log",
+>>>>>>> Stashed changes
   "PythonExe": "C:\\Users\\Sadad Haidari\\git\\Hardware\\.venv\\Scripts\\python.exe"
 }
