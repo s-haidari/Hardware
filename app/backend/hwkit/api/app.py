@@ -242,6 +242,18 @@ def netclasses_put(body: NetclassUpdate) -> dict:
     return {"path": str(p), "classes": len(body.classes), "saved": True}
 
 
+@app.post("/api/authority/generate")
+def authority_generate(package: str, out_dir: str | None = None) -> dict:
+    """Generate the canonical pinout authority (YAML + JSON + raw TSV) for a package."""
+    from ..pins import authority
+    conn = _conn()
+    try:
+        target = Path(out_dir) if out_dir else config.authority_dir()
+        return authority.write_authority(conn, package, target)
+    finally:
+        conn.close()
+
+
 @app.get("/api/pins/packages")
 def pins_packages() -> list[dict]:
     conn = _conn()

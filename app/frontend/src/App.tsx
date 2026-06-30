@@ -168,6 +168,16 @@ function PinsView() {
   const [matrix, setMatrix] = useState<PinMatrix | null>(null)
   const [tab, setTab] = useState<'switch' | 'matrix'>('switch')
   const [err, setErr] = useState('')
+  const [authMsg, setAuthMsg] = useState('')
+
+  const genAuthority = async () => {
+    setAuthMsg('Generating…')
+    try {
+      const r = await fetch(api(`/api/authority/generate?package=${pkg}`), { method: 'POST' })
+      const j = await r.json()
+      setAuthMsg(r.ok ? `Wrote ${j.files?.length ?? 0} files to ${j.out_dir} (${j.rollup?.must_switch_count} must-switch / ${j.rollup?.cells_min} cells)` : `Error: ${j.detail}`)
+    } catch (e) { setAuthMsg(String(e)) }
+  }
 
   useEffect(() => {
     getJSON<PackageInfo[]>('/api/pins/packages')
@@ -186,6 +196,7 @@ function PinsView() {
       <h1>Pins &amp; switch fabric</h1>
       <p className="sub">Which target socket pins need an ADG714 switch channel, derived from the full per-pin role set across the STM32F family.</p>
       {err && <div className="banner bad">{err}</div>}
+      {authMsg && <div className="banner">{authMsg}</div>}
       <div className="row">
         <label>Package&nbsp;
           <select value={pkg} onChange={(e) => setPkg(e.target.value)}>
@@ -193,6 +204,7 @@ function PinsView() {
           </select>
         </label>
         <a className="btn ghost" href={api(`/api/pins/${pkg}/switch-cells.csv`)}>Export CSV</a>
+        <button className="btn ghost" onClick={genAuthority}>Generate authority</button>
         <span style={{ flex: 1 }} />
         <button className={`btn ghost ${tab === 'switch' ? 'sel' : ''}`} onClick={() => setTab('switch')}>Switch cells</button>
         <button className={`btn ghost ${tab === 'matrix' ? 'sel' : ''}`} onClick={() => setTab('matrix')}>Full matrix</button>

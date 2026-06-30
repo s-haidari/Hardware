@@ -60,6 +60,15 @@ def kicad_config_dir() -> Path | None:
 MODEL_DIR_VAR = "MY3DMODELS"
 
 
+def authority_dir() -> Path:
+    """Where the pinout authority files are written (the vault data/ per spec).
+    Override: ``HWKIT_AUTHORITY``."""
+    env = os.environ.get("HWKIT_AUTHORITY")
+    if env:
+        return Path(env)
+    return Path.home() / "Documents" / "Obsidian" / "Brain" / "data"
+
+
 def downloads_dir() -> Path:
     """Folder watched for incoming part ZIPs. Override: ``HWKIT_DOWNLOADS``."""
     env = os.environ.get("HWKIT_DOWNLOADS")
