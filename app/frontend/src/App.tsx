@@ -168,12 +168,68 @@ function PinsView() {
   )
 }
 
+interface NetClass {
+  netclass: string; color?: string; track?: string | number
+  clearance?: number; members?: string[]; [k: string]: unknown
+}
+
 function NetclassesView() {
+  const [classes, setClasses] = useState<NetClass[]>([])
+  const [path, setPath] = useState('')
+  const [dirty, setDirty] = useState(false)
+  const [msg, setMsg] = useState('')
+
+  useEffect(() => {
+    getJSON<{ path: string; classes: NetClass[] }>('/api/netclasses')
+      .then((d) => { setClasses(d.classes); setPath(d.path) })
+      .catch((e) => setMsg(String(e)))
+  }, [])
+
+  const edit = (i: number, key: string, val: unknown) => {
+    setClasses((cs) => cs.map((c, j) => (j === i ? { ...c, [key]: val } : c)))
+    setDirty(true)
+  }
+
+  const save = async () => {
+    setMsg('Saving…')
+    try {
+      const r = await fetch('/api/netclasses', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ classes }),
+      })
+      const j = await r.json()
+      setMsg(r.ok ? `Saved ${j.classes} classes — .bak written` : `Error: ${j.detail}`)
+      if (r.ok) setDirty(false)
+    } catch (e) { setMsg(String(e)) }
+  }
+
   return (
     <div className="view">
       <h1>Netclasses</h1>
-      <p className="sub">Edit the vault netclass standard (names, colors, track widths, clearances) that the build cards and the KiCad project share.</p>
-      <div className="banner">Netclass standard editor — wiring to the vault next.</div>
+      <p className="sub">The vault netclass standard the build cards and the KiCad project share. Edits write back to <span className="mono">{path || 'net-classes.yaml'}</span> (a .bak is kept).</p>
+      <div className="row">
+        <button className="btn" onClick={save} disabled={!dirty}>{dirty ? 'Save standard' : 'Saved'}</button>
+        {msg && <span className="msg">{msg}</span>}
+      </div>
+      <table>
+        <thead><tr><th>Netclass</th><th>Color</th><th>Track</th><th>Clearance</th><th>Members</th></tr></thead>
+        <tbody>
+          {classes.map((c, i) => (
+            <tr key={c.netclass}>
+              <td className="mono">{c.netclass}</td>
+              <td>
+                <span className="row" style={{ gap: 6, margin: 0 }}>
+                  <input type="color" value={String(c.color ?? '#888888')} onChange={(e) => edit(i, 'color', e.target.value)} />
+                  <input className="mono" style={{ width: 84 }} value={String(c.color ?? '')} onChange={(e) => edit(i, 'color', e.target.value)} />
+                </span>
+              </td>
+              <td><input style={{ width: 110 }} value={String(c.track ?? '')} onChange={(e) => edit(i, 'track', e.target.value)} /></td>
+              <td><input style={{ width: 70 }} value={String(c.clearance ?? '')} onChange={(e) => edit(i, 'clearance', e.target.value === '' ? '' : Number(e.target.value))} /></td>
+              <td><input className="mono" style={{ width: '100%' }} value={(c.members ?? []).join(', ')} onChange={(e) => edit(i, 'members', e.target.value.split(',').map((s) => s.trim()).filter(Boolean))} /></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   )
 }

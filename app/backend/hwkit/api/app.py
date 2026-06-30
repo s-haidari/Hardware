@@ -24,6 +24,7 @@ from ..core import config
 from ..kicad import schematic as kschematic
 from ..library import catalog
 from ..library.importer import LibPaths, import_part
+from ..netdeck import netclasses as nc
 from ..pins import switch_engine as se
 from ..pins import switch_report as sr
 
@@ -119,6 +120,32 @@ def library_repair_schematic(req: RepairRequest) -> dict:
         "count": len(changes),
         "changes": [{"from": a, "to": b} for a, b in changes],
     }
+
+
+@app.get("/api/netclasses")
+def netclasses_get() -> dict:
+    p = config.netclass_standard_path()
+    if not p.exists():
+        raise HTTPException(status_code=404, detail=f"netclass standard not found: {p}")
+    data = nc.load(p)
+    return {"path": str(p), "meta": dict(data.get("meta", {})), "classes": nc.to_classes(data)}
+
+
+class NetclassUpdate(BaseModel):
+    classes: list[dict]
+
+
+@app.put("/api/netclasses")
+def netclasses_put(body: NetclassUpdate) -> dict:
+    """Write the netclass standard back (preserving header/meta), after a .bak."""
+    p = config.netclass_standard_path()
+    if not p.exists():
+        raise HTTPException(status_code=404, detail=f"netclass standard not found: {p}")
+    p.with_suffix(p.suffix + ".bak").write_text(p.read_text(encoding="utf-8"), encoding="utf-8", newline="\n")
+    data = nc.load(p)
+    nc.replace_classes(data, body.classes)
+    nc.save(p, data)
+    return {"path": str(p), "classes": len(body.classes), "saved": True}
 
 
 @app.get("/api/pins/packages")

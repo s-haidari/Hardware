@@ -32,6 +32,15 @@ def stm_database_path() -> Path:
     return candidates[0]
 
 
+def netclass_standard_path() -> Path:
+    """The canonical netclass standard YAML (mirror of the vault page
+    'Net Class Colors & Styles'). Overridable via ``HWKIT_NETCLASSES``."""
+    env = os.environ.get("HWKIT_NETCLASSES")
+    if env:
+        return Path(env)
+    return Path.home() / "git" / "pcb-build-system" / "data" / "net-classes.yaml"
+
+
 def libs_root() -> Path:
     """The KiCad library root (MySymbols / MyFootprints.pretty / My3DModels)."""
     env = os.environ.get("HWKIT_LIBS")
