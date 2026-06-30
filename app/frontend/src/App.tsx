@@ -80,6 +80,32 @@ function LibraryView() {
   const onProcess = () => post('/api/library/process-downloads', (j) =>
     `Imported ${(j.imported as string[]).length}, cleared ${(j.cleared as string[]).length} from downloads`)
 
+  const [schemPath, setSchemPath] = useState('')
+  const onRepair = async () => {
+    if (!schemPath) { setMsg('Enter a .kicad_sch path first'); return }
+    setBusy(true); setMsg('')
+    try {
+      const r = await fetch(api('/api/library/repair-schematic'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: schemPath, dry_run: false }),
+      })
+      const j = await r.json()
+      setMsg(r.ok ? `Repaired ${j.count} placed symbol(s) in the schematic (.bak written)` : `Error: ${j.detail}`)
+    } catch (e) { setMsg(String(e)) } finally { setBusy(false) }
+  }
+  const onRemove = async (name: string) => {
+    setBusy(true); setMsg('')
+    try {
+      const r = await fetch(api('/api/library/remove'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, remove_footprint: true }),
+      })
+      const j = await r.json()
+      setMsg(r.ok ? `Removed ${name} (symbol${j.footprint_removed ? ' + footprint' : ''}${j.model_removed ? ' + model' : ''})` : `Error: ${j.detail}`)
+      refresh()
+    } catch (e) { setMsg(String(e)) } finally { setBusy(false) }
+  }
+
   const onImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
@@ -127,10 +153,15 @@ function LibraryView() {
         <button className="btn ghost" onClick={refresh}>Refresh</button>
         {msg && <span className="msg">{msg}</span>}
       </div>
+      <div className="row">
+        <input className="mono" style={{ width: 340 }} placeholder="path to a .kicad_sch to repair"
+          value={schemPath} onChange={(e) => setSchemPath(e.target.value)} />
+        <button className="btn ghost" onClick={onRepair} disabled={busy}>Repair schematic</button>
+      </div>
 
       <h3>Catalog ({catalog.length})</h3>
       <table>
-        <thead><tr><th>Preview</th><th>Symbol</th><th>Footprint</th><th>Resolves?</th></tr></thead>
+        <thead><tr><th>Preview</th><th>Symbol</th><th>Footprint</th><th>Resolves?</th><th></th></tr></thead>
         <tbody>
           {catalog.map((c) => {
             const fpName = (c.footprint || '').split(':').pop() || ''
@@ -146,6 +177,7 @@ function LibraryView() {
                 <td>{c.symbol}</td>
                 <td className="mono">{c.footprint || '—'}</td>
                 <td>{c.footprint_ok ? <span className="ok">✓</span> : <span className="bad">✗</span>}</td>
+                <td><button className="btn ghost" onClick={() => onRemove(c.symbol)} disabled={busy}>Remove</button></td>
               </tr>
             )
           })}
