@@ -67,6 +67,19 @@ function LibraryView() {
     } catch (err) { setMsg(String(err)) } finally { setBusy(false) }
   }
 
+  const post = async (path: string, ok: (j: { [k: string]: unknown }) => string) => {
+    setBusy(true); setMsg('')
+    try {
+      const r = await fetch(api(path), { method: 'POST' })
+      const j = await r.json()
+      setMsg(r.ok ? ok(j) : `Error: ${j.detail}`)
+      refresh()
+    } catch (err) { setMsg(String(err)) } finally { setBusy(false) }
+  }
+  const onDedupe = () => post('/api/library/dedupe', (j) => `Removed ${j.removed} duplicate symbol(s)`)
+  const onProcess = () => post('/api/library/process-downloads', (j) =>
+    `Imported ${(j.imported as string[]).length}, cleared ${(j.cleared as string[]).length} from downloads`)
+
   const onImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
@@ -108,6 +121,8 @@ function LibraryView() {
           {busy ? 'Importing…' : 'Import part (.zip)'}
           <input type="file" accept=".zip" hidden onChange={onImport} disabled={busy} />
         </label>
+        <button className="btn ghost" onClick={onProcess} disabled={busy}>Process downloads</button>
+        <button className="btn ghost" onClick={onDedupe} disabled={busy}>Dedupe</button>
         <button className="btn ghost" onClick={onRegister} disabled={busy}>Register in KiCad</button>
         <button className="btn ghost" onClick={refresh}>Refresh</button>
         {msg && <span className="msg">{msg}</span>}

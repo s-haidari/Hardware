@@ -138,3 +138,31 @@ def merge_into_library(target_text: str, incoming: list[str],
     if not to_add:
         return target_text, []
     return insert_blocks(target_text, to_add), added
+
+
+def dedupe_library(text: str) -> tuple[str, int]:
+    """Keep only the first block of each symbol name. Returns (new_text, removed)."""
+    blocks = extract_symbol_blocks(text)
+    seen: set[str] = set()
+    kept: list[str] = []
+    removed = 0
+    for b in blocks:
+        name = symbol_name(b)
+        if name in seen:
+            removed += 1
+            continue
+        seen.add(name)
+        kept.append(b)
+    if not removed:
+        return text, 0
+    return insert_blocks(SYMBOL_LIB_HEADER, kept), removed
+
+
+def remove_symbol(text: str, name: str) -> tuple[str, int]:
+    """Remove every block named ``name``. Returns (new_text, removed_count)."""
+    blocks = extract_symbol_blocks(text)
+    kept = [b for b in blocks if symbol_name(b) != name]
+    removed = len(blocks) - len(kept)
+    if not removed:
+        return text, 0
+    return insert_blocks(SYMBOL_LIB_HEADER, kept), removed

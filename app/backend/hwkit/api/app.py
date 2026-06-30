@@ -121,6 +121,37 @@ async def library_import(file: UploadFile = File(...)) -> dict:
         Path(tmp.name).unlink(missing_ok=True)
 
 
+@app.post("/api/library/dedupe")
+def library_dedupe(dry_run: bool = False) -> dict:
+    from ..library import manage
+    removed = manage.dedupe(_libpaths(), dry_run=dry_run)
+    return {"removed": removed, "dry_run": dry_run}
+
+
+class RemoveRequest(BaseModel):
+    name: str
+    remove_footprint: bool = False
+    dry_run: bool = False
+
+
+@app.post("/api/library/remove")
+def library_remove(body: RemoveRequest) -> dict:
+    from ..library import manage
+    return manage.remove_part(_libpaths(), body.name,
+                              remove_footprint=body.remove_footprint, dry_run=body.dry_run)
+
+
+@app.post("/api/library/process-downloads")
+def library_process_downloads(clear: bool = True, dry_run: bool = False) -> dict:
+    from ..library import manage
+    res = manage.process_downloads(_libpaths(), config.downloads_dir(),
+                                   clear=clear, dry_run=dry_run)
+    return {
+        "downloads_dir": str(config.downloads_dir()),
+        "imported": res.imported, "cleared": res.cleared, "warnings": res.warnings,
+    }
+
+
 @app.post("/api/library/register")
 def library_register(dry_run: bool = True) -> dict:
     """Register MySymbols/MyFootprints in KiCad and define ${MY3DMODELS} so the

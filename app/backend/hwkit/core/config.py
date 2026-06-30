@@ -60,6 +60,14 @@ def kicad_config_dir() -> Path | None:
 MODEL_DIR_VAR = "MY3DMODELS"
 
 
+def downloads_dir() -> Path:
+    """Folder watched for incoming part ZIPs. Override: ``HWKIT_DOWNLOADS``."""
+    env = os.environ.get("HWKIT_DOWNLOADS")
+    if env:
+        return Path(env)
+    return libs_root().parent / "downloads"
+
+
 def libs_root() -> Path:
     """The KiCad library root (MySymbols / MyFootprints.pretty / My3DModels)."""
     env = os.environ.get("HWKIT_LIBS")
