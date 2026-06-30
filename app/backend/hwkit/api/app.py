@@ -18,11 +18,12 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel
 
 from ..core import config
 from ..kicad import libtable as klibtable
+from ..kicad import render as krender
 from ..kicad import schematic as kschematic
 from ..library import catalog
 from ..library.importer import LibPaths, import_part
@@ -94,6 +95,15 @@ def library_audit() -> dict:
 def library_catalog() -> list[dict]:
     lp = _libpaths()
     return [dataclasses.asdict(p) for p in catalog.list_symbols(lp.symbols)]
+
+
+@app.get("/api/library/footprint/{name}/svg", response_class=Response)
+def library_footprint_svg(name: str) -> Response:
+    fp = _libpaths().footprints / f"{name}.kicad_mod"
+    if not fp.exists():
+        raise HTTPException(status_code=404, detail=f"footprint not found: {name}")
+    svg = krender.footprint_svg(fp.read_text(encoding="utf-8", errors="replace"))
+    return Response(content=svg, media_type="image/svg+xml")
 
 
 @app.post("/api/library/import")

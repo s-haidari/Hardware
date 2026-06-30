@@ -115,15 +115,25 @@ function LibraryView() {
 
       <h3>Catalog ({catalog.length})</h3>
       <table>
-        <thead><tr><th>Symbol</th><th>Footprint</th><th>Resolves?</th></tr></thead>
+        <thead><tr><th>Preview</th><th>Symbol</th><th>Footprint</th><th>Resolves?</th></tr></thead>
         <tbody>
-          {catalog.map((c) => (
-            <tr key={c.symbol}>
-              <td>{c.symbol}</td>
-              <td className="mono">{c.footprint || '—'}</td>
-              <td>{c.footprint_ok ? <span className="ok">✓</span> : <span className="bad">✗</span>}</td>
-            </tr>
-          ))}
+          {catalog.map((c) => {
+            const fpName = (c.footprint || '').split(':').pop() || ''
+            return (
+              <tr key={c.symbol}>
+                <td style={{ width: 56 }}>
+                  {fpName && (
+                    <img className="fp-thumb" loading="lazy" alt={fpName}
+                      src={api(`/api/library/footprint/${encodeURIComponent(fpName)}/svg`)}
+                      onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
+                  )}
+                </td>
+                <td>{c.symbol}</td>
+                <td className="mono">{c.footprint || '—'}</td>
+                <td>{c.footprint_ok ? <span className="ok">✓</span> : <span className="bad">✗</span>}</td>
+              </tr>
+            )
+          })}
         </tbody>
       </table>
     </div>
