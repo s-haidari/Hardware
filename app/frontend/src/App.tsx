@@ -207,6 +207,22 @@ function NetclassesView() {
   const [path, setPath] = useState('')
   const [dirty, setDirty] = useState(false)
   const [msg, setMsg] = useState('')
+  const [projectPath, setProjectPath] = useState('')
+
+  const apply = async () => {
+    if (!projectPath) { setMsg('Enter a .kicad_pro path first'); return }
+    setMsg('Applying…')
+    try {
+      const r = await fetch(api('/api/netclasses/apply'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project_path: projectPath, dry_run: false }),
+      })
+      const j = await r.json()
+      setMsg(r.ok
+        ? (j.changed ? `Applied ${j.classes} classes / ${j.patterns} patterns to the project (.bak written)` : 'Project already matches the standard.')
+        : `Error: ${j.detail}`)
+    } catch (e) { setMsg(String(e)) }
+  }
 
   useEffect(() => {
     getJSON<{ path: string; classes: NetClass[] }>('/api/netclasses')
@@ -238,6 +254,9 @@ function NetclassesView() {
       <p className="sub">The vault netclass standard the build cards and the KiCad project share. Edits write back to <span className="mono">{path || 'net-classes.yaml'}</span> (a .bak is kept).</p>
       <div className="row">
         <button className="btn" onClick={save} disabled={!dirty}>{dirty ? 'Save standard' : 'Saved'}</button>
+        <input className="mono" style={{ width: 320 }} placeholder="path to a .kicad_pro"
+          value={projectPath} onChange={(e) => setProjectPath(e.target.value)} />
+        <button className="btn ghost" onClick={apply}>Apply to project</button>
         {msg && <span className="msg">{msg}</span>}
       </div>
       <table>

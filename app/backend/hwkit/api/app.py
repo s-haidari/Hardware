@@ -175,6 +175,29 @@ class NetclassUpdate(BaseModel):
     classes: list[dict]
 
 
+class NetclassApply(BaseModel):
+    project_path: str
+    dry_run: bool = True
+
+
+@app.post("/api/netclasses/apply")
+def netclasses_apply(body: NetclassApply) -> dict:
+    """Apply the vault netclass standard into a KiCad project's net_settings."""
+    from ..netdeck import project as nproject
+    p = Path(body.project_path)
+    if not p.exists():
+        raise HTTPException(status_code=404, detail=f"project not found: {p}")
+    sp = config.netclass_standard_path()
+    if not sp.exists():
+        raise HTTPException(status_code=404, detail=f"netclass standard not found: {sp}")
+    classes = nc.to_classes(nc.load(sp))
+    res = nproject.apply_netclasses(p, classes, dry_run=body.dry_run)
+    return {
+        "project": res.project, "dry_run": res.dry_run, "changed": res.changed,
+        "classes": res.classes, "patterns": res.patterns,
+    }
+
+
 @app.put("/api/netclasses")
 def netclasses_put(body: NetclassUpdate) -> dict:
     """Write the netclass standard back (preserving header/meta), after a .bak."""
