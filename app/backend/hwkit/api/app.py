@@ -326,3 +326,12 @@ def pins_switch_csv(package: str) -> str:
         return buf.getvalue()
     finally:
         conn.close()
+
+
+# Serve the built React UI (when present) from the same origin, so the app can
+# run as one process in a browser without Tauri. Mounted last so /api/* wins.
+_dist = Path(__file__).resolve().parents[3] / "frontend" / "dist"
+if (_dist / "index.html").exists():
+    from fastapi.staticfiles import StaticFiles
+
+    app.mount("/", StaticFiles(directory=str(_dist), html=True), name="ui")
