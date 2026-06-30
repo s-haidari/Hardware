@@ -52,6 +52,7 @@ h3 { font-size: 14px; color: var(--mut); margin: 26px 0 8px; }
   padding: 8px 14px; border-radius: 8px; font-size: 13.5px; cursor: pointer; text-decoration: none; }
 .btn:hover { background: #36424f; }
 .btn.ghost { background: none; }
+.btn.sel { background: #2d3744; color: #fff; }
 .msg { color: var(--mut); font-size: 13px; }
 
 select { background: var(--panel); color: var(--text); border: 1px solid var(--line);

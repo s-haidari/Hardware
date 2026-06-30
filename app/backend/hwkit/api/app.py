@@ -284,6 +284,24 @@ def pins_switch_report(package: str) -> dict:
         conn.close()
 
 
+@app.get("/api/pins/{package}/matrix")
+def pins_matrix(package: str) -> dict:
+    from ..pins import matrix
+    db = config.stm_database_path()
+    if not db.exists():
+        raise HTTPException(status_code=503, detail=f"STM database not found: {db}")
+    return matrix.package_matrix(db, package)
+
+
+@app.get("/api/pins/{package}/validate")
+def pins_validate(package: str) -> dict:
+    from ..pins import matrix
+    db = config.stm_database_path()
+    if not db.exists():
+        raise HTTPException(status_code=503, detail=f"STM database not found: {db}")
+    return matrix.package_validation(db, package)
+
+
 @app.get("/api/pins/{package}/switch-cells.csv", response_class=PlainTextResponse)
 def pins_switch_csv(package: str) -> str:
     conn = _conn()

@@ -155,10 +155,18 @@ function LibraryView() {
   )
 }
 
+interface MatrixPin {
+  pin: number; side: string; pin_name: string; gpio: string
+  roles: string; stability: string; needs_switch: boolean; required_cell: string
+}
+interface PinMatrix { package: string; pin_count: number; groups: number; pins: MatrixPin[] }
+
 function PinsView() {
   const [packages, setPackages] = useState<PackageInfo[]>([])
   const [pkg, setPkg] = useState('')
   const [report, setReport] = useState<SwitchReport | null>(null)
+  const [matrix, setMatrix] = useState<PinMatrix | null>(null)
+  const [tab, setTab] = useState<'switch' | 'matrix'>('switch')
   const [err, setErr] = useState('')
 
   useEffect(() => {
@@ -168,7 +176,9 @@ function PinsView() {
   }, [])
   useEffect(() => {
     if (!pkg) return
+    setMatrix(null)
     getJSON<SwitchReport>(`/api/pins/${pkg}/switch-report`).then(setReport).catch((e) => setErr(String(e)))
+    getJSON<PinMatrix>(`/api/pins/${pkg}/matrix`).then(setMatrix).catch(() => {})
   }, [pkg])
 
   return (
@@ -183,8 +193,26 @@ function PinsView() {
           </select>
         </label>
         <a className="btn ghost" href={api(`/api/pins/${pkg}/switch-cells.csv`)}>Export CSV</a>
+        <span style={{ flex: 1 }} />
+        <button className={`btn ghost ${tab === 'switch' ? 'sel' : ''}`} onClick={() => setTab('switch')}>Switch cells</button>
+        <button className={`btn ghost ${tab === 'matrix' ? 'sel' : ''}`} onClick={() => setTab('matrix')}>Full matrix</button>
       </div>
-      {report && (
+      {tab === 'matrix' && matrix && (
+        <table>
+          <thead><tr><th>Pin</th><th>Name</th><th>GPIO</th><th>Roles across family</th><th>Stability</th><th>Required cell</th></tr></thead>
+          <tbody>
+            {matrix.pins.map((p) => (
+              <tr key={p.pin}>
+                <td>{p.pin}</td><td className="mono">{p.pin_name}</td><td className="mono">{p.gpio}</td>
+                <td>{p.roles}</td>
+                <td className={p.needs_switch ? 'bad' : 'mut'}>{p.stability}</td>
+                <td className="mono">{p.required_cell}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {tab === 'switch' && report && (
         <>
           <div className="grid">
             <Stat label="Must switch" value={report.must_switch} tone="bad" />
