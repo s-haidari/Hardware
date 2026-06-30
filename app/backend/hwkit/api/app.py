@@ -22,6 +22,7 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
 from ..core import config
+from ..kicad import libtable as klibtable
 from ..kicad import schematic as kschematic
 from ..library import catalog
 from ..library.importer import LibPaths, import_part
@@ -108,6 +109,25 @@ async def library_import(file: UploadFile = File(...)) -> dict:
         return dataclasses.asdict(result)
     finally:
         Path(tmp.name).unlink(missing_ok=True)
+
+
+@app.post("/api/library/register")
+def library_register(dry_run: bool = True) -> dict:
+    """Register MySymbols/MyFootprints in KiCad and define ${MY3DMODELS} so the
+    importer's output resolves in KiCad with no manual setup. Dry-run by default."""
+    cfg = config.kicad_config_dir()
+    if cfg is None:
+        raise HTTPException(status_code=404, detail="KiCad config dir not found")
+    res = klibtable.register_libraries(
+        cfg, config.libs_root(), config.MODEL_DIR_VAR, dry_run=dry_run)
+    return {
+        "kicad_config_dir": str(cfg),
+        "dry_run": res.dry_run,
+        "changed": res.changed,
+        "sym_lib_added": res.sym_lib_added,
+        "fp_lib_added": res.fp_lib_added,
+        "env_var_set": res.env_var_set,
+    }
 
 
 class RepairRequest(BaseModel):

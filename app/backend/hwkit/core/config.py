@@ -41,6 +41,25 @@ def netclass_standard_path() -> Path:
     return Path.home() / "git" / "pcb-build-system" / "data" / "net-classes.yaml"
 
 
+def kicad_config_dir() -> Path | None:
+    """KiCad's per-user config dir (holds fp-lib-table, sym-lib-table,
+    kicad_common.json). Picks the highest version. Override: ``HWKIT_KICAD_CONFIG``."""
+    env = os.environ.get("HWKIT_KICAD_CONFIG")
+    if env:
+        return Path(env)
+    appdata = os.environ.get("APPDATA")
+    if not appdata:
+        return None
+    base = Path(appdata) / "kicad"
+    if not base.exists():
+        return None
+    versions = sorted((p for p in base.iterdir() if p.is_dir()), reverse=True)
+    return versions[0] if versions else base
+
+
+MODEL_DIR_VAR = "MY3DMODELS"
+
+
 def libs_root() -> Path:
     """The KiCad library root (MySymbols / MyFootprints.pretty / My3DModels)."""
     env = os.environ.get("HWKIT_LIBS")

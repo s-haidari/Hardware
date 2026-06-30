@@ -54,6 +54,19 @@ function LibraryView() {
   }
   useEffect(refresh, [])
 
+  const onRegister = async () => {
+    setBusy(true); setMsg('')
+    try {
+      const r = await fetch(api('/api/library/register?dry_run=false'), { method: 'POST' })
+      const j = await r.json()
+      setMsg(r.ok
+        ? (j.changed
+            ? `Registered in KiCad — symbols:${j.sym_lib_added ? 'added' : 'ok'}, footprints:${j.fp_lib_added ? 'added' : 'ok'}, \${MY3DMODELS}:${j.env_var_set ? 'set' : 'ok'}`
+            : 'KiCad already registered — nothing to do.')
+        : `Error: ${j.detail}`)
+    } catch (err) { setMsg(String(err)) } finally { setBusy(false) }
+  }
+
   const onImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
@@ -95,6 +108,7 @@ function LibraryView() {
           {busy ? 'Importing…' : 'Import part (.zip)'}
           <input type="file" accept=".zip" hidden onChange={onImport} disabled={busy} />
         </label>
+        <button className="btn ghost" onClick={onRegister} disabled={busy}>Register in KiCad</button>
         <button className="btn ghost" onClick={refresh}>Refresh</button>
         {msg && <span className="msg">{msg}</span>}
       </div>
