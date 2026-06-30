@@ -34,9 +34,22 @@ cd frontend && npm install
 Desktop app (spawns the backend automatically):
 
 ```bash
-cd frontend && npm run app          # dev: native window + hot reload
+cd frontend && npm run app          # dev: native window + hot reload (spawns the venv backend)
 cd frontend && npm run app:build    # release: NSIS installer in src-tauri/target/release/bundle
 ```
+
+### Portable build (no Python needed on the target)
+
+Freeze the backend into a standalone exe (the Tauri sidecar) first, then build:
+
+```bash
+backend/.venv/Scripts/python backend/build_sidecar.py   # -> src-tauri/binaries/hwkit-backend-<triple>.exe
+cd frontend && npm run app:build                        # installer bundles the sidecar
+```
+
+The shell prefers the bundled sidecar and falls back to the venv backend in dev,
+so both flows work. The sidecar binary is gitignored — rebuild it with the
+script above (needs `pyinstaller` + `setuptools`, in `requirements-dev.txt`).
 
 Or run the pieces directly during development:
 
