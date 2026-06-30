@@ -1,0 +1,73 @@
+"""
+catalog.py — read the current shared library and audit its correctness.
+
+The audit quantifies the live bug across the real ``libs/``: how many symbols
+point at the wrong footprint nickname and how many footprints are missing a 3D
+model. After a clean import these counts go to zero.
+"""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from ..kicad import footprints as F
+from ..kicad import symbols as S
+
+_MODEL_SUFFIXES = {".step", ".stp", ".wrl"}
+_FP_FIELD = re.compile(r'\(property\s+"Footprint"\s+"([^"]*)"')
+
+
+@dataclass
+class PartEntry:
+    symbol: str
+    footprint: str
+    footprint_ok: bool          # field is "<nickname>:<name>" form
+
+
+@dataclass
+class LibraryAudit:
+    symbols: int = 0
+    footprints: int = 0
+    models: int = 0
+    symbols_bad_nickname: list[str] = field(default_factory=list)
+    footprints_missing_model: list[str] = field(default_factory=list)
+
+    @property
+    def healthy(self) -> bool:
+        return not self.symbols_bad_nickname and not self.footprints_missing_model
+
+
+def list_symbols(symbols_path: Path, nickname: str = S.DEFAULT_FP_NICKNAME) -> list[PartEntry]:
+    if not symbols_path.exists():
+        return []
+    text = symbols_path.read_text(encoding="utf-8", errors="replace")
+    out: list[PartEntry] = []
+    for block in S.extract_symbol_blocks(text):
+        m = _FP_FIELD.search(block)
+        fp = m.group(1) if m else ""
+        out.append(PartEntry(
+            symbol=S.symbol_name(block),
+            footprint=fp,
+            footprint_ok=fp.startswith(f"{nickname}:"),
+        ))
+    return out
+
+
+def audit(symbols_path: Path, footprints_dir: Path, models_dir: Path,
+          nickname: str = S.DEFAULT_FP_NICKNAME) -> LibraryAudit:
+    a = LibraryAudit()
+    parts = list_symbols(symbols_path, nickname)
+    a.symbols = len(parts)
+    a.symbols_bad_nickname = [p.symbol for p in parts if not p.footprint_ok]
+
+    if footprints_dir.exists():
+        for fp in sorted(footprints_dir.glob("*.kicad_mod")):
+            a.footprints += 1
+            if not F.has_model(fp.read_text(encoding="utf-8", errors="replace")):
+                a.footprints_missing_model.append(fp.stem)
+
+    if models_dir.exists():
+        a.models = sum(1 for p in models_dir.iterdir()
+                       if p.suffix.lower() in _MODEL_SUFFIXES)
+    return a

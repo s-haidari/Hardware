@@ -9,17 +9,32 @@ Mounts the folded-in domains. ``pins`` (STM32 switch fabric) is live; the
 from __future__ import annotations
 
 import csv
+import dataclasses
 import io
+import shutil
 import sqlite3
+import tempfile
+from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import PlainTextResponse
 
 from ..core import config
+from ..library import catalog
+from ..library.importer import LibPaths, import_part
 from ..pins import switch_engine as se
 from ..pins import switch_report as sr
 
 app = FastAPI(title="Hardware App", version="0.1.0")
+
+
+def _libpaths() -> LibPaths:
+    root = config.libs_root()
+    return LibPaths(
+        symbols=root / "MySymbols.kicad_sym",
+        footprints=root / "MyFootprints.pretty",
+        models=root / "My3DModels",
+    )
 
 
 def _conn() -> sqlite3.Connection:
@@ -40,6 +55,46 @@ def health() -> dict:
         "database_present": db.exists(),
         "libs_root": str(config.libs_root()),
     }
+
+
+@app.get("/api/library/audit")
+def library_audit() -> dict:
+    lp = _libpaths()
+    a = catalog.audit(lp.symbols, lp.footprints, lp.models)
+    return {
+        "libs_root": str(config.libs_root()),
+        "symbols": a.symbols,
+        "footprints": a.footprints,
+        "models": a.models,
+        "healthy": a.healthy,
+        "symbols_bad_nickname": a.symbols_bad_nickname,
+        "footprints_missing_model": a.footprints_missing_model,
+        "summary": {
+            "symbols_bad_nickname": len(a.symbols_bad_nickname),
+            "footprints_missing_model": len(a.footprints_missing_model),
+        },
+    }
+
+
+@app.get("/api/library/catalog")
+def library_catalog() -> list[dict]:
+    lp = _libpaths()
+    return [dataclasses.asdict(p) for p in catalog.list_symbols(lp.symbols)]
+
+
+@app.post("/api/library/import")
+async def library_import(file: UploadFile = File(...)) -> dict:
+    """Import a part (.zip from easyeda2kicad / JLCPCB) into the shared library,
+    guaranteeing the footprint nickname + 3D-model link are correct."""
+    suffix = Path(file.filename or "upload.zip").suffix or ".zip"
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    try:
+        with tmp:
+            shutil.copyfileobj(file.file, tmp)
+        result = import_part(Path(tmp.name), _libpaths())
+        return dataclasses.asdict(result)
+    finally:
+        Path(tmp.name).unlink(missing_ok=True)
 
 
 @app.get("/api/pins/packages")
