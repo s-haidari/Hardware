@@ -22,8 +22,13 @@ interface SwitchReport {
   adg714_cells: number; pins: SwitchPin[]
 }
 
+// In dev, Vite proxies /api -> backend. In the packaged app the webview is on
+// the tauri:// origin, so hit the backend's absolute localhost URL.
+export const API_BASE = import.meta.env.DEV ? '' : 'http://127.0.0.1:8799'
+export const api = (path: string) => `${API_BASE}${path}`
+
 async function getJSON<T>(url: string): Promise<T> {
-  const r = await fetch(url)
+  const r = await fetch(api(url))
   if (!r.ok) throw new Error(`${r.status} ${await r.text()}`)
   return r.json() as Promise<T>
 }
@@ -56,7 +61,7 @@ function LibraryView() {
     try {
       const fd = new FormData()
       fd.append('file', file)
-      const r = await fetch('/api/library/import', { method: 'POST', body: fd })
+      const r = await fetch(api('/api/library/import'), { method: 'POST', body: fd })
       const j = await r.json()
       setMsg(r.ok ? `Imported ${j.symbols?.length ?? 0} symbol(s), ${j.footprints?.length ?? 0} footprint(s)` : `Error: ${j.detail}`)
       refresh()
@@ -138,7 +143,7 @@ function PinsView() {
             {packages.map((p) => <option key={p.package} value={p.package}>{p.package} ({p.mcus})</option>)}
           </select>
         </label>
-        <a className="btn ghost" href={`/api/pins/${pkg}/switch-cells.csv`}>Export CSV</a>
+        <a className="btn ghost" href={api(`/api/pins/${pkg}/switch-cells.csv`)}>Export CSV</a>
       </div>
       {report && (
         <>
@@ -193,7 +198,7 @@ function NetclassesView() {
   const save = async () => {
     setMsg('Saving…')
     try {
-      const r = await fetch('/api/netclasses', {
+      const r = await fetch(api('/api/netclasses'), {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ classes }),
       })

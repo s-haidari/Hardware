@@ -17,6 +17,7 @@ import tempfile
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
@@ -29,6 +30,15 @@ from ..pins import switch_engine as se
 from ..pins import switch_report as sr
 
 app = FastAPI(title="Hardware App", version="0.1.0")
+
+# Local desktop app: the packaged webview (tauri://) and the dev server
+# (localhost:5173) both call the backend on 127.0.0.1, so allow any local origin.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 def _libpaths() -> LibPaths:

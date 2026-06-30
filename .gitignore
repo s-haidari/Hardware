@@ -64,3 +64,6 @@ Thumbs.db
 
 # NOTE: CAD assets (*.step, *.stp) are intentionally NOT ignored.
 # We'll track them via Git LFS (below), not ignore them.
+# Rust / Tauri build output
+target/
+app/frontend/src-tauri/gen/
