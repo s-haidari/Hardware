@@ -18,8 +18,10 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import PlainTextResponse
+from pydantic import BaseModel
 
 from ..core import config
+from ..kicad import schematic as kschematic
 from ..library import catalog
 from ..library.importer import LibPaths, import_part
 from ..pins import switch_engine as se
@@ -95,6 +97,28 @@ async def library_import(file: UploadFile = File(...)) -> dict:
         return dataclasses.asdict(result)
     finally:
         Path(tmp.name).unlink(missing_ok=True)
+
+
+class RepairRequest(BaseModel):
+    path: str
+    dry_run: bool = True
+
+
+@app.post("/api/library/repair-schematic")
+def library_repair_schematic(req: RepairRequest) -> dict:
+    """Fix Footprint fields on symbols already placed in a .kicad_sch — only for
+    parts in the shared library. Dry-run by default; writes a .bak when applied."""
+    p = Path(req.path)
+    if not p.exists():
+        raise HTTPException(status_code=404, detail=f"schematic not found: {p}")
+    known = catalog.known_footprint_names(_libpaths().footprints)
+    changes = kschematic.repair_schematic_file(p, known, dry_run=req.dry_run)
+    return {
+        "path": str(p),
+        "dry_run": req.dry_run,
+        "count": len(changes),
+        "changes": [{"from": a, "to": b} for a, b in changes],
+    }
 
 
 @app.get("/api/pins/packages")

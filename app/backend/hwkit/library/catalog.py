@@ -54,6 +54,13 @@ def list_symbols(symbols_path: Path, nickname: str = S.DEFAULT_FP_NICKNAME) -> l
     return out
 
 
+def known_footprint_names(footprints_dir: Path) -> set[str]:
+    """The footprint names that live in the shared library (``*.kicad_mod`` stems)."""
+    if not footprints_dir.exists():
+        return set()
+    return {fp.stem for fp in footprints_dir.glob("*.kicad_mod")}
+
+
 def audit(symbols_path: Path, footprints_dir: Path, models_dir: Path,
           nickname: str = S.DEFAULT_FP_NICKNAME) -> LibraryAudit:
     a = LibraryAudit()
