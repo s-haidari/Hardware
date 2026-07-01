@@ -52,6 +52,11 @@ from PyQt5.QtGui import (
     QPalette, QColor, QBrush, QIcon, QImage, QPixmap,
     QDragEnterEvent, QDropEvent, QPainter, QPen, QFont
 )
+try:
+    from PyQt5.QtSvg import QSvgRenderer
+    HAVE_QTSVG = True
+except Exception:
+    HAVE_QTSVG = False
 
 # -----------------------------
 # Optional watcher (robust handling)
@@ -145,6 +150,44 @@ def gray_icon(style, sp, size: int = 16) -> QIcon:
             g = int(0.299 * c.red() + 0.587 * c.green() + 0.114 * c.blue())
             img.setPixelColor(x, y, QColor(g, g, g, c.alpha()))
     return QIcon(QPixmap.fromImage(img))
+
+
+# ---------------------------------------------------------------------------
+# Lucide icons (https://lucide.dev, MIT) — crisp, consistent line icons.
+# SVGs are bundled in tools/lucide/ and tinted at render time. Subtle semantic
+# colour: pull = blue, push = green, delete/clean = red, repair = amber, rest
+# neutral slate. Falls back to a desaturated Qt icon if QtSvg is unavailable.
+# ---------------------------------------------------------------------------
+LUCIDE_NEUTRAL = "#9aa3b2"
+LUCIDE_BLUE = "#5b9bd5"
+LUCIDE_GREEN = "#5aa469"
+LUCIDE_RED = "#cc5b5b"
+LUCIDE_AMBER = "#c99a2e"
+
+_LUCIDE_CACHE: Dict[tuple, QIcon] = {}
+
+
+def lucide_icon(name: str, color: str = LUCIDE_NEUTRAL, size: int = 18) -> QIcon:
+    """Render a bundled Lucide SVG tinted to `color` as a QIcon."""
+    key = (name, color, size)
+    if key in _LUCIDE_CACHE:
+        return _LUCIDE_CACHE[key]
+    icon = QIcon()
+    if HAVE_QTSVG:
+        try:
+            svg = resource_path(f"lucide/{name}.svg").read_text(encoding="utf-8")
+            svg = svg.replace("currentColor", color)
+            renderer = QSvgRenderer(bytearray(svg, encoding="utf-8"))
+            pm = QPixmap(size, size)
+            pm.fill(Qt.transparent)
+            p = QPainter(pm)
+            renderer.render(p)
+            p.end()
+            icon = QIcon(pm)
+        except Exception:
+            icon = QIcon()
+    _LUCIDE_CACHE[key] = icon
+    return icon
 
 
 def derive_paths(repo_root: Path) -> Dict[str, str]:
@@ -775,7 +818,9 @@ def merge_symbols(target_path: Path, sources: List[Path], log: UILog):
                 skipped += 1
                 continue
             existing_names.add(nm)
-            total_blocks.append(b)
+            # Point the symbol at the shared footprint library so it resolves
+            # when placed in KiCad (was: kept the vendor's original nickname).
+            total_blocks.append(rewrite_symbol_footprint(b, FP_NICKNAME))
     if not total_blocks:
         if skipped:
             log.write(f"No new symbols to merge ({skipped} duplicate(s) skipped).")
@@ -837,6 +882,27 @@ def move_files(part_dir: Path, cfg: Dict[str, str], log: UILog):
             skipped += 1
     if skipped:
         log.write(f"Overwrite protection: skipped {skipped} existing file(s).")
+
+    # Link each installed footprint to its 3D model so the model attaches when
+    # placed. Match by name; if the part shipped exactly one model, use it.
+    part_model_names = [Path(mdl.name) for mdl in model_files]
+    for m in mod_files:
+        fp_dst = Path(cfg["FootprintLib"], m.name)
+        if not fp_dst.exists():
+            continue
+        matched = match_model_for_footprint(fp_dst.stem, part_model_names)
+        if matched is None and len(part_model_names) == 1:
+            matched = part_model_names[0]
+        if matched is None:
+            continue
+        try:
+            t = read_text(fp_dst)
+            nt = ensure_footprint_model(t, matched.name)
+            if nt != t:
+                write_text(fp_dst, nt)
+                log.write(f"Linked 3D model {matched.name} -> {m.name}")
+        except Exception as e:
+            log.write(f"WARN link model for {m.name}: {e}")
 
     # Unknown / junk -> misc
     allowed = {".kicad_sym", ".kicad_mod", ".step", ".stp", ".wrl", ".zip"}
@@ -1787,6 +1853,8 @@ class LibraryManagerWindow(QMainWindow):
         # Initial library scan (will run after pull completes via refresh)
         self.refresh_library()
         self.log.write("UI started")
+        # Define ${MY3DMODELS} in KiCad if missing so 3D models resolve when placed
+        QTimer.singleShot(400, self._register_if_needed)
         # Auto-pull every 5 minutes
         self.auto_pull_timer = QTimer(self)
         self.auto_pull_timer.setInterval(300000)  # 5 minutes
@@ -2059,6 +2127,48 @@ class LibraryManagerWindow(QMainWindow):
                     pass
         self.run_async(work, "Building catalog…", "Catalog ✓")
 
+    def do_repair_library(self):
+        """Fix every placed part's footprint + 3D-model links across the whole
+        shared library, and register the libs + ${MY3DMODELS} in KiCad."""
+        reply = QMessageBox.question(
+            self, "Repair Library (KiCad sync)",
+            "Rewrite every symbol's footprint to MyFootprints:<name>, add the "
+            "${MY3DMODELS}/<file> 3D-model line to each footprint (best-name "
+            "match), and register the libraries + ${MY3DMODELS} in KiCad?\n\n"
+            "This fixes parts not resolving their footprint/3D model when placed. "
+            "A commit is made so it is reversible.",
+            QMessageBox.Yes | QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            return
+
+        def work():
+            res = repair_library(self.cfg, self.log)
+            msg = (f"Repair: fixed {res['symbols_fixed']} symbol link(s), "
+                   f"{res['footprints_fixed']} footprint model line(s)")
+            if git_stage_commit(self.cfg, self.log, message="Repair: KiCad footprint/3D-model sync"):
+                git_push(self.cfg, self.log)
+            self._emit(self.log_signal, msg)
+        self.run_async(work, "Repairing library…", "Repaired ✓", refresh=True)
+
+    def do_register_kicad(self):
+        self.run_async(lambda: register_libraries(self.cfg, self.log),
+                       "Registering in KiCad…", "Registered ✓")
+
+    def _register_if_needed(self):
+        """On startup, define ${MY3DMODELS} in KiCad config if it is missing so
+        placed parts resolve their 3D models (quiet no-op once defined)."""
+        def work():
+            try:
+                cfgdir = find_kicad_config_dir()
+                if cfgdir is None:
+                    return
+                common = cfgdir / "kicad_common.json"
+                if not (common.exists() and MODEL_VAR in read_text(common)):
+                    register_libraries(self.cfg, self.log)
+            except Exception:
+                pass
+        self._spawn(work)
+
     def do_process_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Select extracted part folder", self.cfg["Downloads"])
         if not folder:
@@ -2218,7 +2328,7 @@ class LibraryManagerWindow(QMainWindow):
         # Advanced dropdown placed above the step buttons; full-width and sized like the steps
         adv_menu = QMenu()
         adv_btn = QPushButton("Advanced")
-        adv_btn.setIcon(gray_icon(st, QStyle.SP_FileDialogDetailedView))
+        adv_btn.setIcon(lucide_icon("sliders-horizontal", LUCIDE_NEUTRAL))
         adv_btn.setMaximumHeight(34)
         adv_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         adv_btn.setStyleSheet(btn_style)
@@ -2228,6 +2338,7 @@ class LibraryManagerWindow(QMainWindow):
             ("Stage and Commit", self.do_stage_commit),
             ("Process Folder", self.do_process_folder),
             ("Export Catalog", self.do_export_catalog),
+            ("Register libs in KiCad", self.do_register_kicad),
             ("Start Watcher", lambda: self.watcher.start()),
             ("Stop Watcher", lambda: self.watcher.stop()),
             ("Open Libraries", lambda: os.startfile(self.cfg["Libs"])),
@@ -2243,16 +2354,16 @@ class LibraryManagerWindow(QMainWindow):
 
         # Full step labels with clear descriptions and icons (all uniform style)
         buttons = [
-            ("Step 0: Pull (Fast-Forward)", self.do_pull, QStyle.SP_ArrowDown),
-            ("Step 1: Open Downloads", lambda: os.startfile(self.cfg["Downloads"]), QStyle.SP_DirOpenIcon),
-            ("Step 2: Process ZIPs", self.do_process_zips, QStyle.SP_MediaPlay),
-            ("Step 3: Clean Leftovers", lambda: clean_leftovers(self.cfg, self.log, self.refresh_library), QStyle.SP_TrashIcon),
-            ("Step 4: Stage, Commit, Push", self.do_commit_push, QStyle.SP_ArrowUp),
+            ("Step 0: Pull (Fast-Forward)", self.do_pull, ("download", LUCIDE_BLUE)),
+            ("Step 1: Open Downloads", lambda: os.startfile(self.cfg["Downloads"]), ("folder-open", LUCIDE_NEUTRAL)),
+            ("Step 2: Process ZIPs", self.do_process_zips, ("play", LUCIDE_NEUTRAL)),
+            ("Step 3: Clean Leftovers", lambda: clean_leftovers(self.cfg, self.log, self.refresh_library), ("trash-2", LUCIDE_RED)),
+            ("Step 4: Stage, Commit, Push", self.do_commit_push, ("upload", LUCIDE_GREEN)),
         ]
 
-        for text, callback, icon in buttons:
+        for text, callback, (icon_name, icon_color) in buttons:
             btn = QPushButton(text)
-            btn.setIcon(gray_icon(st, icon))
+            btn.setIcon(lucide_icon(icon_name, icon_color))
             btn.setStyleSheet(btn_style)
             btn.setMaximumHeight(36)
             btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -2386,22 +2497,23 @@ class LibraryManagerWindow(QMainWindow):
         btn_grid.setColumnStretch(1, 1)
         st = self.style()
         actions = [
-            ("Refresh", QStyle.SP_BrowserReload, self.refresh_library),
-            ("Open", QStyle.SP_DirOpenIcon, self.on_tree_open),
-            ("Open in KICAD", QStyle.SP_FileDialogContentsView, self.open_in_kicad),
-            ("Delete", QStyle.SP_TrashIcon, self.on_tree_delete),
-            ("Remove Duplicates", QStyle.SP_DialogResetButton, self.on_remove_duplicates),
+            ("Refresh", ("refresh-cw", LUCIDE_NEUTRAL), self.refresh_library),
+            ("Open", ("folder-open", LUCIDE_NEUTRAL), self.on_tree_open),
+            ("Open in KICAD", ("external-link", LUCIDE_NEUTRAL), self.open_in_kicad),
+            ("Delete", ("trash-2", LUCIDE_RED), self.on_tree_delete),
+            ("Remove Duplicates", ("copy-x", LUCIDE_NEUTRAL), self.on_remove_duplicates),
+            ("Repair Library (KiCad sync)", ("wrench", LUCIDE_AMBER), self.do_repair_library),
         ]
-        for i, (label, icon, cb) in enumerate(actions):
+        for i, (label, (icon_name, icon_color), cb) in enumerate(actions):
             b = QPushButton(label)
-            b.setIcon(gray_icon(st, icon))
+            b.setIcon(lucide_icon(icon_name, icon_color))
             b.setMaximumHeight(28)
             b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             b.clicked.connect(cb)
             if i < 4:
                 btn_grid.addWidget(b, i // 2, i % 2)
             else:
-                btn_grid.addWidget(b, 2, 0, 1, 2)   # span both columns
+                btn_grid.addWidget(b, i - 2, 0, 1, 2)   # 5th, 6th each span a row
         layout.addLayout(btn_grid)
 
         # Tree widget (multi-select). Date is the LAST column so path stays text(2).
@@ -2940,9 +3052,10 @@ class LibraryManagerWindow(QMainWindow):
             self.central.setStyleSheet("")   # background now comes from #rootCentral
         # sun in dark mode (click -> light), moon in light mode (click -> dark)
         if hasattr(self, "theme_btn"):
-            ico = resource_path("icon_sun.png" if dark else "icon_moon.png")
-            if ico.exists():
-                self.theme_btn.setIcon(QIcon(str(ico)))
+            ic = lucide_icon("sun" if dark else "moon",
+                             self._theme.get("FG_DIM", LUCIDE_NEUTRAL), 20)
+            if not ic.isNull():
+                self.theme_btn.setIcon(ic)
                 self.theme_btn.setIconSize(QSize(20, 20))
                 self.theme_btn.setText("")
             else:
