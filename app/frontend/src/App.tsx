@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useMemo, useState } from 'react'
 import {
   Package, Cpu, Cable, Database, Upload, FolderInput, Layers, Plug, RefreshCw,
   Wrench, Trash2, Download, FileCog, Save, Search, Check, X, TriangleAlert, Circle,
+  Sun, Moon, GitBranch,
 } from 'lucide-react'
 import './App.css'
 
@@ -33,8 +34,8 @@ function Header({ title, sub, children }: { title: string; sub: string; children
   return (
     <div className="row" style={{ justifyContent: 'space-between', marginBottom: 4 }}>
       <div>
-        <h1 style={{ fontSize: 22, fontWeight: 650, margin: 0, letterSpacing: '-.3px' }}>{title}</h1>
-        <div style={{ color: 'var(--faint)', fontSize: 13, marginTop: 3, maxWidth: '64ch' }}>{sub}</div>
+        <h1 className="page">{title}</h1>
+        <div className="page-sub">{sub}</div>
       </div>
       <div className="row">{children}</div>
     </div>
@@ -389,17 +390,19 @@ function DatabaseView() {
 
 /* ── shell ──────────────────────────────────────────────── */
 const NAV: { id: View; label: string; icon: React.ReactNode }[] = [
-  { id: 'library', label: 'Library', icon: <Package size={17} /> },
-  { id: 'pins', label: 'Pins & switch', icon: <Cpu size={17} /> },
-  { id: 'netclasses', label: 'Netclasses', icon: <Cable size={17} /> },
-  { id: 'database', label: 'Database', icon: <Database size={17} /> },
+  { id: 'library', label: 'Manager', icon: <Package size={16} /> },
+  { id: 'pins', label: 'Pins', icon: <Cpu size={16} /> },
+  { id: 'netclasses', label: 'Netclasses', icon: <Cable size={16} /> },
+  { id: 'database', label: 'Database', icon: <Database size={16} /> },
 ]
 
 export default function App() {
   const [view, setView] = useState<View>('library')
   const [toasts, setToasts] = useState<{ id: number; msg: string; kind: Kind }[]>([])
   const [health, setHealth] = useState<{ database_present: boolean } | null>(null)
+  const [theme, setTheme] = useState<'dark' | 'light'>('dark')
 
+  useEffect(() => { document.documentElement.dataset.theme = theme }, [theme])
   const notify = useMemo(() => (msg: string, kind: Kind = 'info') => {
     const id = Date.now() + Math.random()
     setToasts((t) => [...t, { id, msg, kind }])
@@ -410,36 +413,31 @@ export default function App() {
   return (
     <ToastCtx.Provider value={notify}>
       <div className="app">
-        <nav className="side">
-          <div className="brand">
-            <span className="logo"><Package size={17} /></span>
-            <div><b>Hardware</b><span>KiCad + STM32 fabric</span></div>
-          </div>
-          <div className="nav">
-            {NAV.map((n) => (
-              <button key={n.id} className={`nav-item ${view === n.id ? 'active' : ''}`} onClick={() => setView(n.id)}>{n.icon}{n.label}</button>
-            ))}
-          </div>
-          <div className="side-foot">
-            <span className={`pill ${health ? (health.database_present ? 'ok' : 'bad') : ''}`}>
-              <span className="dot" />{health ? (health.database_present ? 'Database ready' : 'No database') : 'Connecting…'}
-            </span>
-          </div>
-        </nav>
-        <div className="col">
-          <div className="topbar">
-            <div style={{ display: 'flex', alignItems: 'center', gap: 9, color: 'var(--dim)', fontSize: 13 }}>
-              {NAV.find((n) => n.id === view)?.icon}{NAV.find((n) => n.id === view)?.label}
-            </div>
-            <div className="spacer" />
-            <span className="pill"><Plug size={13} />127.0.0.1:8799</span>
-          </div>
-          <div className="main">
-            {view === 'library' && <LibraryView />}
-            {view === 'pins' && <PinsView />}
-            {view === 'netclasses' && <NetclassesView />}
-            {view === 'database' && <DatabaseView />}
-          </div>
+        <div className="header">
+          <span className="logo"><Package size={16} /></span>
+          {NAV.map((n) => (
+            <button key={n.id} className={`navtab ${view === n.id ? 'active' : ''}`} onClick={() => setView(n.id)}>{n.icon}{n.label}</button>
+          ))}
+          <span className="grow" />
+          <button className="icon-btn" title="Toggle theme" aria-label="Toggle theme" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
+            {theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}
+          </button>
+          <span className="branch"><GitBranch size={13} />main</span>
+          <span className="activity"><span className="dot" />Idle</span>
+        </div>
+
+        <div className="body">
+          {view === 'library' && <LibraryView />}
+          {view === 'pins' && <PinsView />}
+          {view === 'netclasses' && <NetclassesView />}
+          {view === 'database' && <DatabaseView />}
+        </div>
+
+        <div className="statusbar">
+          <span>{NAV.find((n) => n.id === view)?.label}</span>
+          <span className="grow" />
+          <span className={`chip ${health ? (health.database_present ? 'ok' : 'bad') : ''}`}>{health ? (health.database_present ? 'Database ready' : 'No database') : 'Connecting…'}</span>
+          <span className="dim">127.0.0.1:8799</span>
         </div>
       </div>
       <div className="toasts">

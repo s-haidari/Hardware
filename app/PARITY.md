@@ -6,9 +6,9 @@ Progress: 20/214 (~9%). This is the baseline to reach before anything new.
 
 ## LibraryManager (PyQt) — 111
 
-- [ ] NAVIGATION TABS (Header Bar) — Two main section tabs: 'KICAD Manager' (default, library/workflow/drop zone) and 'KICAD Tools' (experimental K
-- [ ] Header Bar / Top Status Strip — Persistent header with: left-aligned nav tabs (KICAD Manager / KICAD Tools), center-right with theme toggle bu
-- [ ] Theme Toggle Button (☀/☾) — Icon button in header bar to switch between dark and light themes instantly. Sun icon in dark mode, moon in li
+- [x] NAVIGATION TABS (Header Bar) — Two main section tabs: 'KICAD Manager' (default, library/workflow/drop zone) and 'KICAD Tools' (experimental K
+- [x] Header Bar / Top Status Strip — Persistent header with: left-aligned nav tabs (KICAD Manager / KICAD Tools), center-right with theme toggle bu
+- [x] Theme Toggle Button (☀/☾) — Icon button in header bar to switch between dark and light themes instantly. Sun icon in dark mode, moon in li
 - [ ] Drop Zone (Drag & Drop) — QFrame-based drag-and-drop area that accepts .zip files. Shows dashed border with hover effect. Labeled 'Drop 
 - [ ] Process on Drop Checkbox — Checkbox inside drop zone. When checked, automatically processes dropped ZIPs. When unchecked, only copies the
 - [ ] Downloads Button (Workflow) — Opens the downloads folder in Windows Explorer. Part of the Root/Downloads button row at bottom of Workflow pa
@@ -50,22 +50,22 @@ Progress: 20/214 (~9%). This is the baseline to reach before anything new.
 - [ ] Diff Button (Commit) — Shows full diff output of selected commit in log panel (git show HASH). Disabled until selection.
 - [ ] Checkout Button (Commit) — Switches working tree to selected commit (git checkout HASH). Prompts for confirmation. Disabled until selecti
 - [ ] Commit Double-Click — Shows full commit info (hash, author, date, body) in log panel via 'git show' output.
-- [ ] Status Bar (Bottom) — Fixed bar with: status label (left, expandable), progress bar (center, indeterminate/determinate, hidden when 
+- [x] Status Bar (Bottom) — Fixed bar with: status label (left, expandable), progress bar (center, indeterminate/determinate, hidden when 
 - [ ] Status Label — Shows current operation state: 'Idle', 'Pulling…', 'Processing ZIPs…', etc. Also displayed in header activity 
 - [ ] Progress Bar — Visual indicator of async operations. Indeterminate mode (animated) initially, then determinate once a count i
-- [ ] Result Chip — Shows operation result after completion: '✓ Pulled', '✓ Processed', or error message in red (#d9534f).
+- [x] Result Chip — Shows operation result after completion: '✓ Pulled', '✓ Processed', or error message in red (#d9534f).
 - [ ] Async Operation Threading — All long operations (git, processing) run in background threads via run_async(). GUI stays responsive. Signals
 - [ ] Auto-Pull (Initial) — On startup (250ms delay), automatically runs 'git pull --ff-only' in background. Updates library after success
 - [ ] Periodic Auto-Pull (Every 5 Minutes) — QTimer fires every 5 minutes, runs 'git pull --ff-only' in background. Refreshes library if pull succeeds. Non
 - [ ] Branch Status Display — Fetches current git branch name + ahead/behind counts in background. Shows in header as: 'main ↑5 ↓2' (ahead 5
-- [ ] Dark Theme (Default) — Cool slate palette: dark backgrounds (#16181d win, #1e2127 card), light text (#e7eaf0), slate accents (#7f8aa0
-- [ ] Light Theme — Neutral palette: light backgrounds (#f1f3f6 win, #ffffff card), dark text (#1f2329), slate accents. Same token
-- [ ] Theme Colors (Exact Hex Values) — Dark: WIN_BG #16181d, CARD_BG #1e2127, FG #e7eaf0, ACCENT #7f8aa0, BORDER #2c303a, SEL_BG #33405c, BTN_BG #262
-- [ ] Card Widget Styling — QFrame with rounded borders (12px), 1px border, left-aligned bold title label (10pt), content area with 8px ma
-- [ ] Button Styling (All Buttons) — Semi-transparent gradient background, text-align left, 6px vert padding, 12px horiz padding, 7px border-radius
-- [ ] Scrollbar Styling — Dark: slate handles (#363b47 default, #4a5160 hover), 12px wide/tall, 5px border-radius. Light: gray handles (
-- [ ] Menu Styling — Rounded borders (8px), 1px border, 5px padding. Items: 6px vertical, 18px horizontal. Hover: slightly lighter 
-- [ ] Fonts (Primary) — Inter (bundled TTF files in fonts/ folder). Fallback chain: Segoe UI Variable Text > Segoe UI > Roboto > Helve
+- [x] Dark Theme (Default) — Cool slate palette: dark backgrounds (#16181d win, #1e2127 card), light text (#e7eaf0), slate accents (#7f8aa0
+- [x] Light Theme — Neutral palette: light backgrounds (#f1f3f6 win, #ffffff card), dark text (#1f2329), slate accents. Same token
+- [x] Theme Colors (Exact Hex Values) — Dark: WIN_BG #16181d, CARD_BG #1e2127, FG #e7eaf0, ACCENT #7f8aa0, BORDER #2c303a, SEL_BG #33405c, BTN_BG #262
+- [x] Card Widget Styling — QFrame with rounded borders (12px), 1px border, left-aligned bold title label (10pt), content area with 8px ma
+- [x] Button Styling (All Buttons) — Semi-transparent gradient background, text-align left, 6px vert padding, 12px horiz padding, 7px border-radius
+- [x] Scrollbar Styling — Dark: slate handles (#363b47 default, #4a5160 hover), 12px wide/tall, 5px border-radius. Light: gray handles (
+- [x] Menu Styling — Rounded borders (8px), 1px border, 5px padding. Items: 6px vertical, 18px horizontal. Hover: slightly lighter 
+- [x] Fonts (Primary) — Inter (bundled TTF files in fonts/ folder). Fallback chain: Segoe UI Variable Text > Segoe UI > Roboto > Helve
 - [ ] Window Geometry Persistence — On close, saves window size/position and theme choice to QSettings ('KiCadLibraryManager', 'KiCadLibraryManage
 - [ ] Panel Splitters (3-column Layout) — QSplitter with handle-width 6px, non-collapsible panels. Workflow (left, min 250px, stretch 0), Contents (cent
 - [x] Symbol Merge (De-duplication) — When processing ZIPs, extracts all .kicad_sym blocks and merges into shared MySymbols.kicad_sym. Checks existi
@@ -90,7 +90,7 @@ Progress: 20/214 (~9%). This is the baseline to reach before anything new.
 - [ ] Log File (ui_python.log) — Stored in tools/ui_python.log. Appended to with timestamps. Also displayed in log pane. Thread-safe write via 
 - [ ] UILog Thread-Safe Logger — QObject with pyqtSignal for thread-safe GUI updates. File writes guarded by threading.Lock. Any thread can cal
 - [ ] Batch Multi-Selection Actions — Can select multiple items in tree. Open button opens all selected (avoiding duplicates). Delete button deletes
-- [ ] Icon Button Styling — Header bar icon buttons (theme toggle): transparent background, no border, large font (13pt), dimmed color wit
+- [x] Icon Button Styling — Header bar icon buttons (theme toggle): transparent background, no border, large font (13pt), dimmed color wit
 - [ ] Tab Bar Styling (Log/Activity) — Custom QTabBar#cardTabBar: transparent background, 6px spacing, rounded tabs (8px), bold 10pt font. Active tab
 - [ ] No-Window Subprocess (Hidden Console) — All git/processing commands use run_hidden() wrapper which suppresses console window on Windows (CREATE_NO_WIN
 - [ ] Portable Repo Detection — detect_repo_root() finds library root from app location (tools/LibraryManager.py parent). Works as frozen .exe
