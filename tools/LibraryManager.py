@@ -521,8 +521,7 @@ def find_kicad_dir() -> Optional[Path]:
 #   * footprints got no "(model ...)" line, so no 3D model attached.
 # These helpers rewrite those cross-references to the shared library, and
 # register MySymbols / MyFootprints / ${MY3DMODELS} in KiCad's config so the
-# references resolve. (Ported from app/backend/hwkit; kept inline so this app
-# stays self-contained.)
+# references resolve. Self-contained (no external backend dependency).
 # ---------------------------------------------------------------------------
 FP_NICKNAME = "MyFootprints"
 MODEL_VAR = "MY3DMODELS"

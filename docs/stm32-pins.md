@@ -82,9 +82,10 @@ new source of truth.
 
 ## Repo cleanup (tied to this work)
 Done: dropped `app/frontend` (web UI), `app/backend/stm32switch` (old generator), `tools/build`,
-`misc/` junk, logs; fixed `build-exe.yml` (Lucide + QtSvg). After the rewrite: delete
-`app/backend/hwkit` + `tests` + `api` (unused by the app/CI), keep the CubeMX XML data source
-(`app/backend/cubemx_db/mcu`, or relocate under `tools/`).
+`misc/` junk, logs; fixed `build-exe.yml` (Lucide + QtSvg). After the rewrite (done): the CubeMX XML
+moved to `tools/cubemx_db/mcu` and **all of `app/` was deleted** (hwkit/tests/api + the abandoned
+web/rebuild docs) — the app is now fully self-contained under `tools/`. The built `stm32.sqlite` is
+gitignored.
 
 ## Data sources gathered
 - **bootloader_periph** — ST **AN2606 Rev 62 (Mar 2024)**, system-memory-boot-mode tables; PDF saved

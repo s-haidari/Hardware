@@ -17,6 +17,7 @@ import math
 import os
 import re
 import sqlite3
+import sys
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,7 +35,6 @@ def default_cubemx_source() -> Path | None:
         return Path(env)
     candidates = [
         _TOOLS / "cubemx_db" / "mcu",
-        _TOOLS.parent / "app" / "backend" / "cubemx_db" / "mcu",
         Path.home() / "git" / "STMP" / "src" / "cubemx_db" / "mcu",
     ]
     for c in candidates:
@@ -44,10 +44,13 @@ def default_cubemx_source() -> Path | None:
 
 
 def default_db_path() -> Path:
-    """Where the built sqlite DB lives (override with STM32_DB)."""
+    """Where the built sqlite DB lives (override with STM32_DB). Writable even
+    when frozen (next to the .exe, not the read-only bundle)."""
     env = os.environ.get("STM32_DB")
     if env:
         return Path(env)
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent / "data" / "stm32.sqlite"
     return _TOOLS / "data" / "stm32.sqlite"
 
 
