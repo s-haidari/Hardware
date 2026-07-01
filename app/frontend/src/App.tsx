@@ -298,7 +298,7 @@ function DatabaseView() {
   const [st, setSt] = useState<DbStatus | null>(null)
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
-  const refresh = () => getJSON<DbStatus>('/api/database/status').then(setSt).catch((e) => setMsg(String(e)))
+  const refresh = () => { getJSON<DbStatus>('/api/database/status').then(setSt).catch((e) => setMsg(String(e))) }
   useEffect(refresh, [])
 
   const rebuild = async () => {
