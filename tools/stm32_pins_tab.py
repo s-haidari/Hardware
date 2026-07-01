@@ -54,6 +54,17 @@ def _counts(d: dict) -> str:
     return ", ".join(f"{k}×{v}" for k, v in d.items())
 
 
+def _5v_suffix(five_v) -> str:
+    """Compact 5V-tolerance token for the Tags cell."""
+    if not five_v:
+        return ""
+    if five_v["tolerant"]:
+        return " · 5V" + ("(!osc)" if five_v.get("caveat") == "osc-mode" else "")
+    if any(five_v["by_family"].values()):
+        return " · 5V*part-dep"
+    return " · 3V3-only"
+
+
 def _tag_summary(tags: dict) -> str:
     out = []
     if tags.get("is_debug"):
@@ -194,10 +205,14 @@ class Stm32PinsWidget(QWidget):
         el = a.get("electrical", {})
         io, inj = el.get("max_io_current_ma"), el.get("injection_current_ma")
         vdda = el.get("vdda_range_v") or el.get("vdd_range_v")
+        fv = el.get("five_v_positions", {})
         elec = ""
         if io and vdda:
-            elec = (f"   |   I/O ±{io} mA · inj ±{inj} mA · VDDA {vdda[0]}–{vdda[1]} V · "
-                    f"{'5V-tolerant' if el.get('ft_5v_tolerant') else 'not 5V-tol'}")
+            elec = f"   |   I/O ±{io} mA · inj ±{inj} mA · VDDA {vdda[0]}–{vdda[1]} V"
+            if fv:
+                elec += (f" · 5V-tol: {fv.get('tolerant_all_parts', 0)} all-parts / "
+                         f"{fv.get('family_dependent', 0)} part-dep / "
+                         f"{fv.get('not_tolerant_any_part', 0)} none")
         self.rollup.setWordWrap(True)
         self.rollup.setText(
             f"{a['package']}  —  {a['manifest']['part_count']} parts · {r['positions_total']} positions · "
@@ -228,7 +243,7 @@ class Stm32PinsWidget(QWidget):
                 adg_txt,
                 dest,
                 btxt or "—",
-                _tag_summary(p["tags"]),
+                _tag_summary(p["tags"]) + _5v_suffix(p.get("five_v")),
                 ", ".join(p["tags"].get("bootloader_periph", [])),
                 (lambda e: f"{e['vdd_range_v'][0]}–{e['vdd_range_v'][1]}"
                  if e and e.get("vdd_range_v") else "")(p.get("electrical")),

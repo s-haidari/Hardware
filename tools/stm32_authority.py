@@ -99,6 +99,31 @@ FAMILY_ELECTRICAL: dict = {
 # (DS9405 Rev 5) = 270 mA with an explicit ΣI_IO = ±120 mA; F401/F411 lower
 # (~150 mA) — UNVERIFIED, flagged not asserted. See docs/stm32-pins.md.
 
+# Per-family set of GPIOs that are NOT 5V-tolerant (I/O structure = TTa/TC, i.e.
+# 3.3V-only). Every other GPIO is structurally FT (5V-tolerant in digital mode).
+# From the datasheet "Pin definitions" I/O-structure column, exhaustively
+# classified 2026-07-01 (each family 100% covered; cross-checked vs the cover-page
+# 5V-tolerant count where given). PC14/PC15/PH0/PH1 are FT-except-in-osc-mode where
+# they are FT; any FT pin loses 5V tolerance while in analog (ADC) mode.
+# Sources: DS9826 R6 T14, DS5319 R20 T5, DS6329 R18 T8, DocID026415 R5 T13,
+# DS8626/DocID022152 R5 T7, DS10916 R5 T10. See docs/stm32-pins.md.
+FAMILY_NOT_5V: dict = {
+    "STM32F0": {"PA0", "PA1", "PA2", "PA3", "PA4", "PA5", "PA6", "PA7", "PB0", "PB1",
+                "PC0", "PC1", "PC2", "PC3", "PC4", "PC5", "PC13", "PC14", "PC15"},
+    "STM32F1": {"PA0", "PA1", "PA2", "PA3", "PA4", "PA5", "PA6", "PA7", "PB0", "PB1", "PB5",
+                "PC0", "PC1", "PC2", "PC3", "PC4", "PC5", "PC13", "PC14", "PC15"},
+    "STM32F2": {"PA4", "PA5"},
+    "STM32F3": {"PA0", "PA1", "PA2", "PA3", "PA4", "PA5", "PA6", "PA7", "PB0", "PB1", "PB2",
+                "PB10", "PB11", "PB12", "PB13", "PB14", "PB15", "PC0", "PC1", "PC2", "PC3",
+                "PC4", "PC5", "PC13", "PC14", "PC15", "PD8", "PD9", "PD10", "PD11", "PD12",
+                "PD13", "PD14", "PD15", "PE7", "PE8", "PE9", "PE10", "PE11", "PE12", "PE13",
+                "PE14", "PE15", "PF2", "PF4"},
+    "STM32F4": {"PA4", "PA5"},
+    "STM32F7": {"PA4", "PA5"},
+}
+_OSC_CAVEAT_PINS = {"PC14", "PC15", "PH0", "PH1"}   # FT except in oscillator mode
+_GPIO_NAME = re.compile(r"^P[A-Z]\d+$")
+
 _DEBUG_ROLE = {"swclk": "SWCLK", "swdio": "SWDIO", "swo": "SWO", "jtag_extra": "JTAG"}
 _ANALOG_SUPPLY = {"power_vdda", "power_vref"}
 
@@ -277,6 +302,30 @@ def _peripherals_at(conn: sqlite3.Connection, package: str) -> dict:
     return {k: sorted(v) for k, v in out.items()}
 
 
+def _five_v(fam_gpios: set, peripherals) -> dict | None:
+    """Per-position 5V-tolerance across the supported parts. A GPIO is structurally
+    FT (5V-tolerant, digital mode) unless it is in its family's non-5V set — which
+    differs by family, so a socket position can be 5V-safe under one part and not
+    another. `tolerant` is the conservative answer (safe on ALL parts present)."""
+    by_fam: dict = {}
+    gpios: set = set()
+    for fam, nm in fam_gpios:
+        if fam not in FAMILY_NOT_5V or not _GPIO_NAME.match(str(nm)):
+            continue
+        gpios.add(nm)
+        ft = nm not in FAMILY_NOT_5V[fam]
+        by_fam[fam] = by_fam.get(fam, True) and ft   # AND when >1 GPIO/family here
+    if not by_fam:
+        return None   # non-GPIO position (power/ground/reset/boot)
+    tolerant = all(by_fam.values())
+    caveat = ""
+    if gpios & _OSC_CAVEAT_PINS:
+        caveat = "osc-mode"
+    elif tolerant and any(str(p).startswith("ADC") for p in peripherals):
+        caveat = "analog-mode"
+    return {"tolerant": tolerant, "by_family": dict(sorted(by_fam.items())), "caveat": caveat}
+
+
 def _breakout_map(tokens: set, canon_names, roles: set, ecs: set, switch_class: str) -> dict:
     """The frozen parent-board service net(s) a position must reach (breakout),
     orthogonal to the switch decision. Sources: Connector Contract Rev B + 5E."""
@@ -410,6 +459,8 @@ def build(conn: sqlite3.Connection, package: str) -> dict:
         text = " ".join(tokens)
         tags["is_wakeup"] = "WKUP" in text
         tags["is_usb"] = "USB" in text
+        five_v = _five_v(fam_names.get(d.pin, set()), periph.get(d.pin, []))
+        tags["is_5v_tolerant"] = five_v["tolerant"] if five_v else None
 
         positions.append({
             "position": d.pin,
@@ -418,6 +469,7 @@ def build(conn: sqlite3.Connection, package: str) -> dict:
             "role_set": {k: v for k, v in sorted(d.identities.items(), key=lambda kv: -kv[1])},
             "pin_type_set": sorted({t for t in [d.role_label] if t}),
             "peripherals": periph.get(d.pin, []),
+            "five_v": five_v,
             "tags": tags,
             "breakout": breakout,
             "electrical": None,   # filled below (package-wide, referenced per position)
@@ -431,6 +483,13 @@ def build(conn: sqlite3.Connection, package: str) -> dict:
         })
 
     electrical = _electrical(conn, package)
+    fv = [p["five_v"] for p in positions if p["five_v"]]
+    electrical["five_v_positions"] = {
+        "classified_gpio": len(fv),
+        "tolerant_all_parts": sum(1 for f in fv if f["tolerant"]),
+        "family_dependent": sum(1 for f in fv if not f["tolerant"] and any(f["by_family"].values())),
+        "not_tolerant_any_part": sum(1 for f in fv if not any(f["by_family"].values())),
+    }
     for p in positions:
         p["electrical"] = electrical
 

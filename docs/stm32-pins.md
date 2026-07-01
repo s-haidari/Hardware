@@ -135,6 +135,31 @@ st.com was unreachable from the fetch environment, so a **byte-identical** offic
 STMICROELECTRONICS, DocID022152 Rev 5, 200 pp) was pulled from a component-search mirror and verified. Saved,
 `%PDF`-validated PDFs (1.9–5.7 MB each): `ST STM32F072 / F103 / F207 / F303 / F407 / F746 datasheet.pdf`.
 
+### Per-pin 5V-tolerance (fetched 2026-07-01)
+Every GPIO's 5V-tolerance read from each datasheet's "Pin definitions" I/O-structure column (FT/FTf =
+5V-tolerant, TTa/TC = 3.3V-only), exhaustively classified per family (100% coverage; F4 cross-checked
+against its cover-page "up to 138 5V-tolerant I/Os"). Encoded as `stm32_authority.FAMILY_NOT_5V` (the
+3.3V-only GPIO set per family; every other GPIO is structurally FT). Each position gets a `five_v` block:
+`tolerant` (conservative — 5V-safe on **all** supported parts at that socket), `by_family` (the per-family
+FT verdict), and `caveat` (`osc-mode` for PC14/15/PH0/1; `analog-mode` for FT pins while ADC-sampling). Tag
+`is_5v_tolerant` mirrors `tolerant`; the rollup counts all-parts / part-dependent / never.
+
+Key finding: **5V-tolerance is part-dependent** at many sockets. The analog pins (PA0–7, PB0/1, PC0–5) are
+FT on F2/F4/F7 but 3.3V-only on F0/F1/F3, so e.g. the PA0 socket is 5V-safe under an F4 but not an F1 —
+`by_family` carries this. Only **PA4/PA5** (DAC/TTa) are never 5V-tolerant on any F-family.
+
+| Family | 3.3V-only GPIOs (NOT 5V-tolerant) | Source |
+|---|---|---|
+| F0 | PA0–7, PB0/1, PC0–5, PC13–15 (19) | DS9826 R6 Table 14 §5 pp.36–43 |
+| F1 | above + PB5 (20) | DS5319 R20 Table 5 §3 pp.28–33 |
+| F2 | PA4, PA5 (2) | DS6329 R18 Table 8 §4 pp.46–56 |
+| F3 | 45 (adds PB2, PB10–15, PD8–15, PE7–15, PF2/4) | DocID026415 R5 Table 13 §4 pp.41–52 |
+| F4 | PA4, PA5 (2) | DS8626/DocID022152 R5 Table 7 §3 pp.46–58 |
+| F7 | PA4, PA5 (2) | DS10916 R5 Table 10 §4 pp.55–74 |
+
+FT pins lose 5V tolerance while in analog (ADC) or oscillator mode (PC14/15/PH0/1) per each datasheet's
+I/O-structure footnote. Non-GPIO pins (power/ground/reset/boot) are not classified (`five_v = null`).
+
 ## Full-spec field sources (Phase 2)
 - **electrical**: VDD/VDDA range from the CubeMX `<Voltage Max Min>` element (MCU-level, aggregated);
   per-pin `max_io_current_ma` = per-family datasheet constant (small cited table).

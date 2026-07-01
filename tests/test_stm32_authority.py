@@ -128,6 +128,31 @@ class AuthorityTests(unittest.TestCase):
         self.assertIn("DS", e["by_family"]["STM32F7"]["ds"])   # carries a datasheet cite
         self.assertEqual(auth.FAMILY_ELECTRICAL["STM32F7"]["vdd_v"], [1.7, 3.6])
 
+    def test_five_v_tolerance_per_family(self):
+        """Per-pin 5V-tolerance from the datasheet I/O-structure column, incl. the
+        part-dependent analog pins (PA0 FT on F2/F4/F7, not on F0/F1/F3)."""
+        self.assertEqual(auth.FAMILY_NOT_5V["STM32F2"], {"PA4", "PA5"})
+        self.assertIn("PB10", auth.FAMILY_NOT_5V["STM32F3"])   # F3's larger TTa set
+        d = auth.build(self.conn, "LQFP64")
+
+        def fv(name):
+            p = next(x for x in d["positions"] if name in x["pin_names"])
+            return p["five_v"]
+
+        self.assertTrue(fv("PA13")["tolerant"])                # SWDIO, FT on all parts
+        self.assertTrue(all(fv("PA13")["by_family"].values()))
+        self.assertFalse(fv("PA4")["tolerant"])                # DAC/TTa, never 5V-tol
+        self.assertFalse(any(fv("PA4")["by_family"].values()))
+        pa0 = fv("PA0")                                        # family-dependent
+        self.assertFalse(pa0["tolerant"])                      # conservative
+        self.assertFalse(pa0["by_family"]["STM32F1"])
+        self.assertTrue(pa0["by_family"]["STM32F4"])
+        vbat = next(x for x in d["positions"] if x["position"] == 1)
+        self.assertIsNone(vbat["five_v"])                      # non-GPIO
+        summ = d["electrical"]["five_v_positions"]
+        self.assertEqual(summ["not_tolerant_any_part"], 2)     # PA4, PA5
+        self.assertGreater(summ["family_dependent"], 0)
+
     def test_trace_captured_and_vssa_relabelled(self):
         d = auth.build(self.conn, "LQFP64")
         trace = d["extraction_access"]["trace_positions"]
