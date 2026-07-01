@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useMemo, useState } from 'react'
 import {
-  Package, Cpu, Cable, Database, Upload, FolderInput, Layers, Plug, RefreshCw,
-  Wrench, Trash2, Download, FileCog, Save, Search, Check, X, TriangleAlert, Circle,
+  Package, Cpu, Cable, Database, FolderInput, Plug, RefreshCw,
+  Trash2, Download, FileCog, Save, Search, Check, X, TriangleAlert, Circle,
   Sun, Moon, GitBranch,
 } from 'lucide-react'
 import './App.css'
@@ -43,9 +43,6 @@ function Header({ title, sub, children }: { title: string; sub: string; children
 }
 
 /* ── types ──────────────────────────────────────────────── */
-interface Audit { symbols: number; footprints: number; models: number; healthy: boolean
-  summary: { symbols_bad_nickname: number; footprints_missing_model: number } }
-interface CatalogEntry { symbol: string; footprint: string; footprint_ok: boolean }
 interface PackageInfo { package: string; mcus: number }
 interface SwitchPin { pin: number; side: string; switch_class: string; conflict_roles: string
   routes_to: string; required_cell: string; minority_roles: string[] }
@@ -58,129 +55,185 @@ interface NetClass { netclass: string; color?: string; track?: string | number; 
 interface DbStatus { cubemx_source: string; source_present: boolean; xml_files: number
   database: string; database_present: boolean; mcu_count: number }
 
-/* ── Library ────────────────────────────────────────────── */
+/* ── Library (3-column: Workflow | Contents | Git/Log) ──── */
+interface TreeItem { type: 'symbol' | 'footprint' | 'model'; name: string; location: string; date: string; dup: boolean; footprint?: string; ok?: boolean }
+interface GitStatus { repo: boolean; branch?: string; ahead?: number; behind?: number; dirty?: boolean; changed_files?: number }
+interface Commit { hash: string; short: string; subject: string; author: string; when: string }
+
 function LibraryView() {
   const toast = useToast()
-  const [audit, setAudit] = useState<Audit | null>(null)
-  const [catalog, setCatalog] = useState<CatalogEntry[]>([])
+  const [tree, setTree] = useState<TreeItem[]>([])
+  const [paths, setPaths] = useState<{ repo: string; libs: string; downloads: string } | null>(null)
+  const [git, setGit] = useState<GitStatus | null>(null)
+  const [commits, setCommits] = useState<Commit[]>([])
+  const [selCommit, setSelCommit] = useState<string>('')
+  const [diff, setDiff] = useState('')
   const [busy, setBusy] = useState(false)
+  const [log, setLog] = useState<string[]>([])
+  const [rtab, setRtab] = useState<'activity' | 'log'>('activity')
+  const [over, setOver] = useState(false)
+  const [processOnDrop, setPOD] = useState(true)
+  const [fmt, setFmt] = useState<'all' | 'symbol' | 'footprint' | 'model'>('all')
   const [q, setQ] = useState('')
-  const [schem, setSchem] = useState('')
+  const [dupOnly, setDupOnly] = useState(false)
+  const [sel, setSel] = useState<TreeItem | null>(null)
 
+  const logLine = (m: string) => setLog((l) => [`${new Date().toLocaleTimeString()}  ${m}`, ...l].slice(0, 200))
   const refresh = () => {
-    getJSON<Audit>('/api/library/audit').then(setAudit).catch((e) => toast(String(e), 'bad'))
-    getJSON<CatalogEntry[]>('/api/library/catalog').then(setCatalog).catch(() => {})
+    getJSON<TreeItem[]>('/api/library/tree').then(setTree).catch((e) => toast(String(e), 'bad'))
   }
-  useEffect(refresh, [])
+  const refreshGit = () => {
+    getJSON<GitStatus>('/api/git/status').then(setGit).catch(() => {})
+    getJSON<Commit[]>('/api/git/commits?n=40').then(setCommits).catch(() => {})
+  }
+  useEffect(() => { refresh(); refreshGit(); getJSON<{ repo: string; libs: string; downloads: string }>('/api/paths').then(setPaths).catch(() => {}) }, [])
 
-  const post = async (path: string, ok: (j: Record<string, unknown>) => string) => {
+  const op = async (path: string, ok: (j: Record<string, unknown>) => string, body?: unknown) => {
     setBusy(true)
     try {
-      const r = await fetch(api(path), { method: 'POST' })
+      const r = await fetch(api(path), { method: 'POST', headers: body ? { 'Content-Type': 'application/json' } : undefined, body: body ? JSON.stringify(body) : undefined })
       const j = await r.json()
-      toast(r.ok ? ok(j) : `Error: ${j.detail}`, r.ok ? 'ok' : 'bad')
-      refresh()
-    } catch (e) { toast(String(e), 'bad') } finally { setBusy(false) }
+      const msg = r.ok ? ok(j) : `Error: ${j.detail}`
+      toast(msg, r.ok ? 'ok' : 'bad'); logLine(msg); refresh()
+    } catch (e) { toast(String(e), 'bad'); logLine(String(e)) } finally { setBusy(false) }
   }
-  const onImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]; if (!file) return
-    setBusy(true)
+  const importFile = async (file: File) => {
+    setBusy(true); logLine(`Importing ${file.name}…`)
     try {
       const fd = new FormData(); fd.append('file', file)
       const r = await fetch(api('/api/library/import'), { method: 'POST', body: fd })
       const j = await r.json()
-      toast(r.ok ? `Imported ${j.symbols?.length ?? 0} symbol(s)` : `Error: ${j.detail}`, r.ok ? 'ok' : 'bad')
-      refresh()
-    } catch (err) { toast(String(err), 'bad') } finally { setBusy(false); e.target.value = '' }
-  }
-  const onRemove = async (name: string) => {
-    setBusy(true)
-    try {
-      const r = await fetch(api('/api/library/remove'), { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, remove_footprint: true }) })
-      const j = await r.json()
-      toast(r.ok ? `Removed ${name}` : `Error: ${j.detail}`, r.ok ? 'ok' : 'bad'); refresh()
+      const msg = r.ok ? `Imported ${file.name}: ${j.symbols?.length ?? 0} symbol(s)` : `Error: ${j.detail}`
+      toast(msg, r.ok ? 'ok' : 'bad'); logLine(msg); refresh()
     } catch (e) { toast(String(e), 'bad') } finally { setBusy(false) }
   }
-  const onRepair = async () => {
-    if (!schem) { toast('Enter a .kicad_sch path first', 'bad'); return }
-    setBusy(true)
-    try {
-      const r = await fetch(api('/api/library/repair-schematic'), { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: schem, dry_run: false }) })
-      const j = await r.json()
-      toast(r.ok ? `Repaired ${j.count} placed symbol(s) (.bak written)` : `Error: ${j.detail}`, r.ok ? 'ok' : 'bad')
-    } catch (e) { toast(String(e), 'bad') } finally { setBusy(false) }
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault(); setOver(false)
+    const files = Array.from(e.dataTransfer.files).filter((f) => f.name.endsWith('.zip'))
+    if (!files.length) { toast('Drop .zip part files', 'bad'); return }
+    if (processOnDrop) files.forEach(importFile)
+    else toast(`${files.length} file(s) — enable “Process on drop” to import`, 'info')
   }
 
-  const shown = catalog.filter((c) => c.symbol.toLowerCase().includes(q.toLowerCase()) || c.footprint.toLowerCase().includes(q.toLowerCase()))
+  const gitOp = async (path: string, label: string, body?: unknown) => {
+    setBusy(true); logLine(`git: ${label}…`)
+    try {
+      const r = await fetch(api(path), { method: 'POST', headers: body ? { 'Content-Type': 'application/json' } : undefined, body: body ? JSON.stringify(body) : undefined })
+      const j = await r.json()
+      const msg = j.ok ? `git ${label} ok` : `git ${label} failed: ${(j.output || j.detail || '').slice(0, 120)}`
+      toast(msg, j.ok ? 'ok' : 'bad'); logLine(j.output || msg); refreshGit(); refresh()
+    } catch (e) { toast(String(e), 'bad') } finally { setBusy(false) }
+  }
+  const commitPush = async () => {
+    const m = window.prompt('Commit message:'); if (!m) return
+    await gitOp('/api/git/commit', 'commit', { message: m })
+    await gitOp('/api/git/push', 'push')
+  }
+  const openPath = (p?: string) => { if (p) fetch(api('/api/open'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: p }) }) }
+  const showDiff = (ref: string) => { setSelCommit(ref); fetch(api(`/api/git/diff/${ref}`)).then((r) => r.text()).then(setDiff) }
+  const del = () => { if (!sel) return; op('/api/library/remove', () => `Removed ${sel.name}`, { name: sel.name, remove_footprint: true }); setSel(null) }
+
+  const shown = tree.filter((t) => (fmt === 'all' || t.type === fmt) && (!dupOnly || t.dup) && (t.name.toLowerCase().includes(q.toLowerCase())))
+  const counts = { symbol: tree.filter((t) => t.type === 'symbol').length, footprint: tree.filter((t) => t.type === 'footprint').length, model: tree.filter((t) => t.type === 'model').length, dup: tree.filter((t) => t.dup).length }
 
   return (
     <>
-      <Header title="Library" sub="The shared KiCad library. Imports are made schematic-ready automatically — the footprint nickname and 3D-model link are fixed on the way in.">
-        <label className="btn primary">
-          <Upload size={15} />{busy ? 'Working…' : 'Import part'}
-          <input type="file" accept=".zip" hidden onChange={onImport} disabled={busy} />
-        </label>
-      </Header>
-
-      {audit && (
-        <div className="section">
-          <div className="grid">
-            <Metric label="Symbols" value={audit.symbols} />
-            <Metric label="Footprints" value={audit.footprints} />
-            <Metric label="3D models" value={audit.models} />
-            <Metric label="Unresolved footprints" value={audit.summary.symbols_bad_nickname} tone={audit.summary.symbols_bad_nickname ? 'bad' : 'ok'} />
-            <Metric label="Missing 3D models" value={audit.summary.footprints_missing_model} tone={audit.summary.footprints_missing_model ? 'bad' : 'ok'} />
-          </div>
-          <div className={`banner ${audit.healthy ? 'ok' : 'bad'}`}>
-            {audit.healthy ? <Check size={16} /> : <TriangleAlert size={16} />}
-            <span>{audit.healthy
-              ? 'Library is healthy — every symbol resolves its footprint and 3D model.'
-              : `${audit.summary.symbols_bad_nickname} symbol(s) resolve no footprint and ${audit.summary.footprints_missing_model} footprint(s) have no 3D model. Run “Register in KiCad”, or re-import.`}</span>
-          </div>
-        </div>
-      )}
-
-      <div className="section">
-        <h3>Maintenance</h3>
-        <div className="row">
-          <button className="btn" onClick={() => post('/api/library/process-downloads', (j) => `Imported ${(j.imported as string[]).length}, cleared ${(j.cleared as string[]).length}`)} disabled={busy}><FolderInput size={15} />Process downloads</button>
-          <button className="btn" onClick={() => post('/api/library/dedupe', (j) => `Removed ${j.removed} duplicate(s)`)} disabled={busy}><Layers size={15} />Dedupe</button>
-          <button className="btn" onClick={() => post('/api/library/register?dry_run=false', (j) => j.changed ? 'Registered libraries + ${MY3DMODELS} in KiCad' : 'KiCad already registered')} disabled={busy}><Plug size={15} />Register in KiCad</button>
-          <button className="btn ghost" onClick={refresh}><RefreshCw size={15} />Refresh</button>
-        </div>
-        <div className="row" style={{ marginTop: 10 }}>
-          <input type="text" style={{ flex: 1, minWidth: 240 }} className="mono" placeholder="path to a .kicad_sch to repair placed symbols…" value={schem} onChange={(e) => setSchem(e.target.value)} />
-          <button className="btn" onClick={onRepair} disabled={busy}><Wrench size={15} />Repair schematic</button>
-        </div>
+      <div className="dropzone" onClick={() => document.getElementById('lib-file')?.click()}
+        onDragOver={(e) => { e.preventDefault(); setOver(true) }} onDragLeave={() => setOver(false)} onDrop={onDrop}
+        style={over ? { borderColor: 'var(--accent)', background: 'var(--btn)' } : undefined}>
+        <b>Drop part .zip files here</b> or click to browse — {' '}
+        <label className="chk" onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={processOnDrop} onChange={(e) => setPOD(e.target.checked)} />Process on drop</label>
+        <input id="lib-file" type="file" accept=".zip" multiple hidden onChange={(e) => { Array.from(e.target.files || []).forEach(importFile); e.target.value = '' }} />
       </div>
 
-      <div className="section">
-        <div className="row" style={{ justifyContent: 'space-between' }}>
-          <h3 style={{ margin: 0 }}>Catalog · {shown.length}{q && ` of ${catalog.length}`}</h3>
-          <div className="search"><Search size={15} /><input type="text" placeholder="Filter parts…" value={q} onChange={(e) => setQ(e.target.value)} /></div>
-        </div>
-        <table className="tbl">
-          <thead><tr><th style={{ width: 58 }}>Preview</th><th>Symbol</th><th>Footprint</th><th style={{ width: 90 }}>Resolves</th><th style={{ width: 60 }}></th></tr></thead>
-          <tbody>
-            {shown.map((c) => {
-              const fp = (c.footprint || '').split(':').pop() || ''
-              return (
-                <tr key={c.symbol}>
-                  <td>{fp && <img className="thumb" loading="lazy" alt={fp} src={api(`/api/library/footprint/${encodeURIComponent(fp)}/svg`)} onError={(e) => { (e.target as HTMLImageElement).style.visibility = 'hidden' }} />}</td>
-                  <td>{c.symbol}</td>
-                  <td className="mono dim">{c.footprint || '—'}</td>
-                  <td>{c.footprint_ok
-                    ? <span className="pill ok"><span className="dot" />resolved</span>
-                    : <span className="pill bad"><span className="dot" />unresolved</span>}</td>
-                  <td><button className="btn danger sm" onClick={() => onRemove(c.symbol)} disabled={busy} aria-label={`Remove ${c.symbol}`}><Trash2 size={14} /></button></td>
-                </tr>
-              )
-            })}
-            {!shown.length && <tr><td colSpan={5}><div className="empty">No parts{q ? ' match your filter' : ' yet — import one to get started'}.</div></td></tr>}
-          </tbody>
-        </table>
+      <div className="lib">
+        {/* Workflow */}
+        <div className="card"><div className="ct"><b>Workflow</b></div><div className="cb">
+          <div className="steps">
+            <button className="btn" disabled={busy} onClick={() => gitOp('/api/git/pull', 'pull')}><span className="step-n">0</span>Pull (fast-forward)</button>
+            <button className="btn" disabled={busy} onClick={() => openPath(paths?.downloads)}><span className="step-n">1</span>Open downloads</button>
+            <button className="btn" disabled={busy} onClick={() => op('/api/library/process-downloads', (j) => `Imported ${(j.imported as string[]).length}, cleared ${(j.cleared as string[]).length}`)}><span className="step-n">2</span>Process ZIPs</button>
+            <button className="btn" disabled={busy} onClick={() => op('/api/library/dedupe', (j) => `Removed ${j.removed} duplicate(s)`)}><span className="step-n">3</span>Remove duplicates</button>
+            <button className="btn" disabled={busy} onClick={commitPush}><span className="step-n">4</span>Stage, commit &amp; push</button>
+          </div>
+          <div className="section" style={{ margin: '14px 0 0' }}>
+            <h3>Advanced</h3>
+            <div className="steps">
+              <button className="btn" disabled={busy} onClick={() => op('/api/library/register?dry_run=false', (j) => j.changed ? 'Registered in KiCad' : 'Already registered')}><Plug size={14} />Register in KiCad</button>
+              <button className="btn ghost" onClick={() => { refresh(); refreshGit() }}><RefreshCw size={14} />Refresh</button>
+            </div>
+          </div>
+          <div className="paths">
+            <button className="btn ghost sm" title={paths?.repo} onClick={() => openPath(paths?.repo)}><FolderInput size={13} />Root</button>
+            <button className="btn ghost sm" title={paths?.libs} onClick={() => openPath(paths?.libs)}><Package size={13} />Libs</button>
+          </div>
+        </div></div>
+
+        {/* Contents */}
+        <div className="card"><div className="ct"><b>Contents</b><span className="dim" style={{ fontSize: 12 }}>· {shown.length}</span><span className="grow" /><span className="search"><Search size={14} /><input type="text" placeholder="Filter…" value={q} onChange={(e) => setQ(e.target.value)} /></span></div><div className="cb">
+          <div className="row" style={{ marginBottom: 8 }}>
+            <select value={fmt} onChange={(e) => setFmt(e.target.value as typeof fmt)}>
+              <option value="all">All types ({tree.length})</option>
+              <option value="symbol">Symbols ({counts.symbol})</option>
+              <option value="footprint">Footprints ({counts.footprint})</option>
+              <option value="model">3D models ({counts.model})</option>
+            </select>
+            <label className="chk"><input type="checkbox" checked={dupOnly} onChange={(e) => setDupOnly(e.target.checked)} />Duplicates only ({counts.dup})</label>
+            <span className="grow" />
+            <button className="btn ghost sm" disabled={!sel} onClick={() => openPath(sel?.location)}><FolderInput size={13} />Open</button>
+            <button className="btn danger sm" disabled={!sel} onClick={del}><Trash2 size={13} />Delete</button>
+          </div>
+          <div className="tree-wrap">
+            <table className="tbl">
+              <thead><tr><th style={{ width: 78 }}>Type</th><th>Name</th><th>Location</th><th style={{ width: 108 }}>Date</th></tr></thead>
+              <tbody>
+                {shown.map((t, i) => (
+                  <tr key={t.type + t.name + i} className={sel === t ? 'sel' : ''} onClick={() => setSel(t)} style={{ cursor: 'pointer' }}>
+                    <td><span className={`ftype ${t.type}`}>{t.type.slice(0, 3)}</span></td>
+                    <td>{t.name}{t.dup && <span className="tag" style={{ marginLeft: 6 }}>dup</span>}</td>
+                    <td className="mono dim" style={{ maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.location}</td>
+                    <td className="dim">{t.date}</td>
+                  </tr>
+                ))}
+                {!shown.length && <tr><td colSpan={4}><div className="empty">No items match.</div></td></tr>}
+              </tbody>
+            </table>
+          </div>
+          <div className="prev">
+            {sel?.type === 'footprint'
+              ? <div className="row"><img className="thumb" style={{ width: 90, height: 90 }} src={api(`/api/library/footprint/${encodeURIComponent(sel.name)}/svg`)} alt={sel.name} /><div className="info"><b>{sel.name}</b><br />footprint<br />{sel.location}</div></div>
+              : sel ? <div className="info"><b>{sel.name}</b> — {sel.type}<br />{sel.location}<br />{sel.date}</div>
+              : <div className="info">Select an item to preview.</div>}
+          </div>
+        </div></div>
+
+        {/* Git / Log */}
+        <div className="card"><div className="ct">
+          <div className="seg"><button className={rtab === 'activity' ? 'on' : ''} onClick={() => setRtab('activity')}>Activity</button><button className={rtab === 'log' ? 'on' : ''} onClick={() => setRtab('log')}>Log</button></div>
+          <span className="grow" />
+          {git?.repo && <span className="pill"><GitBranch size={12} />{git.branch} {git.ahead ? `↑${git.ahead}` : ''}{git.behind ? `↓${git.behind}` : ''}</span>}
+        </div><div className="cb">
+          {rtab === 'activity' ? <>
+            <div className="row" style={{ marginBottom: 6 }}>
+              <button className="btn sm" disabled={busy} onClick={() => gitOp('/api/git/pull', 'pull')}>Pull</button>
+              <button className="btn sm" disabled={busy} onClick={() => gitOp('/api/git/push', 'push')}>Push</button>
+              <button className="btn sm" disabled={!selCommit} onClick={() => selCommit && showDiff(selCommit)}>Diff</button>
+              <button className="btn sm" disabled={!selCommit} onClick={() => selCommit && window.confirm(`Checkout ${selCommit.slice(0, 7)}?`) && gitOp('/api/git/checkout', 'checkout', { ref: selCommit })}>Checkout</button>
+              <button className="btn ghost sm" onClick={refreshGit}><RefreshCw size={13} /></button>
+            </div>
+            {git?.dirty && <div className="banner" style={{ margin: '0 0 8px' }}><TriangleAlert size={14} /><span>{git.changed_files} uncommitted change(s)</span></div>}
+            <div className="commits">
+              {commits.map((c) => (
+                <div key={c.hash} className={`commit ${selCommit === c.hash ? 'sel' : ''}`} onClick={() => showDiff(c.hash)}>
+                  <div className="s">{c.subject}</div>
+                  <div className="m">{c.short} · {c.author} · {c.when}</div>
+                </div>
+              ))}
+              {!commits.length && <div className="empty">No commits.</div>}
+            </div>
+            {diff && <pre className="diff">{diff.slice(0, 4000)}</pre>}
+          </> : <div className="commits" style={{ fontFamily: 'var(--mono)', fontSize: 11.5 }}>{log.length ? log.map((l, i) => <div key={i} style={{ padding: '2px 0', color: 'var(--dim)' }}>{l}</div>) : <div className="empty">No activity yet.</div>}</div>}
+        </div></div>
       </div>
     </>
   )

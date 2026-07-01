@@ -54,6 +54,35 @@ def list_symbols(symbols_path: Path, nickname: str = S.DEFAULT_FP_NICKNAME) -> l
     return out
 
 
+def _mtime(p: Path) -> str:
+    import datetime
+    try:
+        return datetime.datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+    except OSError:
+        return ""
+
+
+def tree(symbols_path: Path, footprints_dir: Path, models_dir: Path) -> list[dict]:
+    """Full library inventory: one row per symbol / footprint / model, with type,
+    name, location, date, and a duplicate flag (name repeated within its type)."""
+    from collections import Counter
+    items: list[dict] = []
+    for e in list_symbols(symbols_path):
+        items.append({"type": "symbol", "name": e.symbol, "location": str(symbols_path),
+                      "date": _mtime(symbols_path), "footprint": e.footprint, "ok": e.footprint_ok})
+    if footprints_dir.exists():
+        for fp in sorted(footprints_dir.glob("*.kicad_mod")):
+            items.append({"type": "footprint", "name": fp.stem, "location": str(fp), "date": _mtime(fp)})
+    if models_dir.exists():
+        for m in sorted(models_dir.iterdir()):
+            if m.suffix.lower() in _MODEL_SUFFIXES:
+                items.append({"type": "model", "name": m.stem, "location": str(m), "date": _mtime(m)})
+    counts = Counter((i["type"], i["name"]) for i in items)
+    for i in items:
+        i["dup"] = counts[(i["type"], i["name"])] > 1
+    return items
+
+
 def known_footprint_names(footprints_dir: Path) -> set[str]:
     """The footprint names that live in the shared library (``*.kicad_mod`` stems)."""
     if not footprints_dir.exists():

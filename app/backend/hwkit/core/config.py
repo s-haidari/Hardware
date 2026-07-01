@@ -88,6 +88,14 @@ def downloads_dir() -> Path:
     return libs_root().parent / "downloads"
 
 
+def repo_root() -> Path:
+    """The git repo that holds the library (for the git panel). Override: ``HWKIT_REPO``."""
+    env = os.environ.get("HWKIT_REPO")
+    if env:
+        return Path(env)
+    return libs_root().parent
+
+
 def libs_root() -> Path:
     """The KiCad library root (MySymbols / MyFootprints.pretty / My3DModels)."""
     env = os.environ.get("HWKIT_LIBS")

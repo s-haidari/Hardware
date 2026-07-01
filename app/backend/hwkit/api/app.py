@@ -361,6 +361,89 @@ def pins_switch_csv(package: str) -> str:
         conn.close()
 
 
+@app.get("/api/library/tree")
+def library_tree() -> list[dict]:
+    lp = _libpaths()
+    return catalog.tree(lp.symbols, lp.footprints, lp.models)
+
+
+@app.get("/api/paths")
+def paths_get() -> dict:
+    return {
+        "repo": str(config.repo_root()), "libs": str(config.libs_root()),
+        "downloads": str(config.downloads_dir()), "database": str(config.stm_database_path()),
+        "cubemx": str(config.cubemx_source_dir()),
+    }
+
+
+class OpenReq(BaseModel):
+    path: str
+
+
+@app.post("/api/open")
+def open_path(body: OpenReq) -> dict:
+    import os
+    p = Path(body.path)
+    if not p.exists():
+        raise HTTPException(status_code=404, detail=f"path not found: {p}")
+    try:
+        os.startfile(str(p))  # noqa: platform-specific (Windows)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=str(exc))
+    return {"ok": True}
+
+
+# ── git panel ──────────────────────────────────────────────────────────────
+@app.get("/api/git/status")
+def git_status() -> dict:
+    from .. import git_ops
+    return git_ops.status(config.repo_root())
+
+
+@app.get("/api/git/commits")
+def git_commits(n: int = 40) -> list[dict]:
+    from .. import git_ops
+    return git_ops.commits(config.repo_root(), n)
+
+
+@app.get("/api/git/diff/{ref}", response_class=PlainTextResponse)
+def git_diff(ref: str) -> str:
+    from .. import git_ops
+    return git_ops.diff(config.repo_root(), ref)
+
+
+@app.post("/api/git/pull")
+def git_pull() -> dict:
+    from .. import git_ops
+    return git_ops.pull(config.repo_root())
+
+
+@app.post("/api/git/push")
+def git_push() -> dict:
+    from .. import git_ops
+    return git_ops.push(config.repo_root())
+
+
+class CommitReq(BaseModel):
+    message: str
+
+
+@app.post("/api/git/commit")
+def git_commit(body: CommitReq) -> dict:
+    from .. import git_ops
+    return git_ops.stage_commit(config.repo_root(), body.message)
+
+
+class CheckoutReq(BaseModel):
+    ref: str
+
+
+@app.post("/api/git/checkout")
+def git_checkout(body: CheckoutReq) -> dict:
+    from .. import git_ops
+    return git_ops.checkout(config.repo_root(), body.ref)
+
+
 # Serve the built React UI (when present) from the same origin, so the app can
 # run as one process in a browser without Tauri. Mounted last so /api/* wins.
 _dist = Path(__file__).resolve().parents[3] / "frontend" / "dist"

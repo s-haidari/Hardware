@@ -9,32 +9,32 @@ Progress: 20/214 (~9%). This is the baseline to reach before anything new.
 - [x] NAVIGATION TABS (Header Bar) — Two main section tabs: 'KICAD Manager' (default, library/workflow/drop zone) and 'KICAD Tools' (experimental K
 - [x] Header Bar / Top Status Strip — Persistent header with: left-aligned nav tabs (KICAD Manager / KICAD Tools), center-right with theme toggle bu
 - [x] Theme Toggle Button (☀/☾) — Icon button in header bar to switch between dark and light themes instantly. Sun icon in dark mode, moon in li
-- [ ] Drop Zone (Drag & Drop) — QFrame-based drag-and-drop area that accepts .zip files. Shows dashed border with hover effect. Labeled 'Drop 
-- [ ] Process on Drop Checkbox — Checkbox inside drop zone. When checked, automatically processes dropped ZIPs. When unchecked, only copies the
-- [ ] Downloads Button (Workflow) — Opens the downloads folder in Windows Explorer. Part of the Root/Downloads button row at bottom of Workflow pa
-- [ ] Workflow Panel (Left Column) — CardWidget container on left side showing the 5-step workflow. Contains: Advanced dropdown menu, 5 Step button
+- [x] Drop Zone (Drag & Drop) — QFrame-based drag-and-drop area that accepts .zip files. Shows dashed border with hover effect. Labeled 'Drop 
+- [x] Process on Drop Checkbox — Checkbox inside drop zone. When checked, automatically processes dropped ZIPs. When unchecked, only copies the
+- [x] Downloads Button (Workflow) — Opens the downloads folder in Windows Explorer. Part of the Root/Downloads button row at bottom of Workflow pa
+- [x] Workflow Panel (Left Column) — CardWidget container on left side showing the 5-step workflow. Contains: Advanced dropdown menu, 5 Step button
 - [ ] Advanced Menu — Dropdown menu with 9 actions: Pull, Push, Stage and Commit, Process Folder, Export Catalog, Start Watcher, Sto
-- [ ] Step 0: Pull (Fast-Forward) — Runs 'git pull --ff-only' in background. Updates local repo from remote. No rebase/autostash (only fast-forwar
-- [ ] Step 1: Open Downloads — Opens the configured Downloads folder in Windows Explorer. Allows manual placement of ZIP files.
+- [x] Step 0: Pull (Fast-Forward) — Runs 'git pull --ff-only' in background. Updates local repo from remote. No rebase/autostash (only fast-forwar
+- [x] Step 1: Open Downloads — Opens the configured Downloads folder in Windows Explorer. Allows manual placement of ZIP files.
 - [x] Step 2: Process ZIPs — Processes all .zip files in downloads/: expands ZIP, moves .kicad_mod to footprints, .kicad_sym to symbols (me
 - [ ] Step 3: Clean Leftovers — Deletes remaining .zip files and extracted folders in downloads/ after processing. Prompts user for confirmati
-- [ ] Step 4: Stage, Commit, Push — Stages all changes (git add -A), prompts for commit message, creates commit, then pushes to remote. Executes v
-- [ ] Root Path Button (Workflow) — QPushButton with dropdown menu showing repo root path (disabled action for display), Open action (launches in 
-- [ ] Downloads Path Button (Workflow) — QPushButton with dropdown menu showing downloads path (disabled action for display), Open action (launches in 
-- [ ] Contents Panel (Center Column) — CardWidget showing library inventory with search/filter row, summary label, action buttons (Refresh, Open, Ope
-- [ ] Format Filter Dropdown — QToolButton with dropdown menu for multi-select filtering by type: 'All', 'Symbol', 'Footprint', 'Model'. Show
+- [x] Step 4: Stage, Commit, Push — Stages all changes (git add -A), prompts for commit message, creates commit, then pushes to remote. Executes v
+- [x] Root Path Button (Workflow) — QPushButton with dropdown menu showing repo root path (disabled action for display), Open action (launches in 
+- [x] Downloads Path Button (Workflow) — QPushButton with dropdown menu showing downloads path (disabled action for display), Open action (launches in 
+- [x] Contents Panel (Center Column) — CardWidget showing library inventory with search/filter row, summary label, action buttons (Refresh, Open, Ope
+- [x] Format Filter Dropdown — QToolButton with dropdown menu for multi-select filtering by type: 'All', 'Symbol', 'Footprint', 'Model'. Show
 - [x] Search Field — QLineEdit that filters library by name substring (case-insensitive, real-time). Updates tree on each keystroke
-- [ ] Duplicates Only Checkbox — Checkbox that filters the tree to show only entries with duplicate copies. Identifies symbols/footprints/model
+- [x] Duplicates Only Checkbox — Checkbox that filters the tree to show only entries with duplicate copies. Identifies symbols/footprints/model
 - [ ] Group by Component Checkbox — When checked, groups symbol/footprint/3D model of same part together (fuzzy name matching). Shows component su
-- [ ] Library Summary Label — Shows total item count, breakdown by type (Symbols/Footprints/Models), and duplicate count. Updates after each
+- [x] Library Summary Label — Shows total item count, breakdown by type (Symbols/Footprints/Models), and duplicate count. Updates after each
 - [x] Refresh Button — Re-scans library on disk, updates tree with current contents. Runs synchronously in main thread.
-- [ ] Open Button — Opens selected item(s) with default associated app (Explorer for folders, KiCad Editor for symbols, etc.). Han
+- [x] Open Button — Opens selected item(s) with default associated app (Explorer for folders, KiCad Editor for symbols, etc.). Han
 - [ ] Open in KICAD Button — Opens selected item(s) specifically in KiCad application (Symbol Editor for .kicad_sym, Footprint Editor for .
 - [x] Delete Button — Removes selected item(s). For symbols: batch removal by index (single rewrite, safe for duplicates). For footp
 - [x] Remove Duplicates Button — One-click bulk operation: finds all duplicate symbols in the library, keeps first copy, removes rest. Counts d
-- [ ] Library Contents Tree — QTreeWidget with 4 columns: Format (type), Name, Location (file path), Date (modification date). Rows are item
-- [ ] Tree Column Formatting — Type/Name/Date columns ResizeToContents (fit text), Location column Stretch (takes remaining width). Allows ho
-- [ ] Duplicate Item Highlighting — Rows with duplicate copies are highlighted with slate background color, bold name text, and tooltip describing
+- [x] Library Contents Tree — QTreeWidget with 4 columns: Format (type), Name, Location (file path), Date (modification date). Rows are item
+- [x] Tree Column Formatting — Type/Name/Date columns ResizeToContents (fit text), Location column Stretch (takes remaining width). Allows ho
+- [x] Duplicate Item Highlighting — Rows with duplicate copies are highlighted with slate background color, bold name text, and tooltip describing
 - [ ] Group Header Styling (Component Groups) — Parent rows (when grouped by component) show bold label + summary text (e.g. '1× symbol   1× footprint'). Diff
 - [ ] Tree Double-Click Action — Double-clicking a tree item opens it in KiCad (same as Open in KICAD button).
 - [ ] Preview Pane (Interactive 3D) — QWidget below tree that renders: footprint PNG image with summary (pads, SMD/TH counts, dimensions), symbol sc
@@ -42,22 +42,22 @@ Progress: 20/214 (~9%). This is the baseline to reach before anything new.
 - [ ] Symbol Preview — Shows schematic rendering of selected symbol from the shared .kicad_sym library.
 - [ ] 3D Model Preview (STEP/STP/WRL) — Loads 3D mesh in background thread, renders interactive OpenGL view with dark background. Drag to rotate (adju
 - [ ] Preview Info Label — Below preview pane, shows metadata: item name, type/path, file size (for 3D), dimensions, triangle count, modi
-- [ ] Log Panel (Right Column, Tab: Log) — CardWidget with Log/Activity tab bar in title. Log tab shows QTextEdit with timestamped operation log. Reads/w
-- [ ] Activity Panel (Right Column, Tab: Activity) — Commits list showing recent git commits with hash, date, author, subject. Buttons: Refresh (fetches latest), O
-- [ ] Commits List (QListWidget) — Shows up to 50 recent commits with format: hash  date  author  - subject. Single-selection mode. Stores full c
-- [ ] Refresh Commits Button — Fetches last 50 commits from git log in background. Updates list. Disabled until a commit is selected (except 
+- [x] Log Panel (Right Column, Tab: Log) — CardWidget with Log/Activity tab bar in title. Log tab shows QTextEdit with timestamped operation log. Reads/w
+- [x] Activity Panel (Right Column, Tab: Activity) — Commits list showing recent git commits with hash, date, author, subject. Buttons: Refresh (fetches latest), O
+- [x] Commits List (QListWidget) — Shows up to 50 recent commits with format: hash  date  author  - subject. Single-selection mode. Stores full c
+- [x] Refresh Commits Button — Fetches last 50 commits from git log in background. Updates list. Disabled until a commit is selected (except 
 - [ ] Open on GitHub Button — Opens selected commit's GitHub page in default browser (parses git remote origin URL, constructs /commit/HASH 
-- [ ] Diff Button (Commit) — Shows full diff output of selected commit in log panel (git show HASH). Disabled until selection.
-- [ ] Checkout Button (Commit) — Switches working tree to selected commit (git checkout HASH). Prompts for confirmation. Disabled until selecti
+- [x] Diff Button (Commit) — Shows full diff output of selected commit in log panel (git show HASH). Disabled until selection.
+- [x] Checkout Button (Commit) — Switches working tree to selected commit (git checkout HASH). Prompts for confirmation. Disabled until selecti
 - [ ] Commit Double-Click — Shows full commit info (hash, author, date, body) in log panel via 'git show' output.
 - [x] Status Bar (Bottom) — Fixed bar with: status label (left, expandable), progress bar (center, indeterminate/determinate, hidden when 
-- [ ] Status Label — Shows current operation state: 'Idle', 'Pulling…', 'Processing ZIPs…', etc. Also displayed in header activity 
-- [ ] Progress Bar — Visual indicator of async operations. Indeterminate mode (animated) initially, then determinate once a count i
+- [x] Status Label — Shows current operation state: 'Idle', 'Pulling…', 'Processing ZIPs…', etc. Also displayed in header activity 
+- [x] Progress Bar — Visual indicator of async operations. Indeterminate mode (animated) initially, then determinate once a count i
 - [x] Result Chip — Shows operation result after completion: '✓ Pulled', '✓ Processed', or error message in red (#d9534f).
 - [ ] Async Operation Threading — All long operations (git, processing) run in background threads via run_async(). GUI stays responsive. Signals
 - [ ] Auto-Pull (Initial) — On startup (250ms delay), automatically runs 'git pull --ff-only' in background. Updates library after success
 - [ ] Periodic Auto-Pull (Every 5 Minutes) — QTimer fires every 5 minutes, runs 'git pull --ff-only' in background. Refreshes library if pull succeeds. Non
-- [ ] Branch Status Display — Fetches current git branch name + ahead/behind counts in background. Shows in header as: 'main ↑5 ↓2' (ahead 5
+- [x] Branch Status Display — Fetches current git branch name + ahead/behind counts in background. Shows in header as: 'main ↑5 ↓2' (ahead 5
 - [x] Dark Theme (Default) — Cool slate palette: dark backgrounds (#16181d win, #1e2127 card), light text (#e7eaf0), slate accents (#7f8aa0
 - [x] Light Theme — Neutral palette: light backgrounds (#f1f3f6 win, #ffffff card), dark text (#1f2329), slate accents. Same token
 - [x] Theme Colors (Exact Hex Values) — Dark: WIN_BG #16181d, CARD_BG #1e2127, FG #e7eaf0, ACCENT #7f8aa0, BORDER #2c303a, SEL_BG #33405c, BTN_BG #262
@@ -67,17 +67,17 @@ Progress: 20/214 (~9%). This is the baseline to reach before anything new.
 - [x] Menu Styling — Rounded borders (8px), 1px border, 5px padding. Items: 6px vertical, 18px horizontal. Hover: slightly lighter 
 - [x] Fonts (Primary) — Inter (bundled TTF files in fonts/ folder). Fallback chain: Segoe UI Variable Text > Segoe UI > Roboto > Helve
 - [ ] Window Geometry Persistence — On close, saves window size/position and theme choice to QSettings ('KiCadLibraryManager', 'KiCadLibraryManage
-- [ ] Panel Splitters (3-column Layout) — QSplitter with handle-width 6px, non-collapsible panels. Workflow (left, min 250px, stretch 0), Contents (cent
+- [x] Panel Splitters (3-column Layout) — QSplitter with handle-width 6px, non-collapsible panels. Workflow (left, min 250px, stretch 0), Contents (cent
 - [x] Symbol Merge (De-duplication) — When processing ZIPs, extracts all .kicad_sym blocks and merges into shared MySymbols.kicad_sym. Checks existi
 - [ ] Footprint Overwrite Protection — When installing footprints from ZIPs, checks if file exists. If different content, skips with warning. If iden
 - [ ] Model Overwrite Protection — Same as footprint: checks existing 3D models before copying. Different file = skip. Identical = no-op. New mod
 - [x] Export Catalog (Markdown + PNG) — Generates library_catalog.md with rendered PNG images (360px footprints, 300px symbols, 3D model thumbnails). 
 - [ ] Watcher (File System Monitoring) — Optional: monitors downloads/ folder with watchdog library. On .zip created/modified, auto-processes it (commi
 - [ ] Start/Stop Watcher — Advanced menu actions to start/stop the watchdog observer. Logs status. Stopped on app close.
-- [ ] Git Pull (Fast-Forward Only) — Simple 'git pull --ff-only' (no rebase). Used in Step 0 and periodic pulls. Non-blocking in background thread.
-- [ ] Git Push — Runs 'git push' to push current branch to remote. Non-blocking.
-- [ ] Git Stage & Commit — Runs 'git add -A' then 'git commit -m <msg>'. Checks for staged changes first (avoids noisy errors). Runs in b
-- [ ] Commit Message Dialog — QInputDialog prompts user for commit message. Pre-fills with timestamp template 'Library update YYYY-MM-DD HH:
+- [x] Git Pull (Fast-Forward Only) — Simple 'git pull --ff-only' (no rebase). Used in Step 0 and periodic pulls. Non-blocking in background thread.
+- [x] Git Push — Runs 'git push' to push current branch to remote. Non-blocking.
+- [x] Git Stage & Commit — Runs 'git add -A' then 'git commit -m <msg>'. Checks for staged changes first (avoids noisy errors). Runs in b
+- [x] Commit Message Dialog — QInputDialog prompts user for commit message. Pre-fills with timestamp template 'Library update YYYY-MM-DD HH:
 - [ ] Process Folder Dialog — Advanced menu action: opens folder dialog to select an extracted part folder (instead of ZIP). Processes it ma
 - [ ] Change Repo Root — Root button menu -> Change: opens folder dialog. Validates writability. Re-derives all library paths from new 
 - [ ] Change Downloads Folder — Downloads button menu -> Change: opens folder dialog. Validates writability. Saves to config. Creates director
@@ -95,7 +95,7 @@ Progress: 20/214 (~9%). This is the baseline to reach before anything new.
 - [ ] No-Window Subprocess (Hidden Console) — All git/processing commands use run_hidden() wrapper which suppresses console window on Windows (CREATE_NO_WIN
 - [ ] Portable Repo Detection — detect_repo_root() finds library root from app location (tools/LibraryManager.py parent). Works as frozen .exe
 - [ ] Resource Path Resolution — resource_path() finds bundled files (icons, fonts) in both script and frozen modes. Uses sys._MEIPASS (PyInsta
-- [ ] Bundled Fonts Loading — load_bundled_fonts() registers TTF files from fonts/ folder (Inter family). Ensures consistent typography rega
+- [x] Bundled Fonts Loading — load_bundled_fonts() registers TTF files from fonts/ folder (Inter family). Ensures consistent typography rega
 - [ ] Grayscale Icon Generator — gray_icon() converts Qt standard icons to monochrome for uniform button styling. Preserves alpha, converts RGB
 - [ ] Duplicated Entry Batch Removal — remove_symbols_by_indices() removes multiple symbol blocks in single rewrite, indexed by file position. Checks
 - [ ] Symbol Block Extraction — extract_symbol_blocks() scans .kicad_sym file using balanced-paren scanner, tolerates quoted strings, returns 
