@@ -58,6 +58,49 @@ must-switch = **`[1,13,17,18,19,30,31,33,47,48,60]` (11 → 2 ADG714 cells)**; L
 pin 100 (VDD) never switched. Extraction tags: pin 60 is_boot, pin 13 is_analog_supply, pin 5 is_clock,
 pin 46 is_debug (SWDIO).
 
+## Extraction-access breakout (Layer B, orthogonal to switching)
+Added 2026-07-01 (with Sadad). The parent board breaks out the socketed target's debug/service
+functions so the controller and a bench probe can attach for firmware extraction. This is a **second,
+independent per-position axis**: *switching* asks "does the routing role collide across the family? →
+ADG714 cell"; *breakout* asks "can this socket pin be debug/bootloader/trace on **any** supported part?
+→ route it to a frozen parent-board service net." A pin can be switched, broken-out, both, or neither
+(e.g. LQFP100 PA14/SWCLK is fixed-role SWCLK on most parts but VCAP2 on F469/F479 → both switched *and*
+broken out). Confirmed orthogonal in the vault: `7G` line 64-70, `Connector Contract` Rev B, Card `5E`.
+
+**Derived from raw signals, not the switch identities.** `stm32_authority._breakout_map` reads the
+per-position union of CubeMX `<Signal>` names + raw pin names already in the DB. The switch engine
+(`stm32_db`) is **untouched**, so the verified 11/43 counts provably cannot move (regression-tested by
+`test_switch_counts_unchanged_by_breakout`).
+
+**Signal → function → frozen parent net** (Connector Contract Rev B + Card 5E; debug port is fixed
+silicon PA13/PA14/PB3/PA15/PB4):
+
+| Signal (any part) | Function | Parent net | CoreSight-20 pin |
+|---|---|---|---|
+| SWDIO / JTMS | SWD data | `SWDIO_PARENT` | 2 |
+| SWCLK / JTCK | SWD clock | `SWCLK_PARENT` | 4 |
+| JTDO / TRACESWO / SWO | SWO / TDO | `SWO_PARENT` | 6 |
+| JTDI | JTAG TDI | `TDI_PARENT` (contact 35, PA15) | 8 |
+| NJTRST / JTRST | JTAG nTRST | `NTRST_PARENT` (contact 37, PB4) | 14 |
+| reset pin | NRST | `SERVICE_NRST` | 10 |
+| boot pin | BOOT0 | `SERVICE_BOOT0` | — |
+| OSC_IN / OSC_OUT | HSE osc | `SERVICE_OSC_IN` / `_OUT` | — |
+| PA9 USART1_TX / PA10 USART1_RX | boot UART (TX↔RX crossover) | `UART_BOOT_RX` / `UART_BOOT_TX` | — |
+| PA12 / PA11 USB | USB-DFU | `USB_DP_TGT` / `USB_DN_TGT` | — |
+| TRACECLK / TRACED0-3 | parallel trace | reserved (No-Connect per 5E) | 11/12/13/16 NC |
+
+Per position the authority emits a **`breakout`** block: `service_nets`, human `functions`, `via`
+(`adg714_source` if switched else `fixed_direct` — tells the 7G header where to tap), `coresight20_pins`,
+`trace`. The package `rollup` gains **`extraction_access`**: the full CoreSight-20 header resolved to
+target sockets, the boot-UART / USB-DFU positions, and debug/trace/service-breakout counts. The
+`STM32 Pins` tab shows a violet **Breakout** column and `breakout N (debug D, trace T)` in the rollup.
+
+**Ground truth (tested):** LQFP64 SWDIO/SWCLK/SWO/TDI/nTRST = sockets **46/49/55/50/56** (Card 7B + 5E);
+LQFP100 TDI/nTRST = **77/90** (5E); CoreSight-20 pin 2→46, pin 8→50, pin 14→56, pin 10→NRST 7; boot UART
+PA9→`UART_BOOT_RX`, PA10→`UART_BOOT_TX`. `VSSA`→`VSSA_TGT`; parallel trace detected (`SYS_TRACED*`,
+including the port-C remap present on LQFP64) and left reserved No-Connect. LQFP100 correctly flags the
+F469/F479 pin-shift (debug-capable at both the base and shifted sockets).
+
 ## Full-spec field sources (Phase 2)
 - **electrical**: VDD/VDDA range from the CubeMX `<Voltage Max Min>` element (MCU-level, aggregated);
   per-pin `max_io_current_ma` = per-family datasheet constant (small cited table).
@@ -79,6 +122,9 @@ new source of truth.
 2. **Authority + full fields** — `stm32_authority.py`: Layer-B + electrical + bootloader (AN2606) +
    net dictionary + TSV/YAML/JSON export.
 3. **Viewer tab** — `stm32_pins_tab.py`: the per-position decision matrix + rollup + filters.
+4. **Extraction-access breakout** (2026-07-01) — the orthogonal debug/bootloader/trace breakout layer
+   in `stm32_authority.py` (per-position `breakout` + `extraction_access` rollup + CoreSight-20/7G),
+   the tab's Breakout column, and ground-truth tests. See the section above.
 
 ## Repo cleanup (tied to this work)
 Done: dropped `app/frontend` (web UI), `app/backend/stm32switch` (old generator), `tools/build`,
@@ -100,15 +146,16 @@ gitignored.
 ## Open questions / flags
 1. **max_io_current_ma is null** — the datasheet fetch did not complete; not guessed (Hard Rule 10). Fill
    with cited per-family constants (STM32F I/O is typically ±25 mA abs-max) once a datasheet is saved.
-2. **SWD folds into the IO identity** in the switch engine — this reproduces the hand-verified truth
-   (LQFP64=11, LQFP100=43). The vault authority spec lists **SWD as a distinct routing identity**
-   (destinations SWCLK_PARENT / SWDIO_PARENT / SWO_PARENT). Promoting SWD to its own identity would
-   raise the switched counts and must be signed off against Build Card 7B before changing. **Decision
-   needed.**
-3. **VSSA is lumped into GND** (identity VSS). The vault splits analog return as `VSSA_TGT`. VSSA is a
-   fixed pin, so only the destination label differs; add a VSSA identity later if the split matters.
-4. **OSC destination** uses the representative `SERVICE_OSC_IN` (the vault splits IN/OUT); OSC pins are
-   `osc_optional` (per-card), so the label is advisory.
+2. **SWD folds into the IO identity for switching — RESOLVED (Sadad, 2026-07-01).** This is correct:
+   SWD/SPI/I2C/UART are all one generic card lane for the *switch* decision, so folding them reproduces
+   the verified counts (11/43); promoting SWD to a distinct switch identity would wrongly inflate them.
+   Debug access is a *breakout* concern, not a switch identity — handled by the orthogonal breakout
+   layer above (`SWDIO_PARENT`/`SWCLK_PARENT`/`SWO_PARENT`/`TDI_PARENT`/`NTRST_PARENT`), which leaves the
+   switch counts untouched.
+3. **VSSA → RESOLVED.** Analog ground now relabels to `VSSA_TGT` (Connector Contract Rev B contact 24)
+   in the authority. Destination-label only: the switch identity is unchanged, so counts are unaffected.
+4. **OSC IN/OUT → RESOLVED.** The breakout layer splits `SERVICE_OSC_IN` / `SERVICE_OSC_OUT`. The
+   switch-engine destination label for OSC pins stays advisory (they are `osc_optional`, per-card).
 5. **CARD_LANE numbering = socket-pin number** (`CARD_LANE_NNN = pin NNN`), per the vault lane matrix.
    Card 7B's sequential 001..011 numbering is the hand-authoring drift this generator replaces.
 6. **AN2606 UNVERIFIED** (per the fetch): Rev 70 not line-diffed vs Rev 62 (F0–F7 believed unchanged);

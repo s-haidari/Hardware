@@ -34,7 +34,9 @@ except Exception:  # pragma: no cover
 
 
 _COLS = ["Pin", "Side", "Pin Name(s)", "Role Set", "Switch", "ADG714",
-         "Destination", "Tags", "Bootloader", "V(dd)"]
+         "Destination", "Breakout", "Tags", "Bootloader", "V(dd)"]
+
+_BREAKOUT_COLOR = "#b57edc"   # extraction-access / debug-service breakout (violet)
 
 _SWITCH_COLOR = {
     sdb.SWITCH_MUST: "#cc5b5b",
@@ -188,11 +190,13 @@ class Stm32PinsWidget(QWidget):
         if not a:
             return
         r = a["rollup"]
+        ea = a.get("extraction_access", {})
         self.rollup.setText(
             f"{a['package']}  —  {a['manifest']['part_count']} parts · {r['positions_total']} positions · "
             f"must-switch {r['must_switch_count']} ({r['cells_min']} ADG714 cells; "
             f"{r['cells_as_built']} incl. osc) · osc-optional {r['osc_optional_count']} · "
-            f"fixed {r['fixed_count']}")
+            f"fixed {r['fixed_count']}   |   breakout {ea.get('service_breakout_count', 0)} "
+            f"(debug {len(ea.get('debug_positions', []))}, trace {len(ea.get('trace_positions', []))})")
 
         rows = a["positions"]
         self.table.setRowCount(len(rows))
@@ -201,6 +205,11 @@ class Stm32PinsWidget(QWidget):
             adg = p["assignment"].get("adg714")
             adg_txt = f"cell {adg['cell']} · ch {adg['channel']}" if adg else "—"
             dest = (p["assignment"].get("destination") or p["assignment"].get("net") or "—")
+            bk = p.get("breakout", {})
+            bnets = bk.get("service_nets", [])
+            btxt = ", ".join(bnets)
+            if bk.get("trace"):
+                btxt = (btxt + " · TRACE") if btxt else "TRACE"
             cells = [
                 str(p["position"]),
                 p.get("side", ""),
@@ -209,6 +218,7 @@ class Stm32PinsWidget(QWidget):
                 _SWITCH_LABEL.get(sc, sc),
                 adg_txt,
                 dest,
+                btxt or "—",
                 _tag_summary(p["tags"]),
                 ", ".join(p["tags"].get("bootloader_periph", [])),
                 (lambda e: f"{e['vdd_range_v'][0]}–{e['vdd_range_v'][1]}"
@@ -218,6 +228,8 @@ class Stm32PinsWidget(QWidget):
                 it = QTableWidgetItem(text)
                 if c == 4:  # switch class — colour it
                     it.setForeground(QBrush(QColor(_SWITCH_COLOR.get(sc, "#8a93a3"))))
+                elif c == 7 and (bnets or bk.get("trace")):  # breakout — violet
+                    it.setForeground(QBrush(QColor(_BREAKOUT_COLOR)))
                 self.table.setItem(i, c, it)
         self._apply_filter()
 
@@ -236,7 +248,8 @@ class Stm32PinsWidget(QWidget):
                 hide = True
             if q and q not in " ".join(str(v) for v in (
                     p["position"], p["pin_names"], p["role_set"],
-                    p["tags"].get("bootloader_periph", []), _tag_summary(p["tags"]))).lower():
+                    p["tags"].get("bootloader_periph", []), _tag_summary(p["tags"]),
+                    p.get("breakout", {}).get("service_nets", []))).lower():
                 hide = True
             self.table.setRowHidden(i, hide)
 

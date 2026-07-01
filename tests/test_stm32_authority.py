@@ -63,6 +63,65 @@ class AuthorityTests(unittest.TestCase):
         tsv = (out / "pins_LQFP64.tsv").read_text(encoding="utf-8")
         self.assertGreater(len(tsv.splitlines()), 53)  # header + 53 parts x pins
 
+    # ── extraction-access breakout (Layer B, orthogonal to switching) ──────
+    @staticmethod
+    def _pos(data, n):
+        return next(p for p in data["positions"] if p["position"] == n)
+
+    def test_switch_counts_unchanged_by_breakout(self):
+        """The breakout layer derives from raw signals only; it must NOT move
+        the verified switch decision (Build Card 7B/7C ground truth)."""
+        self.assertEqual(auth.build(self.conn, "LQFP64")["rollup"]["must_switch_count"], 11)
+        self.assertEqual(auth.build(self.conn, "LQFP100")["rollup"]["must_switch_count"], 43)
+
+    def test_lqfp64_debug_breakout_positions(self):
+        """SWD/JTAG break out on the vault ground-truth sockets (Card 7B + 5E)."""
+        d = auth.build(self.conn, "LQFP64")
+        for pos, net in {46: "SWDIO_PARENT", 49: "SWCLK_PARENT", 55: "SWO_PARENT",
+                         50: "TDI_PARENT", 56: "NTRST_PARENT"}.items():
+            self.assertIn(net, self._pos(d, pos)["breakout"]["service_nets"],
+                          f"LQFP64 pin {pos} should break out {net}")
+
+    def test_lqfp100_jtag_positions(self):
+        """Card 5E: target PA15/PB4 = LQFP100 socket 77/90."""
+        d = auth.build(self.conn, "LQFP100")
+        self.assertIn("TDI_PARENT", self._pos(d, 77)["breakout"]["service_nets"])
+        self.assertIn("NTRST_PARENT", self._pos(d, 90)["breakout"]["service_nets"])
+
+    def test_coresight20_map_lqfp64(self):
+        """CoreSight-20 header pins resolve to the target sockets (Card 5E)."""
+        ea = auth.build(self.conn, "LQFP64")["extraction_access"]
+        cs = {c["hdr_pin"]: c for c in ea["coresight20"]}
+        self.assertEqual((cs[2]["net"], cs[2]["target_pos"]), ("SWDIO_PARENT", 46))
+        self.assertEqual((cs[4]["net"], cs[4]["target_pos"]), ("SWCLK_PARENT", 49))
+        self.assertEqual((cs[6]["net"], cs[6]["target_pos"]), ("SWO_PARENT", 55))
+        self.assertEqual((cs[8]["net"], cs[8]["target_pos"]), ("TDI_PARENT", 50))
+        self.assertEqual((cs[10]["net"], cs[10]["target_pos"]), ("SERVICE_NRST", 7))
+        self.assertEqual((cs[14]["net"], cs[14]["target_pos"]), ("NTRST_PARENT", 56))
+        self.assertIsNone(cs[7]["target_pos"])   # pin 7 = KEY, no net
+
+    def test_boot_uart_and_usb_dfu(self):
+        """AN2606 universal boot buses: USART1 (PA9/PA10, TX<->RX crossover) and
+        USB-DFU (PA11/PA12)."""
+        d = auth.build(self.conn, "LQFP64")
+        pa9 = next(p for p in d["positions"] if "PA9" in p["pin_names"])
+        pa10 = next(p for p in d["positions"] if "PA10" in p["pin_names"])
+        self.assertIn("UART_BOOT_RX", pa9["breakout"]["service_nets"])   # target TX
+        self.assertIn("UART_BOOT_TX", pa10["breakout"]["service_nets"])  # target RX
+        ea = d["extraction_access"]
+        self.assertIsNotNone(ea["bootloader_uart"]["tx_pos"])
+        self.assertIsNotNone(ea["usb_dfu"]["dp_pos"])
+        self.assertIsNotNone(ea["usb_dfu"]["dn_pos"])
+
+    def test_trace_captured_and_vssa_relabelled(self):
+        d = auth.build(self.conn, "LQFP64")
+        trace = d["extraction_access"]["trace_positions"]
+        self.assertTrue(trace, "LQFP64 should detect parallel-trace positions")
+        self.assertTrue(self._pos(d, trace[0])["tags"]["is_trace"])
+        # Analog ground routes to its own rail net, not GND (Card 7B: VSSA = 12).
+        a12 = self._pos(d, 12)["assignment"]
+        self.assertEqual(a12.get("net", a12.get("destination")), "VSSA_TGT")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
