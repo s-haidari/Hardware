@@ -139,7 +139,7 @@ function LibraryView() {
   const counts = { symbol: tree.filter((t) => t.type === 'symbol').length, footprint: tree.filter((t) => t.type === 'footprint').length, model: tree.filter((t) => t.type === 'model').length, dup: tree.filter((t) => t.dup).length }
 
   return (
-    <>
+    <div className="libview">
       <div className={`dropzone ${over ? 'over' : ''}`} onClick={() => document.getElementById('lib-file')?.click()}
         onDragOver={(e) => { e.preventDefault(); setOver(true) }} onDragLeave={() => setOver(false)} onDrop={onDrop}>
         <div className="dz-label">Drop ZIP Files Here</div>
@@ -236,7 +236,7 @@ function LibraryView() {
           </> : <div className="commits" style={{ fontFamily: 'var(--mono)', fontSize: 11.5 }}>{log.length ? log.map((l, i) => <div key={i} style={{ padding: '2px 0', color: 'var(--dim)' }}>{l}</div>) : <div className="empty">No activity yet.</div>}</div>}
         </div></div>
       </div>
-    </>
+    </div>
   )
 }
 
