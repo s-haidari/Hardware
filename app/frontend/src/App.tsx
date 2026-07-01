@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useMemo, useState } from 'react'
 import {
   Package, Cpu, Cable, Database, FolderInput, Plug, RefreshCw,
   Trash2, Download, FileCog, Save, Search, Check, X, TriangleAlert, Circle,
-  Sun, Moon, GitBranch, FileText,
+  FileText, GitBranch,
 } from 'lucide-react'
 import './App.css'
 
@@ -140,10 +140,9 @@ function LibraryView() {
 
   return (
     <>
-      <div className="dropzone" onClick={() => document.getElementById('lib-file')?.click()}
-        onDragOver={(e) => { e.preventDefault(); setOver(true) }} onDragLeave={() => setOver(false)} onDrop={onDrop}
-        style={over ? { borderColor: 'var(--accent)', background: 'var(--btn)' } : undefined}>
-        <b>Drop part .zip files here</b> or click to browse — {' '}
+      <div className={`dropzone ${over ? 'over' : ''}`} onClick={() => document.getElementById('lib-file')?.click()}
+        onDragOver={(e) => { e.preventDefault(); setOver(true) }} onDragLeave={() => setOver(false)} onDrop={onDrop}>
+        <div className="dz-label">Drop ZIP Files Here</div>
         <label className="chk" onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={processOnDrop} onChange={(e) => setPOD(e.target.checked)} />Process on drop</label>
         <input id="lib-file" type="file" accept=".zip" multiple hidden onChange={(e) => { Array.from(e.target.files || []).forEach(importFile); e.target.value = '' }} />
       </div>
@@ -575,15 +574,14 @@ export default function App() {
     <ToastCtx.Provider value={notify}>
       <div className="app">
         <div className="header">
-          <span className="apptitle">KICAD</span>
           {NAV.map((n) => (
             <button key={n.id} className={`navtab ${view === n.id ? 'active' : ''}`} onClick={() => setView(n.id)}>{n.label}</button>
           ))}
           <span className="grow" />
-          <button className="icon-btn" title="Toggle theme" aria-label="Toggle theme" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
-            {theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}
+          <button className="icon-btn" title="Toggle light / dark" aria-label="Toggle theme" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
+            {theme === 'dark' ? '☀' : '☾'}
           </button>
-          <span className="branch"><GitBranch size={13} />main</span>
+          <span className="branch">main</span>
           <span className="activity"><span className="dot" />Idle</span>
         </div>
 
@@ -595,10 +593,9 @@ export default function App() {
         </div>
 
         <div className="statusbar">
-          <span>{NAV.find((n) => n.id === view)?.label}</span>
+          <span>Idle</span>
           <span className="grow" />
-          <span className={`chip ${health ? (health.database_present ? 'ok' : 'bad') : ''}`}>{health ? (health.database_present ? 'Database ready' : 'No database') : 'Connecting…'}</span>
-          <span className="dim">127.0.0.1:8799</span>
+          <span className={`chip ${health ? (health.database_present ? 'ok' : 'bad') : ''}`}>{health ? (health.database_present ? '✓ Database ready' : 'No database') : ''}</span>
         </div>
       </div>
       <div className="toasts">
