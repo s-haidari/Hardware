@@ -1,7 +1,7 @@
 # Feature parity checklist (both apps = the starting point)
 
 Union of every feature in the original PyQt LibraryManager, the NETDECK tools, the current STMP web app, and the original STMP Qt app. The merged app must reach ALL of these (PyQt look).  = backend/logic already present in hwkit;  = to build (UI and/or backend).
-Progress: 20/214 (~9%). This is the baseline to reach before anything new.
+Progress: 73/214 (~34%). This is the baseline to reach before anything new.
 
 
 ## LibraryManager (PyQt) — 111
@@ -179,7 +179,7 @@ Progress: 20/214 (~9%). This is the baseline to reach before anything new.
 - [ ] Package Selector (Left Rail) — Left sidebar listing all available LQFP packages (e.g., LQFP64, LQFP100) with button controls. Shows pin_count
 - [ ] Pinout Group Selector Dropdown — Dropdown menu to select between different pinout groups for the same package. Groups represent different MCU v
 - [x] Pinout Map Visualization (SVG) — Interactive chip diagram showing physical pin layout. Pins are rendered as colored rectangles arranged on all 
-- [ ] Metric Summary Row — Four key-value metric cards: Need Switch Cell (count/total), Direct/Fixed (count), Pinout Groups (count), STM3
+- [x] Metric Summary Row — Four key-value metric cards: Need Switch Cell (count/total), Direct/Fixed (count), Pinout Groups (count), STM3
 - [ ] Required Cell Type Stacked Bar Chart — Horizontal bar chart showing breakdown of required cell types (e.g., Role switch, Fixed power, Local VCAP cell
 - [ ] Pinout Group Information Panel — Collapsible details for the selected group: representative part number, MCU count, coverage percentage, voltag
 - [x] Pin Search Input — Text input field that filters all pins by free-text search across pin#, GPIO name, lane ID, pin name, roles, r
@@ -192,9 +192,9 @@ Progress: 20/214 (~9%). This is the baseline to reach before anything new.
 - [ ] All Columns Toggle Checkbox — Checkbox in matrix header to show/hide extra columns (Voltage, Reset State, Boot, Component, Enable Net). Defa
 - [x] Backend API: /api/switch-packages — Endpoint serving list of all available LQFP packages with pin counts and MCU counts. Filters TARGET_PACKAGES a
 - [x] Backend API: /api/package-matrix — Core endpoint serving full pinout matrix for a package + optional group ID. Returns PkgMatrix with package met
-- [ ] Backend API: /api/switch-cells — Exportable JSON report of canonical switch-cell decisions per package. Returns must_switch, osc_optional, fixe
-- [ ] Backend API: /api/switch-cells.csv — HTTP CSV download endpoint serving switch-cell report filtered to switching pins only. Uses canonical switch_e
-- [ ] Pin Status Classification — Every pin classified as switch (needs_switch && !review), review (review flag), or fixed (other). Affects visu
+- [x] Backend API: /api/switch-cells — Exportable JSON report of canonical switch-cell decisions per package. Returns must_switch, osc_optional, fixe
+- [x] Backend API: /api/switch-cells.csv — HTTP CSV download endpoint serving switch-cell report filtered to switching pins only. Uses canonical switch_e
+- [x] Pin Status Classification — Every pin classified as switch (needs_switch && !review), review (review flag), or fixed (other). Affects visu
 - [ ] Cell Category Color Coding — Each pin's required_cell mapped to a category (power, ground, analog, clock, system, usb, io, direct, nc) assi
 - [ ] Interactivity: Pan & Zoom — Pinout map supports mouse wheel zoom (1x to 8x magnification), drag-to-pan when zoomed, zoom buttons (+/- at 1
 - [ ] Responsive Column Display — Matrix table supports All Columns toggle to show/hide optional columns (marked extra:true). Compact view shows
