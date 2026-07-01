@@ -178,7 +178,7 @@ Progress: 20/214 (~9%). This is the baseline to reach before anything new.
 
 - [ ] Package Selector (Left Rail) — Left sidebar listing all available LQFP packages (e.g., LQFP64, LQFP100) with button controls. Shows pin_count
 - [ ] Pinout Group Selector Dropdown — Dropdown menu to select between different pinout groups for the same package. Groups represent different MCU v
-- [ ] Pinout Map Visualization (SVG) — Interactive chip diagram showing physical pin layout. Pins are rendered as colored rectangles arranged on all 
+- [x] Pinout Map Visualization (SVG) — Interactive chip diagram showing physical pin layout. Pins are rendered as colored rectangles arranged on all 
 - [ ] Metric Summary Row — Four key-value metric cards: Need Switch Cell (count/total), Direct/Fixed (count), Pinout Groups (count), STM3
 - [ ] Required Cell Type Stacked Bar Chart — Horizontal bar chart showing breakdown of required cell types (e.g., Role switch, Fixed power, Local VCAP cell
 - [ ] Pinout Group Information Panel — Collapsible details for the selected group: representative part number, MCU count, coverage percentage, voltag
@@ -186,7 +186,7 @@ Progress: 20/214 (~9%). This is the baseline to reach before anything new.
 - [ ] Multi-Column Facet Filters — Six dropdown facet selectors: Switch Need (Needs Switch vs Direct/Fixed), Category (Power, Ground, Analog, Clo
 - [ ] Decision Matrix Table — Main data table showing all filtered pins as rows. 14 standard columns: Pin#, GPIO, Lane, Roles, Stability, Co
 - [ ] Expandable Alternate Functions Row — When AF count button clicked on a row, inline table row expands below showing all alternate functions as monos
-- [ ] Pin Detail Panel (Right Side) — Right sidebar showing comprehensive details for selected pin: Identity (lane, pin name, side), Roles Across Fa
+- [x] Pin Detail Panel (Right Side) — Right sidebar showing comprehensive details for selected pin: Identity (lane, pin name, side), Roles Across Fa
 - [x] Export CSV — Button to download all pins as CSV file. Exports 31 columns including Pin, Lane, Pin Name, GPIO, Roles, Stabil
 - [x] Export Markdown — Button to download all pins as Markdown table. Generates header with package name, group label, representative
 - [ ] All Columns Toggle Checkbox — Checkbox in matrix header to show/hide extra columns (Voltage, Reset State, Boot, Component, Enable Net). Defa

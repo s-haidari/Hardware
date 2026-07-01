@@ -164,3 +164,15 @@ input[type=color] { width: 28px; height: 28px; padding: 2px; border-radius: 6px;
 .toast { display: flex; align-items: center; gap: 9px; background: var(--card); border: 1px solid var(--border-2);
   border-radius: var(--r); padding: 10px 13px; font-size: 12.5px; max-width: 380px; box-shadow: 0 8px 26px rgba(0,0,0,.35); }
 .toast.ok { border-left: 3px solid var(--ok); } .toast.bad { border-left: 3px solid var(--danger); } .toast.info { border-left: 3px solid var(--accent); }
+
+/* ── pinout map ─────────────────────────────────── */
+.pinmap { display: grid; grid-template-columns: minmax(340px, 1fr) minmax(280px, 360px); gap: 18px; align-items: start; }
+.pinmap-fig { display: flex; flex-direction: column; align-items: center; gap: 12px;
+  background: var(--tree); border: 1px solid var(--border); border-radius: var(--r); padding: 18px; }
+.pinmap-fig svg rect[stroke]:hover { filter: brightness(1.25); }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; align-items: center; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { width: 11px; height: 11px; border-radius: 2px; display: inline-block; }
+.pinmap-detail .card { margin: 0; }
+.kv { display: grid; grid-template-columns: 128px 1fr; gap: 6px 12px; margin: 0; font-size: 12.5px; }
+.kv dt { color: var(--dim); } .kv dd { margin: 0; }

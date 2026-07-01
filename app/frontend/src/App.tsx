@@ -240,13 +240,43 @@ function LibraryView() {
 }
 
 /* ── Pins ───────────────────────────────────────────────── */
+function PinoutMap({ pins, selected, onSelect }: { pins: MatrixPin[]; selected: number | null; onSelect: (p: number) => void }) {
+  if (!pins.length) return null
+  const sides: Record<string, MatrixPin[]> = { Left: [], Bottom: [], Right: [], Top: [] }
+  pins.forEach((p) => { (sides[p.side] || sides.Left).push(p) })
+  Object.values(sides).forEach((a) => a.sort((x, y) => x.pin - y.pin))
+  const B0 = 88, B1 = 272, len = B1 - B0
+  const gap = (n: number) => len / (n + 1)
+  const color = (p: MatrixPin) => (p.needs_switch ? '#e0805a' : '#5f6673')
+  const dot = (p: MatrixPin, x: number, y: number) => (
+    <g key={p.pin} onClick={() => onSelect(p.pin)} style={{ cursor: 'pointer' }}>
+      <rect x={x - 5.5} y={y - 5.5} width={11} height={11} rx={2} fill={color(p)}
+        stroke={selected === p.pin ? '#e7eaf0' : 'transparent'} strokeWidth={2} />
+      <title>{`pin ${p.pin} · ${p.pin_name} · ${p.needs_switch ? 'switch' : 'fixed'}`}</title>
+    </g>
+  )
+  const els: React.ReactNode[] = []
+  sides.Left.forEach((p, i) => els.push(dot(p, B0 - 13, B0 + gap(sides.Left.length) * (i + 1))))
+  sides.Bottom.forEach((p, i) => els.push(dot(p, B0 + gap(sides.Bottom.length) * (i + 1), B1 + 13)))
+  sides.Right.forEach((p, i) => els.push(dot(p, B1 + 13, B1 - gap(sides.Right.length) * (i + 1))))
+  sides.Top.forEach((p, i) => els.push(dot(p, B1 - gap(sides.Top.length) * (i + 1), B0 - 13)))
+  return (
+    <svg viewBox="0 0 360 360" role="img" aria-label="package pinout map" style={{ width: '100%', maxWidth: 440 }}>
+      <rect x={B0} y={B0} width={len} height={len} rx={7} fill="var(--card)" stroke="var(--border-2)" />
+      <circle cx={B0 + 16} cy={B0 + 16} r={4.5} fill="var(--dim)" />
+      {els}
+    </svg>
+  )
+}
+
 function PinsView() {
   const toast = useToast()
   const [packages, setPackages] = useState<PackageInfo[]>([])
   const [pkg, setPkg] = useState('')
   const [report, setReport] = useState<SwitchReport | null>(null)
   const [matrix, setMatrix] = useState<PinMatrix | null>(null)
-  const [tab, setTab] = useState<'switch' | 'matrix'>('switch')
+  const [tab, setTab] = useState<'map' | 'switch' | 'matrix'>('map')
+  const [selPin, setSelPin] = useState<number | null>(null)
 
   useEffect(() => {
     getJSON<PackageInfo[]>('/api/pins/packages').then((p) => { setPackages(p); if (p[0]) setPkg(p[0].package) })
@@ -291,6 +321,7 @@ function PinsView() {
       <div className="section">
         <div className="row" style={{ justifyContent: 'space-between' }}>
           <div className="seg">
+            <button className={tab === 'map' ? 'on' : ''} onClick={() => setTab('map')}>Pinout map</button>
             <button className={tab === 'switch' ? 'on' : ''} onClick={() => setTab('switch')}>Switch cells</button>
             <button className={tab === 'matrix' ? 'on' : ''} onClick={() => setTab('matrix')}>Full matrix</button>
           </div>
@@ -300,6 +331,43 @@ function PinsView() {
           </div>
         </div>
 
+        {tab === 'map' && matrix && (
+          <div className="pinmap">
+            <div className="pinmap-fig">
+              <PinoutMap pins={matrix.pins} selected={selPin} onSelect={setSelPin} />
+              <div className="legend">
+                <span><i style={{ background: '#e0805a' }} />needs switch</span>
+                <span><i style={{ background: '#5f6673' }} />fixed / IO</span>
+                <span className="dim">pin 1 marked by the dot · click a pin</span>
+              </div>
+            </div>
+            <div className="pinmap-detail">
+              {(() => {
+                const p = matrix.pins.find((x) => x.pin === selPin)
+                if (!p) return <div className="dim" style={{ padding: 16 }}>Select a pin to inspect its role set across the family.</div>
+                const sw = report?.pins.find((x) => x.pin === p.pin)
+                return (
+                  <div className="card">
+                    <div className="ct"><b>Pin {p.pin}</b> · <span className="mono">{p.pin_name}</span>
+                      {p.needs_switch ? <span className="tag" style={{ marginLeft: 8 }}>switch</span> : <span className="dim" style={{ marginLeft: 8 }}>fixed</span>}</div>
+                    <div className="cb">
+                      <dl className="kv">
+                        <dt>Side</dt><dd className="dim">{p.side}</dd>
+                        <dt>GPIO</dt><dd className="mono dim">{p.gpio || '—'}</dd>
+                        <dt>Roles across family</dt><dd>{p.roles}</dd>
+                        <dt>Stability</dt><dd>{p.stability}</dd>
+                        {sw && <><dt>Conflict</dt><dd><span className="tag">{sw.conflict_roles}</span></dd>
+                          <dt>Routes to</dt><dd className="mono accent">{sw.routes_to}</dd>
+                          <dt>ADG714 cell</dt><dd className="mono dim">{sw.required_cell}</dd>
+                          <dt>Minority</dt><dd className="dim">{sw.minority_roles.join(', ') || '—'}</dd></>}
+                      </dl>
+                    </div>
+                  </div>
+                )
+              })()}
+            </div>
+          </div>
+        )}
         {tab === 'switch' && report && (
           <table className="tbl">
             <thead><tr><th>Pin</th><th>Side</th><th>Conflict</th><th>Routes to</th><th>Cell</th><th>Minority</th></tr></thead>
