@@ -176,3 +176,4 @@ input[type=color] { width: 28px; height: 28px; padding: 2px; border-radius: 6px;
 .pinmap-detail .card { margin: 0; }
 .kv { display: grid; grid-template-columns: 128px 1fr; gap: 6px 12px; margin: 0; font-size: 12.5px; }
 .kv dt { color: var(--dim); } .kv dd { margin: 0; }
+.linklike { background: none; border: none; color: var(--accent); cursor: pointer; padding: 0; font: inherit; text-decoration: underline; }

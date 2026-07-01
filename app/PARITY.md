@@ -1,7 +1,7 @@
 # Feature parity checklist (both apps = the starting point)
 
 Union of every feature in the original PyQt LibraryManager, the NETDECK tools, the current STMP web app, and the original STMP Qt app. The merged app must reach ALL of these (PyQt look).  = backend/logic already present in hwkit;  = to build (UI and/or backend).
-Progress: 76/214 (~35%). This is the baseline to reach before anything new.
+Progress: 77/214 (~35%). This is the baseline to reach before anything new.
 
 
 ## LibraryManager (PyQt) — 111
@@ -217,7 +217,7 @@ Progress: 76/214 (~35%). This is the baseline to reach before anything new.
 - [x] REPORTS - Package Role Set Report — Export all distinct role sets found across the selected package. Derived from complete role/function set acros
 - [x] REPORTS - Conflict & Sensitivity Report — Export package-wide conflict status (NONE, PACKAGE-VARIABLE-FUNCTION, PACKAGE-VARIABLE-ROLE, MIXED-IO-AND-POWE
 - [x] REPORTS - Required Cell Type Report — Export required cell type classification for each physical pin across selected packages (DIRECT-IO, PROTECTED-
-- [ ] REPORTS - Validation Report — Export validation status (pass/warning/fail) with issue counts per MCU package. Includes missing-role-data det
+- [x] REPORTS - Validation Report — Export validation status (pass/warning/fail) with issue counts per MCU package. Includes missing-role-data det
 - [ ] UPDATES - Version Check & Release Notes — Check configured GitHub release channel (STABLE: latest tagged release, BETA: prerelease, DEV: app-latest from
 - [ ] UPDATES - In-App Update Installation — Download update zip (STM-Helper.zip), verify checksum against .sha256 file, close app gracefully, replace inst
 - [x] DATABASE - SQLite Schema — Local SQLite database with tables: app_database_manifest, family_visibility, package_visibility, family_procur

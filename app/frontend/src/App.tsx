@@ -51,6 +51,8 @@ interface SwitchReport { package: string; must_switch: number; osc_optional: num
 interface MatrixPin { pin: number; side: string; pin_name: string; gpio: string
   roles: string; stability: string; needs_switch: boolean; required_cell: string }
 interface PinMatrix { pins: MatrixPin[] }
+interface ValFinding { severity: string; code: string; message: string }
+interface Validation { package: string; available: boolean; errors: number; warnings: number; findings: ValFinding[]; reason?: string }
 interface NetClass { netclass: string; color?: string; track?: string | number; clearance?: number; members?: string[]; [k: string]: unknown }
 interface DbStatus { cubemx_source: string; source_present: boolean; xml_files: number
   database: string; database_present: boolean; mcu_count: number }
@@ -275,6 +277,8 @@ function PinsView() {
   const [pkg, setPkg] = useState('')
   const [report, setReport] = useState<SwitchReport | null>(null)
   const [matrix, setMatrix] = useState<PinMatrix | null>(null)
+  const [val, setVal] = useState<Validation | null>(null)
+  const [showFindings, setShowFindings] = useState(false)
   const [tab, setTab] = useState<'map' | 'switch' | 'matrix'>('map')
   const [selPin, setSelPin] = useState<number | null>(null)
   const [q, setQ] = useState('')
@@ -286,9 +290,10 @@ function PinsView() {
   }, [])
   useEffect(() => {
     if (!pkg) return
-    setMatrix(null); setReport(null)
+    setMatrix(null); setReport(null); setVal(null); setShowFindings(false)
     getJSON<SwitchReport>(`/api/pins/${pkg}/switch-report`).then(setReport).catch((e) => toast(String(e), 'bad'))
     getJSON<PinMatrix>(`/api/pins/${pkg}/matrix`).then(setMatrix).catch(() => {})
+    getJSON<Validation>(`/api/pins/${pkg}/validate`).then(setVal).catch(() => {})
   }, [pkg])
 
   const genAuthority = async () => {
@@ -317,6 +322,26 @@ function PinsView() {
             <Metric label="Fixed" value={report.fixed} tone="ok" />
             <Metric label="ADG714 cells" value={report.adg714_cells} icon={<Cpu size={13} />} />
           </div>
+          {val && val.available && (
+            <div className={`banner ${val.errors ? 'bad' : ''}`} style={{ marginTop: 10 }}>
+              {val.errors ? <TriangleAlert size={16} /> : <Check size={16} />}
+              <span>
+                <b>Validation {val.errors ? 'failed' : 'passed'}</b> — {val.errors} error{val.errors === 1 ? '' : 's'}, {val.warnings} warning{val.warnings === 1 ? '' : 's'}
+                {val.findings.length > 0 && <> · <button className="linklike" onClick={() => setShowFindings((s) => !s)}>{showFindings ? 'hide' : 'show'} findings</button></>}
+              </span>
+            </div>
+          )}
+          {val && showFindings && (
+            <table className="tbl" style={{ marginTop: 8 }}>
+              <thead><tr><th>Severity</th><th>Code</th><th>Detail</th></tr></thead>
+              <tbody>
+                {val.findings.map((f, i) => (
+                  <tr key={i}><td><span className={f.severity === 'error' ? 'tag' : 'dim'}>{f.severity}</span></td>
+                    <td className="mono dim">{f.code}</td><td>{f.message}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          )}
         </div>
       )}
 

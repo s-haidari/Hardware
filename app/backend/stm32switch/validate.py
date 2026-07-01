@@ -105,13 +105,18 @@ def validate_package(pd: PackageData) -> ValidationReport:
                 "lane is both analog-sensitive and high-speed-sensitive"))
 
     # ── router breadth + structural self-checks ────────────────────────────
-    for rid in routers.ALL_ROUTERS:
-        t = pd.router_tables[rid]
-        limit = int(_ROUTER_BROAD_FRACTION.get(rid, 0.5) * npins) + 1
-        if t.lane_count > limit:
-            rep.findings.append(Finding(
-                "warning", "ROUTER_CANDIDATES_BROAD", rid,
-                f"{t.lane_count} candidate lanes (> expected ~{limit})"))
+    # router_tables is part of the original generator's fuller model; the app's
+    # folded pipeline does not build it, so these breadth warnings only run when
+    # the tables are present.
+    router_tables = getattr(pd, "router_tables", None)
+    if router_tables:
+        for rid in routers.ALL_ROUTERS:
+            t = router_tables[rid]
+            limit = int(_ROUTER_BROAD_FRACTION.get(rid, 0.5) * npins) + 1
+            if t.lane_count > limit:
+                rep.findings.append(Finding(
+                    "warning", "ROUTER_CANDIDATES_BROAD", rid,
+                    f"{t.lane_count} candidate lanes (> expected ~{limit})"))
     if routers.ROUTER_SWITCH_CLASS[routers.ROUTER_SWD] != "low_capacitance_bidirectional":
         rep.findings.append(Finding("error", "SWD_NOT_BIDIRECTIONAL",
                                     routers.ROUTER_SWD, "SWD router not bidirectional"))
@@ -131,7 +136,8 @@ def validate_package(pd: PackageData) -> ValidationReport:
                                         "exact pinout group has a single MCU member"))
 
     # ── exact-function validation of parent standardized ports ─────────────
-    for p in pd.standard_ports:
+    # standard_ports is likewise only present in the fuller generator model.
+    for p in getattr(pd, "standard_ports", None) or []:
         if p.exact_function_validated == "no":
             rep.findings.append(Finding(
                 "error", "PARENT_PORT_NO_EXACT_FUNCTION",
@@ -172,6 +178,10 @@ def summary_counts(pd: PackageData) -> dict:
     power = cell_counts.get(cells.CELL_POWER_ONLY, 0)
     ground = cell_counts.get(cells.CELL_GROUND_ONLY, 0)
     role_control_bits = full * 4   # 4-bit one-hot role code per full role cell
+    rtables = getattr(pd, "router_tables", None) or {}
+    def _cand(rid) -> int:
+        t = rtables.get(rid)
+        return t.lane_count if t is not None else 0
     return {
         "lanes": len(pd.facts),
         "exact_groups": len(pd.groups),
@@ -196,10 +206,10 @@ def summary_counts(pd: PackageData) -> dict:
         "simple_io_cells": direct_io + io_switch,
         "fixed_power_ground_cells": power + ground,
         "switched_ground_review": switched_gnd,
-        "swd_candidates": pd.router_tables[routers.ROUTER_SWD].lane_count,
-        "uart_candidates": pd.router_tables[routers.ROUTER_UART_BOOT].lane_count,
-        "usb_candidates": pd.router_tables[routers.ROUTER_USB_FS].lane_count,
-        "adc_candidates": pd.router_tables[routers.ROUTER_ADC_PROBE].lane_count,
-        "gpio_candidates": pd.router_tables[routers.ROUTER_GPIO_ACCESS].lane_count,
+        "swd_candidates": _cand(routers.ROUTER_SWD),
+        "uart_candidates": _cand(routers.ROUTER_UART_BOOT),
+        "usb_candidates": _cand(routers.ROUTER_USB_FS),
+        "adc_candidates": _cand(routers.ROUTER_ADC_PROBE),
+        "gpio_candidates": _cand(routers.ROUTER_GPIO_ACCESS),
         "unsafe_db_classifications": sum(1 for f in pd.facts if f.db_unsafe),
     }

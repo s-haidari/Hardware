@@ -30,6 +30,14 @@ class PinFact:
     decision: object                          # cells.CellDecision
     exact_functions: list = field(default_factory=list)
     routers_for_lane: list = field(default_factory=list)
+    # Legacy-DB cross-check fields. The app-owned CubeMX DB derives every cell
+    # itself, so there is no external classification to contradict: db_unsafe is
+    # always False and there is no legacy cell_kind. Kept so validate.py /
+    # render_docs.py (which cross-check a legacy DB's own cell_kind) still run.
+    db_unsafe: bool = False
+    db_cell_kind: str = ""
+    review_flags: list = field(default_factory=list)  # mirrors decision.review_flags
+    conflict: str = ""                                # legacy docs field; unused in app path
 
 
 @dataclass
@@ -115,6 +123,7 @@ def assemble(conn, package: str) -> PackageData:
             pin=pin, lane=ctx.lane, side=ctx.side, role_set=set(ctx.union_roles),
             services=set(ctx.services), caps=dict(ctx.caps), decision=dec,
             exact_functions=ctx.exact_functions, routers_for_lane=[],
+            review_flags=list(getattr(dec, "review_flags", [])),
         ))
 
     priority = (TARGET_PACKAGES.index(package) + 1) if package in TARGET_PACKAGES else 99

@@ -203,11 +203,23 @@ def voltage(conn: sqlite3.Connection, package: str) -> dict:
        WHERE m.package_name = ? AND {F_FAMILY_SQL}
     """, (package,))
     p = pres[0] if pres else {}
+    vdda_pins, vref_pins = int(p.get("vdda") or 0), int(p.get("vref") or 0)
+    vbat_pins, vcap_pins = int(p.get("vbat") or 0), int(p.get("vcap") or 0)
     return {
         "vtarget_min_mv": vmin, "vtarget_max_mv": vmax,
+        # Volts alias + derived target-branch plan. The app owns its data, so a
+        # target branch is "required" (planned) exactly when the package carries
+        # pins of that rail — validate.py checks pins-present-implies-branch, and
+        # deriving the flag from the same pin presence keeps that invariant true.
+        "vtarget_min_v": (vmin / 1000.0) if vmin is not None else None,
+        "vtarget_max_v": (vmax / 1000.0) if vmax is not None else None,
+        "vdda_target_required": vdda_pins > 0,
+        "vref_target_required": vref_pins > 0,
+        "vbat_target_required": vbat_pins > 0,
+        "vcap_branch_required": vcap_pins > 0,
         "mcu_count": len(mcu_ids), "family_count": len(fams),
-        "vdda_pins": int(p.get("vdda") or 0), "vref_pins": int(p.get("vref") or 0),
-        "vbat_pins": int(p.get("vbat") or 0), "vcap_pins": int(p.get("vcap") or 0),
+        "vdda_pins": vdda_pins, "vref_pins": vref_pins,
+        "vbat_pins": vbat_pins, "vcap_pins": vcap_pins,
     }
 
 
