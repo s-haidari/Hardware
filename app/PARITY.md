@@ -1,0 +1,231 @@
+# Feature parity checklist (both apps = the starting point)
+
+Union of every feature in the original PyQt LibraryManager, the NETDECK tools, the current STMP web app, and the original STMP Qt app. The merged app must reach ALL of these (PyQt look).  = backend/logic already present in hwkit;  = to build (UI and/or backend).
+Progress: 20/214 (~9%). This is the baseline to reach before anything new.
+
+
+## LibraryManager (PyQt) — 111
+
+- [ ] NAVIGATION TABS (Header Bar) — Two main section tabs: 'KICAD Manager' (default, library/workflow/drop zone) and 'KICAD Tools' (experimental K
+- [ ] Header Bar / Top Status Strip — Persistent header with: left-aligned nav tabs (KICAD Manager / KICAD Tools), center-right with theme toggle bu
+- [ ] Theme Toggle Button (☀/☾) — Icon button in header bar to switch between dark and light themes instantly. Sun icon in dark mode, moon in li
+- [ ] Drop Zone (Drag & Drop) — QFrame-based drag-and-drop area that accepts .zip files. Shows dashed border with hover effect. Labeled 'Drop 
+- [ ] Process on Drop Checkbox — Checkbox inside drop zone. When checked, automatically processes dropped ZIPs. When unchecked, only copies the
+- [ ] Downloads Button (Workflow) — Opens the downloads folder in Windows Explorer. Part of the Root/Downloads button row at bottom of Workflow pa
+- [ ] Workflow Panel (Left Column) — CardWidget container on left side showing the 5-step workflow. Contains: Advanced dropdown menu, 5 Step button
+- [ ] Advanced Menu — Dropdown menu with 9 actions: Pull, Push, Stage and Commit, Process Folder, Export Catalog, Start Watcher, Sto
+- [ ] Step 0: Pull (Fast-Forward) — Runs 'git pull --ff-only' in background. Updates local repo from remote. No rebase/autostash (only fast-forwar
+- [ ] Step 1: Open Downloads — Opens the configured Downloads folder in Windows Explorer. Allows manual placement of ZIP files.
+- [x] Step 2: Process ZIPs — Processes all .zip files in downloads/: expands ZIP, moves .kicad_mod to footprints, .kicad_sym to symbols (me
+- [ ] Step 3: Clean Leftovers — Deletes remaining .zip files and extracted folders in downloads/ after processing. Prompts user for confirmati
+- [ ] Step 4: Stage, Commit, Push — Stages all changes (git add -A), prompts for commit message, creates commit, then pushes to remote. Executes v
+- [ ] Root Path Button (Workflow) — QPushButton with dropdown menu showing repo root path (disabled action for display), Open action (launches in 
+- [ ] Downloads Path Button (Workflow) — QPushButton with dropdown menu showing downloads path (disabled action for display), Open action (launches in 
+- [ ] Contents Panel (Center Column) — CardWidget showing library inventory with search/filter row, summary label, action buttons (Refresh, Open, Ope
+- [ ] Format Filter Dropdown — QToolButton with dropdown menu for multi-select filtering by type: 'All', 'Symbol', 'Footprint', 'Model'. Show
+- [x] Search Field — QLineEdit that filters library by name substring (case-insensitive, real-time). Updates tree on each keystroke
+- [ ] Duplicates Only Checkbox — Checkbox that filters the tree to show only entries with duplicate copies. Identifies symbols/footprints/model
+- [ ] Group by Component Checkbox — When checked, groups symbol/footprint/3D model of same part together (fuzzy name matching). Shows component su
+- [ ] Library Summary Label — Shows total item count, breakdown by type (Symbols/Footprints/Models), and duplicate count. Updates after each
+- [x] Refresh Button — Re-scans library on disk, updates tree with current contents. Runs synchronously in main thread.
+- [ ] Open Button — Opens selected item(s) with default associated app (Explorer for folders, KiCad Editor for symbols, etc.). Han
+- [ ] Open in KICAD Button — Opens selected item(s) specifically in KiCad application (Symbol Editor for .kicad_sym, Footprint Editor for .
+- [x] Delete Button — Removes selected item(s). For symbols: batch removal by index (single rewrite, safe for duplicates). For footp
+- [x] Remove Duplicates Button — One-click bulk operation: finds all duplicate symbols in the library, keeps first copy, removes rest. Counts d
+- [ ] Library Contents Tree — QTreeWidget with 4 columns: Format (type), Name, Location (file path), Date (modification date). Rows are item
+- [ ] Tree Column Formatting — Type/Name/Date columns ResizeToContents (fit text), Location column Stretch (takes remaining width). Allows ho
+- [ ] Duplicate Item Highlighting — Rows with duplicate copies are highlighted with slate background color, bold name text, and tooltip describing
+- [ ] Group Header Styling (Component Groups) — Parent rows (when grouped by component) show bold label + summary text (e.g. '1× symbol   1× footprint'). Diff
+- [ ] Tree Double-Click Action — Double-clicking a tree item opens it in KiCad (same as Open in KICAD button).
+- [ ] Preview Pane (Interactive 3D) — QWidget below tree that renders: footprint PNG image with summary (pads, SMD/TH counts, dimensions), symbol sc
+- [x] Footprint Preview — Shows PNG rendering of footprint (300px), displays pad count, SMD/through-hole breakdown, and dimensions in mi
+- [ ] Symbol Preview — Shows schematic rendering of selected symbol from the shared .kicad_sym library.
+- [ ] 3D Model Preview (STEP/STP/WRL) — Loads 3D mesh in background thread, renders interactive OpenGL view with dark background. Drag to rotate (adju
+- [ ] Preview Info Label — Below preview pane, shows metadata: item name, type/path, file size (for 3D), dimensions, triangle count, modi
+- [ ] Log Panel (Right Column, Tab: Log) — CardWidget with Log/Activity tab bar in title. Log tab shows QTextEdit with timestamped operation log. Reads/w
+- [ ] Activity Panel (Right Column, Tab: Activity) — Commits list showing recent git commits with hash, date, author, subject. Buttons: Refresh (fetches latest), O
+- [ ] Commits List (QListWidget) — Shows up to 50 recent commits with format: hash  date  author  - subject. Single-selection mode. Stores full c
+- [ ] Refresh Commits Button — Fetches last 50 commits from git log in background. Updates list. Disabled until a commit is selected (except 
+- [ ] Open on GitHub Button — Opens selected commit's GitHub page in default browser (parses git remote origin URL, constructs /commit/HASH 
+- [ ] Diff Button (Commit) — Shows full diff output of selected commit in log panel (git show HASH). Disabled until selection.
+- [ ] Checkout Button (Commit) — Switches working tree to selected commit (git checkout HASH). Prompts for confirmation. Disabled until selecti
+- [ ] Commit Double-Click — Shows full commit info (hash, author, date, body) in log panel via 'git show' output.
+- [ ] Status Bar (Bottom) — Fixed bar with: status label (left, expandable), progress bar (center, indeterminate/determinate, hidden when 
+- [ ] Status Label — Shows current operation state: 'Idle', 'Pulling…', 'Processing ZIPs…', etc. Also displayed in header activity 
+- [ ] Progress Bar — Visual indicator of async operations. Indeterminate mode (animated) initially, then determinate once a count i
+- [ ] Result Chip — Shows operation result after completion: '✓ Pulled', '✓ Processed', or error message in red (#d9534f).
+- [ ] Async Operation Threading — All long operations (git, processing) run in background threads via run_async(). GUI stays responsive. Signals
+- [ ] Auto-Pull (Initial) — On startup (250ms delay), automatically runs 'git pull --ff-only' in background. Updates library after success
+- [ ] Periodic Auto-Pull (Every 5 Minutes) — QTimer fires every 5 minutes, runs 'git pull --ff-only' in background. Refreshes library if pull succeeds. Non
+- [ ] Branch Status Display — Fetches current git branch name + ahead/behind counts in background. Shows in header as: 'main ↑5 ↓2' (ahead 5
+- [ ] Dark Theme (Default) — Cool slate palette: dark backgrounds (#16181d win, #1e2127 card), light text (#e7eaf0), slate accents (#7f8aa0
+- [ ] Light Theme — Neutral palette: light backgrounds (#f1f3f6 win, #ffffff card), dark text (#1f2329), slate accents. Same token
+- [ ] Theme Colors (Exact Hex Values) — Dark: WIN_BG #16181d, CARD_BG #1e2127, FG #e7eaf0, ACCENT #7f8aa0, BORDER #2c303a, SEL_BG #33405c, BTN_BG #262
+- [ ] Card Widget Styling — QFrame with rounded borders (12px), 1px border, left-aligned bold title label (10pt), content area with 8px ma
+- [ ] Button Styling (All Buttons) — Semi-transparent gradient background, text-align left, 6px vert padding, 12px horiz padding, 7px border-radius
+- [ ] Scrollbar Styling — Dark: slate handles (#363b47 default, #4a5160 hover), 12px wide/tall, 5px border-radius. Light: gray handles (
+- [ ] Menu Styling — Rounded borders (8px), 1px border, 5px padding. Items: 6px vertical, 18px horizontal. Hover: slightly lighter 
+- [ ] Fonts (Primary) — Inter (bundled TTF files in fonts/ folder). Fallback chain: Segoe UI Variable Text > Segoe UI > Roboto > Helve
+- [ ] Window Geometry Persistence — On close, saves window size/position and theme choice to QSettings ('KiCadLibraryManager', 'KiCadLibraryManage
+- [ ] Panel Splitters (3-column Layout) — QSplitter with handle-width 6px, non-collapsible panels. Workflow (left, min 250px, stretch 0), Contents (cent
+- [x] Symbol Merge (De-duplication) — When processing ZIPs, extracts all .kicad_sym blocks and merges into shared MySymbols.kicad_sym. Checks existi
+- [ ] Footprint Overwrite Protection — When installing footprints from ZIPs, checks if file exists. If different content, skips with warning. If iden
+- [ ] Model Overwrite Protection — Same as footprint: checks existing 3D models before copying. Different file = skip. Identical = no-op. New mod
+- [x] Export Catalog (Markdown + PNG) — Generates library_catalog.md with rendered PNG images (360px footprints, 300px symbols, 3D model thumbnails). 
+- [ ] Watcher (File System Monitoring) — Optional: monitors downloads/ folder with watchdog library. On .zip created/modified, auto-processes it (commi
+- [ ] Start/Stop Watcher — Advanced menu actions to start/stop the watchdog observer. Logs status. Stopped on app close.
+- [ ] Git Pull (Fast-Forward Only) — Simple 'git pull --ff-only' (no rebase). Used in Step 0 and periodic pulls. Non-blocking in background thread.
+- [ ] Git Push — Runs 'git push' to push current branch to remote. Non-blocking.
+- [ ] Git Stage & Commit — Runs 'git add -A' then 'git commit -m <msg>'. Checks for staged changes first (avoids noisy errors). Runs in b
+- [ ] Commit Message Dialog — QInputDialog prompts user for commit message. Pre-fills with timestamp template 'Library update YYYY-MM-DD HH:
+- [ ] Process Folder Dialog — Advanced menu action: opens folder dialog to select an extracted part folder (instead of ZIP). Processes it ma
+- [ ] Change Repo Root — Root button menu -> Change: opens folder dialog. Validates writability. Re-derives all library paths from new 
+- [ ] Change Downloads Folder — Downloads button menu -> Change: opens folder dialog. Validates writability. Saves to config. Creates director
+- [ ] Multi-Select Tree — QTreeWidget with ExtendedSelection mode. Ctrl+click to select multiple items. Shift+click to range-select. All
+- [ ] Drag-to-Rotate 3D Model — Mouse click + drag on preview pane adjusts rotation (Rx, Ry). Drag delta multiplied by 0.6 for smooth control.
+- [ ] Scroll-to-Zoom 3D Model — Mouse wheel scroll on preview pane zooms in/out (12% per tick). Range clamped 0.3x to 6.0x.
+- [ ] KiCad Directory Detection — Searches C:\Program Files\KiCad\*\bin for highest version. Used to open files in KICAD app instead of default 
+- [ ] File Watcher Ready State — Before processing a ZIP dropped, waits up to 8 seconds for file size to stabilize (confirming download complet
+- [ ] Config File (config.json) — Stored in tools/config.json. Persists Downloads folder override + PythonExe override. Auto-created if missing.
+- [ ] Log File (ui_python.log) — Stored in tools/ui_python.log. Appended to with timestamps. Also displayed in log pane. Thread-safe write via 
+- [ ] UILog Thread-Safe Logger — QObject with pyqtSignal for thread-safe GUI updates. File writes guarded by threading.Lock. Any thread can cal
+- [ ] Batch Multi-Selection Actions — Can select multiple items in tree. Open button opens all selected (avoiding duplicates). Delete button deletes
+- [ ] Icon Button Styling — Header bar icon buttons (theme toggle): transparent background, no border, large font (13pt), dimmed color wit
+- [ ] Tab Bar Styling (Log/Activity) — Custom QTabBar#cardTabBar: transparent background, 6px spacing, rounded tabs (8px), bold 10pt font. Active tab
+- [ ] No-Window Subprocess (Hidden Console) — All git/processing commands use run_hidden() wrapper which suppresses console window on Windows (CREATE_NO_WIN
+- [ ] Portable Repo Detection — detect_repo_root() finds library root from app location (tools/LibraryManager.py parent). Works as frozen .exe
+- [ ] Resource Path Resolution — resource_path() finds bundled files (icons, fonts) in both script and frozen modes. Uses sys._MEIPASS (PyInsta
+- [ ] Bundled Fonts Loading — load_bundled_fonts() registers TTF files from fonts/ folder (Inter family). Ensures consistent typography rega
+- [ ] Grayscale Icon Generator — gray_icon() converts Qt standard icons to monochrome for uniform button styling. Preserves alpha, converts RGB
+- [ ] Duplicated Entry Batch Removal — remove_symbols_by_indices() removes multiple symbol blocks in single rewrite, indexed by file position. Checks
+- [ ] Symbol Block Extraction — extract_symbol_blocks() scans .kicad_sym file using balanced-paren scanner, tolerates quoted strings, returns 
+- [ ] Symbol Name Extraction — extract_symbol_name() parses block to find symbol name from '(symbol "name")' or '(name "name")' fields. Handl
+- [ ] Safe File Copy — safe_copy_to_downloads() copies file to downloads/, avoids overwrite by adding (1), (2)... suffix if collision
+- [ ] Dirty Diff Check — git_has_staged_changes() checks 'git diff --cached --quiet' exit code. Returns True if changes staged. Used to
+- [ ] Writable Directory Check — _can_write_dir() probes real writability by creating temp file. More accurate than os.access() on Windows (ign
+- [ ] GitHub URL Parsing — get_github_repo_url() parses git remote URL (git@ or https formats), extracts owner/repo. Constructs https://g
+- [ ] Flow Layout (Unused in Main View) — FlowLayout class arranges widgets left-to-right, wraps to next row when space runs out. Not actively used but 
+- [ ] Library Scanning — scan_library() recursively traverses libs/ for .kicad_mod, .step/.stp/.wrl files, parses .kicad_sym blocks. Re
+- [ ] Component Grouping Algorithm — group_components() clusters items by normalized name prefix (union-find). Groups TPS2121RUXR symbol + TPS2121R
+- [ ] Row Filtering — filter_rows() applies query search (substring, case-insensitive) + type filter (multi-select) + duplicates-onl
+- [ ] Window Title & Icon — Window title: 'KICAD Manager'. Icon loaded from app_icon.ico if present in bundle. Fallback to no icon.
+- [ ] Minimum Window Size — setMinimumSize(1040, 680) enforces minimum viewport to prevent UI crowding.
+- [ ] Application Settings (QSettings) — Persists to registry/native storage under org 'KiCadLibraryManager'. Stores: theme (dark/light), geometry (win
+- [ ] KiCad Tools Tab — Optional second tab that loads kicad_tools module if available. Provides experimental utilities (project renam
+- [ ] Worker Thread Tracking — _workers list tracks all spawned background threads. On window close, joins all with 3-second timeout to preve
+- [ ] Signal-Based Threading Model — Workers emit pyqtSignals (log_signal, progress_signal, branch_signal, etc.) to GUI thread. No direct UI manipu
+- [ ] Busy/Idle State Management — set_busy() enables progress bar, sets status text, changes activity dot color to bright. set_idle() clears pro
+- [ ] KICAD Manager Tab Content — Default tab. Contains: Drop Zone, 3-column splitter (Workflow left, Contents center, Log right), optional prev
+- [ ] CardTabBar (Log/Activity Tab Bar) — Custom QTabBar in title area of log card. Two tabs: 'Log' (text output), 'Activity' (commit list). Swaps betwe
+
+## NETDECK tools — 53
+
+- [ ] nd_wizard.py - Bulk Rename Wizard — Interactive terminal wizard for bulk renaming across KiCad projects. Performs regex-based transformations on c
+- [ ] nd_wizard.py - Project Discovery — Discovers all KiCad projects (.kicad_pro, .pro) at startup. Lists projects under standard locations (SH/CG/Mas
+- [ ] nd_wizard.py - Add Tag Prefix — Adds a prefix tag (e.g., SH-, CG-) to component references and net labels. Skips if tag already present.
+- [ ] nd_wizard.py - Remove Tag Prefix — Strips a specific prefix tag from references and labels (e.g., SH-R1 → R1).
+- [ ] nd_wizard.py - Strip All Tags — Removes all prefixes before standard designators, identifying the correct designator from LIBRARY_TO_DESIGNATO
+- [ ] nd_wizard.py - Reset to Unannotated (lib_id-aware) — TRUE unannotation: uses lib_id parsed from .kicad_sch to set correct component designator. Strips ALL custom n
+- [ ] nd_wizard.py - Custom Find/Replace — Arbitrary find/replace across references and labels.
+- [ ] nd_wizard.py - Scope Selection — Four scope options: schematic labels/nets only, schematic references only, PCB footprint references only, or a
+- [ ] nd_wizard.py - Preview & Apply — Dry-run preview showing counts and examples of changes. User must confirm before applying. Creates .bak backup
+- [ ] nd_wizard.py - Change Logging — Saves preview and applied changes to tools/logs/ as JSON files with timestamp. Records type, old value, new va
+- [ ] nd_wizard.py - ERC via kicad-cli — Optional run of electrical rule check after applying changes. Requires kicad-cli in PATH.
+- [ ] nd_wizard.py - Comprehensive Component Library Map — Hardcoded LIBRARY_TO_DESIGNATOR dict with 500+ entries covering all standard KiCad libraries (Device, Connecto
+- [ ] nd_wizard.py - Bus Label & Tag Handling — Correctly handles KiCad bus labels (format: NAME[x..y]). Tags are inserted before the bracket, not prepended t
+- [x] nd_netclass_manager.py - Load Net Classes from Project — Reads net class definitions from .kicad_pro (JSON format). Parses name, clearance, track_width, via diameter/d
+- [x] nd_netclass_manager.py - Save Net Classes to Project — Atomically writes net classes back to .kicad_pro with safe-merge: Default class preserved, managed classes upd
+- [ ] nd_netclass_manager.py - NetClass Data Structure — Dataclass storing all net class properties: name, schematic (color, line_style, wire_thickness, bus_thickness)
+- [ ] nd_netclass_manager.py - Unit Conversions — Automatic conversion between KiCad mm (floats in .kicad_pro for PCB, raw mils in schematic) and mils for GUI d
+- [ ] nd_netclass_manager.py - Vault Standard Template — Built-in configuration of 17 net classes (GND, PWR_IN, PWR_5V, PWR_3V3, PWR_1V8, TGT_PWR, SW_NODE, SENSE, CTRL
+- [ ] nd_netclass_manager.py - Net Class Patterns — Assigns nets to classes via wildcard patterns (e.g., *GND, *USB_D*). Stored in netclass_patterns array in .kic
+- [ ] nd_netclass_manager.py - Differential Pair Settings — Optional differential-pair width and gap per net class. GUI allows editing; omitted from .kicad_pro if None.
+- [ ] nd_netclass_manager.py - Priority Ordering — Net classes sorted by priority (lower = higher precedence). Can be sorted by priority button in GUI.
+- [ ] nd_netclass_manager.py - Export/Import Templates — Save/load net class set to/from standalone JSON templates (version 1.0.0) for sharing across projects.
+- [ ] nd_netclass_manager.py - Cache Clearing — Auto-clears KiCad cache files (*-cache.lib, *-rescue.lib, fp-info-cache, sym-lib-table.lock) to force settings
+- [ ] nd_netclass_manager.py - Sync to Multiple Projects — Applies current net class set to multiple .kicad_pro files atomically. Returns dict of success/fail per projec
+- [x] nd_project_settings_manager.py - Load Project Settings — Reads all project settings from .kicad_pro: schematic text/line size, PCB text/footprint text (silk/copper/fab
+- [ ] nd_project_settings_manager.py - Save Project Settings — Atomically writes all settings back to .kicad_pro (no .bak by design). Converts mils to mm for board values. A
+- [ ] nd_project_settings_manager.py - ProjectSettings Dataclass — Stores schematic (text_size, line_width, pin_symbol_size, junction_size), PCB text boxes, footprint text (silk
+- [ ] nd_project_settings_manager.py - Unit Conversion UI — All spinners show values in mils; labels display mm equivalent (live-updated on change). Conversion uses 0.025
+- [ ] nd_project_settings_manager.py - Grouped Settings Presentation — Settings organized in sections: Schematic, PCB Text Boxes, Footprint Text, Design Rules (defaults), Minimum Co
+- [ ] nd_project_settings_manager.py - Project Lock Detection — Detects if a .kicad_pro is open in KiCad (.lck file present) and skips sync unless force_open=True. Warns user
+- [ ] nd_project_settings_manager.py - Sync with Verification — Sync applies settings, then re-reads file to confirm values actually saved (tolerance ±0.01 mils for schematic
+- [ ] nd_project_settings_manager.py - Cache Clearing (Auto) — Auto-clears .kicad_prl (project local settings), .lck (lock files), and fp-info-cache on every save. Bounded (
+- [ ] nd_project_settings_manager.py - Export/Import Settings Templates — Save/load all 20 settings to/from standalone JSON template with version tag and description.
+- [ ] kicad_tools.py - Qt GUI Container — PyQt5 main widget integrating all three tools in one tabbed interface. Tabs: Bulk Rename, Net Classes, Project
+- [ ] kicad_tools.py - Project Discovery & Selection — Generic discovery of any .kicad_pro under chosen folder (ignores .history). Multi-select checkboxes for projec
+- [ ] kicad_tools.py - Output Console — Read-only text area showing real-time logs from all operations (rename, sync, etc.). Auto-scrolls to bottom.
+- [ ] kicad_tools.py - Bulk Rename GUI Tab — Operation combo (5 choices), tag/find/replace fields (context-sensitive visibility), scope checkboxes (labels,
+- [ ] kicad_tools.py - Net Classes GUI Tab — Editable table: name, clearance, track width, via diameter/drill, µvia, differential pair, wire/bus thickness,
+- [ ] kicad_tools.py - Project Settings GUI Tab — Scrollable form with ~20 spinboxes in groups. Load from Project button. Sync to Selected Projects button. Live
+- [ ] kicad_tools.py - Color Picker (Net Classes) — Double-click color cell opens QColorDialog. Cell background and foreground text color auto-adjust for visibili
+- [ ] kicad_tools.py - Desaturated Icons — Utility to create neutral gray icons from standard Qt style icons (used for all buttons to maintain consistent
+- [ ] kicad_tools.py - kicad-cli Path Resolution — Finds kicad-cli.exe in standard Program Files locations or via PATH. Used for ERC.
+- [x] merge_symbols.py - Symbol Merging Utility — Safely appends (symbol ...) S-expression blocks from source .kicad_sym files into a target MySymbols.kicad_sym
+- [ ] merge_symbols.py - S-Expression Parsing — Robust character-level parser handling strings, nested parens, and depth tracking. Extracts top-level (symbol 
+- [x] fp_render.py - Footprint Rendering — Renders .kicad_mod footprints to 420×420 px QImage with pads, courtyard, fab, silkscreen layers, drill holes, 
+- [x] fp_render.py - Footprint S-Expression Parser — Parses .kicad_mod S-expressions to extract pads, lines, circles, rectangles, polygons. Handles at (position/ro
+- [ ] fp_render.py - Footprint Summary — Extracts machine-readable metadata: name, total pads, SMD/THT counts, body bbox (mm), layers. Used for catalog
+- [ ] fp_render.py - Footprint Bounding Box — Computes two bboxes: full (all graphics) and body_bbox (pads + courtyard, ignoring stray silk/fab markers). Us
+- [ ] fp_render.py - Symbol Rendering — Renders .kicad_sym (symbol) S-expression blocks to 280×280 px QImage. Draws rectangles, polylines, circles, ar
+- [ ] fp_render.py - Symbol Parser — Extracts symbol graphics (rectangle, polyline, circle, arc) and pins with position/angle/length. Walks nested 
+- [ ] fp_render.py - 3D Model Rendering (Optional) — If cascadio + trimesh + numpy installed: renders STEP files to 420×420 px shaded 3D thumbnail via software ras
+- [ ] fp_render.py - Layer Coloring — Maps KiCad layer names to viewport colors: copper (gold), courtyard (gray), fab (dark gray), silkscreen (light
+- [ ] All Tools - Standard Library Only — All core tools (nd_wizard, nd_netclass_manager, nd_project_settings_manager) use only Python standard library.
+
+## STMP web — 22
+
+- [ ] Package Selector (Left Rail) — Left sidebar listing all available LQFP packages (e.g., LQFP64, LQFP100) with button controls. Shows pin_count
+- [ ] Pinout Group Selector Dropdown — Dropdown menu to select between different pinout groups for the same package. Groups represent different MCU v
+- [ ] Pinout Map Visualization (SVG) — Interactive chip diagram showing physical pin layout. Pins are rendered as colored rectangles arranged on all 
+- [ ] Metric Summary Row — Four key-value metric cards: Need Switch Cell (count/total), Direct/Fixed (count), Pinout Groups (count), STM3
+- [ ] Required Cell Type Stacked Bar Chart — Horizontal bar chart showing breakdown of required cell types (e.g., Role switch, Fixed power, Local VCAP cell
+- [ ] Pinout Group Information Panel — Collapsible details for the selected group: representative part number, MCU count, coverage percentage, voltag
+- [ ] Pin Search Input — Text input field that filters all pins by free-text search across pin#, GPIO name, lane ID, pin name, roles, r
+- [ ] Multi-Column Facet Filters — Six dropdown facet selectors: Switch Need (Needs Switch vs Direct/Fixed), Category (Power, Ground, Analog, Clo
+- [ ] Decision Matrix Table — Main data table showing all filtered pins as rows. 14 standard columns: Pin#, GPIO, Lane, Roles, Stability, Co
+- [ ] Expandable Alternate Functions Row — When AF count button clicked on a row, inline table row expands below showing all alternate functions as monos
+- [ ] Pin Detail Panel (Right Side) — Right sidebar showing comprehensive details for selected pin: Identity (lane, pin name, side), Roles Across Fa
+- [x] Export CSV — Button to download all pins as CSV file. Exports 31 columns including Pin, Lane, Pin Name, GPIO, Roles, Stabil
+- [x] Export Markdown — Button to download all pins as Markdown table. Generates header with package name, group label, representative
+- [ ] All Columns Toggle Checkbox — Checkbox in matrix header to show/hide extra columns (Voltage, Reset State, Boot, Component, Enable Net). Defa
+- [x] Backend API: /api/switch-packages — Endpoint serving list of all available LQFP packages with pin counts and MCU counts. Filters TARGET_PACKAGES a
+- [x] Backend API: /api/package-matrix — Core endpoint serving full pinout matrix for a package + optional group ID. Returns PkgMatrix with package met
+- [ ] Backend API: /api/switch-cells — Exportable JSON report of canonical switch-cell decisions per package. Returns must_switch, osc_optional, fixe
+- [ ] Backend API: /api/switch-cells.csv — HTTP CSV download endpoint serving switch-cell report filtered to switching pins only. Uses canonical switch_e
+- [ ] Pin Status Classification — Every pin classified as switch (needs_switch && !review), review (review flag), or fixed (other). Affects visu
+- [ ] Cell Category Color Coding — Each pin's required_cell mapped to a category (power, ground, analog, clock, system, usb, io, direct, nc) assi
+- [ ] Interactivity: Pan & Zoom — Pinout map supports mouse wheel zoom (1x to 8x magnification), drag-to-pan when zoomed, zoom buttons (+/- at 1
+- [ ] Responsive Column Display — Matrix table supports All Columns toggle to show/hide optional columns (marked extra:true). Compact view shows
+
+## STMP original Qt — 28
+
+- [ ] PROFILE VIEWER - Main Pin Map Canvas — Interactive zoomable pinout visualization showing physical STM32 pin layout. Displays pins with color-coded ro
+- [ ] PROFILE VIEWER - Matrix (Spreadsheet) View — Full-width tabular display of all pin data for the selected MCU profile. Shows 29 data columns: GROUP, MCU, PA
+- [ ] PROFILE VIEWER - Pin Detail Panel — Right-side tabbed panel with 7 sections: Recipe (implementation work order), Pin (per-group observations + bra
+- [ ] PROFILE VIEWER - Role Path Diagram — Vector hardware-path diagram for a selected pin's role cell. Renders universal hardware path as boxes and line
+- [ ] PROFILE VIEWER - CSV/Markdown Export — Export all visible selected-profile matrix rows to standard CSV or Markdown format. Exports always match the v
+- [ ] PROFILE VIEWER - Implementation Recipe & Build State — Per-pin implementation work order with generated implementation steps. Engineer sets each step's status (not_s
+- [ ] PROFILE VIEWER - Lane & Cell Stack Visualizer — Ordered hardware cells that make up a pin's signal chain (card side first, then parent) rendered as vertical s
+- [ ] PROFILE VIEWER - Cell Library — Reusable hardware-cell library presented per physical branch diagram (not abstract labels). Lists stm32switch 
+- [ ] DATABASE BUILDER - Source Scan & Family Selection — Choose a CubeMX source folder via file dialog. Scans available MCU families and packages. Set visible/hidden/e
+- [ ] DATABASE BUILDER - Procurement Priority Import — Import optional procurement-priority CSV data (family_group, source_name, source_date, lifecycle_status, stock
+- [x] DATABASE BUILDER - Build & Validate — Generate local SQLite database from selected families/packages. Validates data integrity, runs voltage/health/
+- [ ] DATABASE BUILDER - Manifest & Reports Output — Generate and save: manifest file (database_id, selected families/packages, generated timestamp, schema version
+- [ ] MATRIX EXPLORER - Multi-View Navigation — Five engineering views for the STM32F implementation matrix: Switching Needed (pins needing Victim Card switch
+- [ ] REPORTS - Package Role Set Report — Export all distinct role sets found across the selected package. Derived from complete role/function set acros
+- [ ] REPORTS - Conflict & Sensitivity Report — Export package-wide conflict status (NONE, PACKAGE-VARIABLE-FUNCTION, PACKAGE-VARIABLE-ROLE, MIXED-IO-AND-POWE
+- [ ] REPORTS - Required Cell Type Report — Export required cell type classification for each physical pin across selected packages (DIRECT-IO, PROTECTED-
+- [ ] REPORTS - Validation Report — Export validation status (pass/warning/fail) with issue counts per MCU package. Includes missing-role-data det
+- [ ] UPDATES - Version Check & Release Notes — Check configured GitHub release channel (STABLE: latest tagged release, BETA: prerelease, DEV: app-latest from
+- [ ] UPDATES - In-App Update Installation — Download update zip (STM-Helper.zip), verify checksum against .sha256 file, close app gracefully, replace inst
+- [x] DATABASE - SQLite Schema — Local SQLite database with tables: app_database_manifest, family_visibility, package_visibility, family_procur
+- [ ] DATABASE EDITOR - General-Purpose Table Browser — SQLite table browser with left sidebar listing all tables. Select a table to load all rows into fully-editable
+- [ ] Git Sync - Cell Image Library Collaboration — Lightweight Git pull/push for the cell-image library. On startup, calls start_pull() to fetch latest images fr
+- [ ] UI Theme - Neutral Gray Palette — Cross-platform neutral-gray, KiCad-like palette. All colors pulled from theme.py for consistent rendering acro
+- [ ] UI Theme - Typography — Font stacks with fallback chain: Mono families (Cascadia Mono → JetBrains Mono → Consolas → DejaVu → Menlo → L
+- [ ] Schematic Symbol Toolkit — Small KiCad-flavored schematic primitive toolkit for drawing component symbols, reference designators, net lab
+- [ ] Signal Chain Schematic - Card to Parent Routing — Renders one socket pin's full signal chain as KiCad-style schematic across four labeled planes: CARD (Pin-Role
+- [ ] Pin Filter & Search — Per-column filter checklists in matrix header (▼ button on each column). Free-text search. Multi-value columns
+- [ ] Application Initialization & Platform Compatibility — Qt platform configuration for Linux (WSLg detection, XCB library checks, WAYLAND_DISPLAY setup). Cross-platfor
