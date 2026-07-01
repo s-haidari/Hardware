@@ -277,6 +277,8 @@ function PinsView() {
   const [matrix, setMatrix] = useState<PinMatrix | null>(null)
   const [tab, setTab] = useState<'map' | 'switch' | 'matrix'>('map')
   const [selPin, setSelPin] = useState<number | null>(null)
+  const [q, setQ] = useState('')
+  const [swOnly, setSwOnly] = useState(false)
 
   useEffect(() => {
     getJSON<PackageInfo[]>('/api/pins/packages').then((p) => { setPackages(p); if (p[0]) setPkg(p[0].package) })
@@ -384,11 +386,20 @@ function PinsView() {
             </tbody>
           </table>
         )}
-        {tab === 'matrix' && matrix && (
+        {tab === 'matrix' && matrix && (() => {
+          const rows = matrix.pins.filter((p) => (!swOnly || p.needs_switch)
+            && (!q || `${p.pin} ${p.pin_name} ${p.gpio} ${p.roles}`.toLowerCase().includes(q.toLowerCase())))
+          return (
+          <>
+          <div className="row" style={{ margin: '10px 0', gap: 10 }}>
+            <input className="search" placeholder="Filter pins, names, roles…" value={q} onChange={(e) => setQ(e.target.value)} />
+            <label className="chk"><input type="checkbox" checked={swOnly} onChange={(e) => setSwOnly(e.target.checked)} />Needs switch only</label>
+            <span className="dim" style={{ fontSize: 12 }}>{rows.length} / {matrix.pins.length} pins</span>
+          </div>
           <table className="tbl">
             <thead><tr><th>Pin</th><th>Name</th><th>GPIO</th><th>Roles across family</th><th>Stability</th><th>Cell</th></tr></thead>
             <tbody>
-              {matrix.pins.map((p) => (
+              {rows.map((p) => (
                 <tr key={p.pin}>
                   <td>{p.pin}</td><td className="mono">{p.pin_name}</td><td className="mono dim">{p.gpio}</td>
                   <td>{p.roles}</td>
@@ -398,7 +409,9 @@ function PinsView() {
               ))}
             </tbody>
           </table>
-        )}
+          </>
+          )
+        })()}
       </div>
     </>
   )

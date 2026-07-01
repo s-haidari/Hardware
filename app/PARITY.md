@@ -182,7 +182,7 @@ Progress: 20/214 (~9%). This is the baseline to reach before anything new.
 - [ ] Metric Summary Row — Four key-value metric cards: Need Switch Cell (count/total), Direct/Fixed (count), Pinout Groups (count), STM3
 - [ ] Required Cell Type Stacked Bar Chart — Horizontal bar chart showing breakdown of required cell types (e.g., Role switch, Fixed power, Local VCAP cell
 - [ ] Pinout Group Information Panel — Collapsible details for the selected group: representative part number, MCU count, coverage percentage, voltag
-- [ ] Pin Search Input — Text input field that filters all pins by free-text search across pin#, GPIO name, lane ID, pin name, roles, r
+- [x] Pin Search Input — Text input field that filters all pins by free-text search across pin#, GPIO name, lane ID, pin name, roles, r
 - [ ] Multi-Column Facet Filters — Six dropdown facet selectors: Switch Need (Needs Switch vs Direct/Fixed), Category (Power, Ground, Analog, Clo
 - [ ] Decision Matrix Table — Main data table showing all filtered pins as rows. 14 standard columns: Pin#, GPIO, Lane, Roles, Stability, Co
 - [ ] Expandable Alternate Functions Row — When AF count button clicked on a row, inline table row expands below showing all alternate functions as monos
