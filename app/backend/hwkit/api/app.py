@@ -14,6 +14,7 @@ import io
 import shutil
 import sqlite3
 import tempfile
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -31,7 +32,29 @@ from ..netdeck import netclasses as nc
 from ..pins import switch_engine as se
 from ..pins import switch_report as sr
 
-app = FastAPI(title="Hardware App", version="0.1.0")
+def _ensure_database() -> None:
+    """Build the app-owned pin database from the bundled CubeMX XML if it is
+    missing, so a fresh checkout works with no external file and no committed
+    binary — the database is always produced by our own builder."""
+    db = config.stm_database_path()
+    src = config.cubemx_source_dir()
+    if db.exists() or not src.exists():
+        return
+    try:
+        from ..cubemx import builder
+        db.parent.mkdir(parents=True, exist_ok=True)
+        builder.build_database(src, db)
+    except Exception:  # never block startup; the Database view reports status
+        pass
+
+
+@asynccontextmanager
+async def _lifespan(_app: "FastAPI"):
+    _ensure_database()
+    yield
+
+
+app = FastAPI(title="Hardware App", version="0.1.0", lifespan=_lifespan)
 
 # Local desktop app: the packaged webview (tauri://) and the dev server
 # (localhost:5173) both call the backend on 127.0.0.1, so allow any local origin.

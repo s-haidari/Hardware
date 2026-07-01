@@ -10,26 +10,18 @@ from pathlib import Path
 
 
 def stm_database_path() -> Path:
-    """Resolve the STM32 CubeMX profile database.
+    """The STM32 pin database this app owns and builds itself.
 
-    Order: ``HWKIT_DB`` env var -> the installed STM-Helper data dir -> a repo
-    checkout next to this one. The first existing path wins; otherwise the
-    STM-Helper data location is returned (so callers can report it as missing).
+    It lives inside the app (``app/backend/data/stm32.sqlite``) and is built
+    from scratch out of the bundled CubeMX MCU XML by ``cubemx.builder`` — it is
+    never the old STM-Helper / STMP file. Override with ``HWKIT_DB`` if you want
+    to point it elsewhere.
     """
     env = os.environ.get("HWKIT_DB")
     if env:
         return Path(env)
-
-    candidates: list[Path] = []
-    appdata = os.environ.get("APPDATA")
-    if appdata:
-        candidates.append(Path(appdata) / "STM-Helper" / "stm32_profiles.sqlite")
-    candidates.append(Path.home() / "git" / "STMP" / "stm32_profiles.sqlite")
-
-    for c in candidates:
-        if c.exists():
-            return c
-    return candidates[0]
+    # config.py is app/backend/hwkit/core/config.py -> parents[2] is app/backend
+    return Path(__file__).resolve().parents[2] / "data" / "stm32.sqlite"
 
 
 def netclass_standard_path() -> Path:

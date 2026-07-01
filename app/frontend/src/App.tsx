@@ -559,7 +559,6 @@ const NAV: { id: View; label: string; icon: React.ReactNode }[] = [
 export default function App() {
   const [view, setView] = useState<View>('library')
   const [toasts, setToasts] = useState<{ id: number; msg: string; kind: Kind }[]>([])
-  const [health, setHealth] = useState<{ database_present: boolean } | null>(null)
   const [theme, setTheme] = useState<'dark' | 'light'>('dark')
 
   useEffect(() => { document.documentElement.dataset.theme = theme }, [theme])
@@ -568,7 +567,6 @@ export default function App() {
     setToasts((t) => [...t, { id, msg, kind }])
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 4000)
   }, [])
-  useEffect(() => { getJSON<{ database_present: boolean }>('/api/health').then(setHealth).catch(() => setHealth(null)) }, [])
 
   return (
     <ToastCtx.Provider value={notify}>
@@ -595,7 +593,6 @@ export default function App() {
         <div className="statusbar">
           <span>Idle</span>
           <span className="grow" />
-          <span className={`chip ${health ? (health.database_present ? 'ok' : 'bad') : ''}`}>{health ? (health.database_present ? '✓ Database ready' : 'No database') : ''}</span>
         </div>
       </div>
       <div className="toasts">

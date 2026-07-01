@@ -74,5 +74,8 @@ app/backend/build/
 app/backend/*.spec
 app/frontend/src-tauri/binaries/
 
-# Bundled CubeMX XML source (19MB, 427 files; build DB from it locally)
-app/backend/cubemx_db/
+# The app owns its pin data: the CubeMX XML source IS committed (compresses to
+# ~1MB) so the SQLite database can be rebuilt from our own scripts on any clone.
+# The built database is derived, so it is ignored and auto-built on first run.
+app/backend/data/
+*.sqlite

@@ -1,90 +1,121 @@
 """
-matrix.py — rich per-pin view + validation from the folded stm32switch generator.
-
-This is STMP's detailed pin matrix (every socket pin's roles, stability, required
-cell) and the validation report, served from the app.
+matrix.py — per-pin matrix + validation, derived from THIS app's CubeMX database
+via the canonical switch_engine. No dependency on the old STMP/STM-Helper schema:
+every value comes from our own mcu / mcu_package_pin / pin_role tables.
 """
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
-from stm32switch import io as sio
-from stm32switch import normalize, schema, validate
+from . import switch_engine as se
 
-_STABILITY_LABEL = {
-    "GUARANTEED_IO_DIFFERENT_FUNCTIONS": "Guaranteed IO (functions vary)",
-    "GUARANTEED_FIXED_ROLE": "Fixed role",
-    "MIXED_IO_AND_POWER": "Mixed IO / power",
-    "MIXED_IO_AND_GROUND": "Mixed IO / ground",
-    "MIXED_IO_AND_SPECIAL": "Mixed IO / special",
-    "MIXED_VCAP_OR_ANALOG_SPECIAL": "Mixed VCAP / analog",
-    "MIXED_POWER_AND_GROUND": "Mixed power / ground",
-    "UNKNOWN_REVIEW": "Review required",
+_FIXED_LABEL = {
+    se.ID_IO: "Guaranteed IO",
+    se.ID_VDD: "Fixed power (VDD)", se.ID_VDDA: "Fixed power (VDDA)",
+    se.ID_VREF: "Fixed power (VREF)", se.ID_VBAT: "Fixed power (VBAT)",
+    se.ID_VSS: "Fixed ground", se.ID_VCAP: "Fixed VCAP",
+    se.ID_BOOT: "Boot strap", se.ID_NRST: "Reset", se.ID_OSC: "Oscillator",
 }
 
 
-def _clean(s: str) -> str:
-    return (s or "").replace("|", ", ").replace("_", " ").strip()
+def _connect(db_path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _pin_info(conn: sqlite3.Connection, package: str) -> dict[int, tuple[str, str]]:
+    """Representative pin name + GPIO per physical pin (most common across the family)."""
+    rows = conn.execute(
+        """
+        SELECT p.physical_pin_number AS pin, p.canonical_pin_name AS name,
+               p.gpio_port AS port, p.gpio_pin_index AS idx, COUNT(*) AS n
+        FROM mcu_package_pin p JOIN mcu m ON m.id = p.mcu_id
+        WHERE m.package_name = ?
+        GROUP BY p.physical_pin_number, p.canonical_pin_name
+        ORDER BY p.physical_pin_number, n DESC
+        """,
+        (package,),
+    ).fetchall()
+    out: dict[int, tuple[str, str]] = {}
+    for r in rows:
+        pin = int(r["pin"])
+        gpio = f"P{r['port']}{r['idx']}" if r["port"] not in (None, "") and r["idx"] is not None else ""
+        if pin not in out:                       # first row = most common name
+            out[pin] = (r["name"] or "", gpio)
+        elif gpio and not out[pin][1]:           # backfill a GPIO if the top name lacked one
+            out[pin] = (out[pin][0], gpio)
+    return out
+
+
+def _stability(d: se.SwitchDecision) -> str:
+    if d.switch_class == se.SWITCH_MUST:
+        return "Role-variable (needs switch)"
+    if d.switch_class == se.SWITCH_OSC_OPTIONAL:
+        return "Oscillator (route or switch)"
+    return _FIXED_LABEL.get(d.dominant_identity, "Fixed role")
 
 
 def package_matrix(db_path: Path, package: str) -> dict:
-    conn = sio.connect(db_path)
+    conn = _connect(db_path)
     try:
-        pd = normalize.assemble(conn, package)
-        rows = schema.matrix_rows(pd)
+        rep = se.package_report(conn, package)
+        info = _pin_info(conn, package)
     finally:
         conn.close()
 
-    base = [r for r in rows if r.get("is_baseline_group") == "yes"] or rows
-    seen: set[int] = set()
     pins: list[dict] = []
-    for r in sorted(base, key=lambda r: int(r["socket_pin"])):
-        pin = int(r["socket_pin"])
-        if pin in seen:
-            continue
-        seen.add(pin)
-        stab = r.get("pin_role_stability", "")
+    for d in sorted(rep.decisions, key=lambda d: d.pin):
+        name, gpio = info.get(d.pin, ("", ""))
         pins.append({
-            "pin": pin,
-            "side": (r.get("socket_side") or "").title(),
-            "pin_name": r.get("datasheet_pin_name", ""),
-            "gpio": (f"P{r.get('port_pin')}" if r.get("port_pin") else ""),
-            "roles": _clean(r.get("roles_seen_all_groups", "")),
-            "stability": _STABILITY_LABEL.get(stab, stab),
-            "needs_switch": r.get("needs_victim_card_switching") == "yes",
-            "required_cell": r.get("victim_card_cell_display_name") or r.get("victim_card_cell_required", ""),
+            "pin": d.pin,
+            "side": (d.side or "").title(),
+            "pin_name": name,
+            "gpio": gpio,
+            "roles": ", ".join(sorted(i for i in d.identities)),
+            "stability": _stability(d),
+            # strictly the must-switch pins, so the map/matrix agree with the
+            # canonical headline count (LQFP64 = 11); osc-optional pins carry
+            # their own stability label instead of being force-highlighted.
+            "needs_switch": d.switch_class == se.SWITCH_MUST,
+            "required_cell": d.cell_required,
         })
-    try:
-        summary = validate.summary_counts(pd)
-    except Exception:
-        summary = {}
     return {
         "package": package,
-        "pin_count": pd.pin_count,
-        "groups": len(pd.groups),
-        "summary": summary,
+        "pin_count": len(pins),
+        "must_switch": rep.must_switch_count,
+        "osc_optional": rep.osc_optional_count,
+        "fixed": rep.fixed_count,
         "pins": pins,
     }
 
 
 def package_validation(db_path: Path, package: str) -> dict:
-    conn = sio.connect(db_path)
+    """Sanity-check the derived switch decisions for this package. Everything is
+    computed from our own database, so there is no schema to disagree with; the
+    findings flag design-review items (minority roles, osc choice) and any pin
+    that came out inconsistent."""
+    conn = _connect(db_path)
     try:
-        pd = normalize.assemble(conn, package)
-        try:
-            rep = validate.validate_package(pd)
-        except Exception as exc:  # folded generator has an internal mismatch
-            return {"package": package, "available": False, "reason": f"{type(exc).__name__}: {exc}",
-                    "errors": 0, "warnings": 0, "findings": []}
+        rep = se.package_report(conn, package)
     finally:
         conn.close()
-    return {
-        "package": package,
-        "available": True,
-        "errors": len(rep.errors),
-        "warnings": len(rep.warnings),
-        "findings": [
-            {"severity": f.severity, "code": getattr(f, "code", ""), "message": getattr(f, "message", str(f))}
-            for f in rep.findings
-        ],
-    }
+
+    findings: list[dict] = []
+    for d in sorted(rep.decisions, key=lambda d: d.pin):
+        where = f"pin {d.pin}"
+        if d.needs_switch and not d.primary_target_net:
+            findings.append({"severity": "error", "code": "NO_TARGET_NET",
+                             "message": f"{where}: switch pin has no routing target net"})
+        if d.switch_class == se.SWITCH_OSC_OPTIONAL:
+            findings.append({"severity": "warning", "code": "OSC_OPTIONAL",
+                             "message": f"{where}: oscillator pin — route direct or switch (per-card choice)"})
+        elif d.minority_identities:
+            findings.append({"severity": "warning", "code": "MINORITY_ROLE",
+                             "message": f"{where}: minority role(s) {', '.join(d.minority_identities)} "
+                                        f"seen on few MCUs — verify against the target part"})
+    errors = sum(1 for f in findings if f["severity"] == "error")
+    warnings = sum(1 for f in findings if f["severity"] == "warning")
+    return {"package": package, "available": True, "errors": errors,
+            "warnings": warnings, "findings": findings}
