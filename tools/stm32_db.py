@@ -356,10 +356,14 @@ ID_VSS, ID_VCAP, ID_BOOT, ID_NRST, ID_OSC, ID_IO = "VSS", "VCAP", "BOOT", "NRST"
 _RAIL_OR_RETURN = {ID_VDD, ID_VDDA, ID_VREF, ID_VBAT, ID_VSS, ID_VCAP}
 _SERVICE_CRITICAL = {ID_BOOT, ID_NRST}
 
+# Canonical destination nets, confirmed against the vault Connector Contract /
+# Naming Conventions. OSC is a split IN/OUT pair in the vault (SERVICE_OSC_IN /
+# SERVICE_OSC_OUT); the representative SERVICE_OSC_IN is used here (osc pins are
+# osc_optional / per-card, so the label is advisory).
 TARGET_NET = {
     ID_VDD: "VTARGET", ID_VDDA: "VDDA_TGT", ID_VREF: "VREF_TGT", ID_VBAT: "VBAT_TGT",
     ID_VSS: "GND", ID_VCAP: "VCAP_NODE", ID_BOOT: "SERVICE_BOOT0", ID_NRST: "SERVICE_NRST",
-    ID_OSC: "SERVICE_OSC", ID_IO: "CARD_LANE",
+    ID_OSC: "SERVICE_OSC_IN", ID_IO: "CARD_LANE",
 }
 
 CELL_DIRECT_IO = "CELL_DIRECT_IO"

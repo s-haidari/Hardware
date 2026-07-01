@@ -85,3 +85,33 @@ Done: dropped `app/frontend` (web UI), `app/backend/stm32switch` (old generator)
 `misc/` junk, logs; fixed `build-exe.yml` (Lucide + QtSvg). After the rewrite: delete
 `app/backend/hwkit` + `tests` + `api` (unused by the app/CI), keep the CubeMX XML data source
 (`app/backend/cubemx_db/mcu`, or relocate under `tools/`).
+
+## Data sources gathered
+- **bootloader_periph** — ST **AN2606 Rev 62 (Mar 2024)**, system-memory-boot-mode tables; PDF saved
+  to the vault `Sources/Datasheets/ST AN2606 STM32 system memory boot mode.pdf`. Encoded per family as
+  the union of ROM-bootloader pins (`tools/stm32_authority.py::BOOTLOADER_PINS`). USART1=PA9/PA10 and
+  USB-DFU=PA11/PA12 universal; F0/F3 have no CAN/SPI bootloader; F2 no I2C/SPI; F1 CAN2 TX=PB6, F7 uses
+  CAN1 on PD0/PD1, F7 I2C1_SDA=PB9.
+- **net dictionary** — confirmed from the vault Connector Contract / Naming Conventions: VDD→VTARGET,
+  VDDA→VDDA_TGT, VREF→VREF_TGT, VBAT→VBAT_TGT, VSS→GND, VCAP→VCAP_NODE, BOOT→SERVICE_BOOT0,
+  NRST→SERVICE_NRST, IO→CARD_LANE_<pin>.
+
+## Open questions / flags
+1. **max_io_current_ma is null** — the datasheet fetch did not complete; not guessed (Hard Rule 10). Fill
+   with cited per-family constants (STM32F I/O is typically ±25 mA abs-max) once a datasheet is saved.
+2. **SWD folds into the IO identity** in the switch engine — this reproduces the hand-verified truth
+   (LQFP64=11, LQFP100=43). The vault authority spec lists **SWD as a distinct routing identity**
+   (destinations SWCLK_PARENT / SWDIO_PARENT / SWO_PARENT). Promoting SWD to its own identity would
+   raise the switched counts and must be signed off against Build Card 7B before changing. **Decision
+   needed.**
+3. **VSSA is lumped into GND** (identity VSS). The vault splits analog return as `VSSA_TGT`. VSSA is a
+   fixed pin, so only the destination label differs; add a VSSA identity later if the split matters.
+4. **OSC destination** uses the representative `SERVICE_OSC_IN` (the vault splits IN/OUT); OSC pins are
+   `osc_optional` (per-card), so the label is advisory.
+5. **CARD_LANE numbering = socket-pin number** (`CARD_LANE_NNN = pin NNN`), per the vault lane matrix.
+   Card 7B's sequential 001..011 numbering is the hand-authoring drift this generator replaces.
+6. **AN2606 UNVERIFIED** (per the fetch): Rev 70 not line-diffed vs Rev 62 (F0–F7 believed unchanged);
+   smaller F0 sub-lines, the full F3 device matrix, and per-device F4/F7 SPI/I2C instance pins not
+   exhaustively transcribed — the encoded union covers the LQFP64/LQFP100-relevant pins.
+- The `bootloader_periph` per position is the **union** across the families/sub-lines present at that
+  socket position (a pin can serve different bootloader buses on different parts).

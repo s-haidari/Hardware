@@ -34,10 +34,52 @@ NET_DICT: dict = dict(db.TARGET_NET)
 
 # family -> {bootloader_periph: {canonical_pin_name, ...}}  (from ST AN2606).
 # A socket position is tagged with a periph when one of its per-part pin names
-# matches, for that part's family. Empty until AN2606 is transcribed.
-BOOTLOADER_PINS: dict = {}
+# matches, for that part's family. Source: ST AN2606 Rev 62 (Mar 2024) system-
+# memory-boot-mode tables (unchanged in Rev 70); PDF saved in the vault at
+# Sources/Datasheets/. Per family = the UNION of ROM-bootloader pins across its
+# sub-lines. USART1=PA9/PA10 and USB-DFU=PA11/PA12 are universal. See
+# docs/stm32-pins.md. Higher-density pins (PIx/PEx/PFx) simply never match on
+# LQFP64/LQFP100. F0/F3 have no CAN/SPI bootloader; F2 has no I2C/SPI bootloader.
+BOOTLOADER_PINS: dict = {
+    "STM32F0": {
+        "USART": {"PA9", "PA10", "PA14", "PA15", "PA2", "PA3"},
+        "I2C": {"PB6", "PB7"},
+        "USB-DFU": {"PA11", "PA12"},
+    },
+    "STM32F1": {
+        "USART": {"PA9", "PA10", "PD5", "PD6"},
+        "CAN": {"PB5", "PB6"},                       # connectivity line: CAN2 RX=PB5, TX=PB6
+        "USB-DFU": {"PA11", "PA12"},
+    },
+    "STM32F2": {
+        "USART": {"PA9", "PA10", "PB10", "PB11", "PC10", "PC11"},
+        "CAN": {"PB5", "PB13"},                      # CAN2 RX=PB5, TX=PB13
+        "USB-DFU": {"PA11", "PA12"},
+    },
+    "STM32F3": {
+        "USART": {"PA9", "PA10", "PD5", "PD6"},
+        "I2C": {"PB6", "PB7", "PA8"},
+        "USB-DFU": {"PA11", "PA12"},
+    },
+    "STM32F4": {
+        "USART": {"PA9", "PA10", "PB10", "PB11", "PC10", "PC11"},
+        "CAN": {"PB5", "PB13"},
+        "USB-DFU": {"PA11", "PA12"},
+        "I2C": {"PB6", "PB7", "PB9", "PF0", "PF1", "PA8", "PC9"},
+        "SPI": {"PA4", "PA5", "PA6", "PA7", "PI0", "PI1", "PI2", "PI3", "PE11", "PE12", "PE13", "PE14"},
+    },
+    "STM32F7": {
+        "USART": {"PA9", "PA10", "PB10", "PB11", "PC10", "PC11"},
+        "CAN": {"PD0", "PD1"},                       # F7: CAN1 RX=PD0, TX=PD1
+        "USB-DFU": {"PA11", "PA12"},
+        "I2C": {"PB6", "PB9", "PF0", "PF1", "PA8", "PC9"},
+        "SPI": {"PA4", "PA5", "PA6", "PA7", "PI0", "PI1", "PI2", "PI3", "PE11", "PE12", "PE13", "PE14"},
+    },
+}
 
 # family -> max I/O source/sink current per pin, mA (from ST datasheets).
+# UNVERIFIED — the datasheet fetch did not complete; left null rather than guessed
+# (vault Hard Rule 10). Fill with cited per-family constants later.
 IO_CURRENT_MA: dict = {}
 
 _DEBUG_ROLE = {"swclk": "SWCLK", "swdio": "SWDIO", "swo": "SWO", "jtag_extra": "JTAG"}

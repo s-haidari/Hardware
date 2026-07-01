@@ -38,6 +38,20 @@ class AuthorityTests(unittest.TestCase):
         p60 = next(p for p in data["positions"] if p["position"] == 60)
         self.assertTrue(p60["tags"]["is_boot"])
 
+    def test_bootloader_tags_from_an2606(self):
+        data = auth.build(self.conn, "LQFP64")
+
+        def periph_at(name):
+            for p in data["positions"]:
+                if name in p["pin_names"]:
+                    return p["tags"]["bootloader_periph"]
+            return None
+
+        self.assertIn("USART", periph_at("PA9"))      # USART1_TX, universal
+        self.assertIn("USB-DFU", periph_at("PA11"))   # USB_DM, universal
+        self.assertIn("CAN", periph_at("PB13"))       # CAN2_TX (F2/F4)
+        self.assertTrue(any(p["tags"]["bootloader_periph"] for p in data["positions"]))
+
     def test_emit_yaml_json_tsv(self):
         out = Path(tempfile.mkdtemp())
         summ = auth.write_authority(self.conn, "LQFP64", out)
