@@ -16,37 +16,45 @@ Three mandates, in his words:
    package is the old generator built around a 16-table STM-Helper schema — it
    is now unused by the app and should be **deleted**, not ported.
 
-2. **Entire UI rebuild, and make it not look like AI slop.** "The UI looks
-   nothing like the PySide6 UI." Also: "look online on how to [build a] Claude
-   Code UI without making it look like AI slop." So: research current
-   desktop/Tauri UI best practices on the web BEFORE building — real typography,
-   density, spacing, component patterns — then rebuild the whole UI.
+2. **Rebuild the UI to look like the native PyQt Library Manager — not a web
+   app.** Sadad: "I want it to look like the library manager... this UI you can
+   tell it's a web UI." Research online (design systems, real GitHub repos,
+   Tauri/Electron apps that look native) how to make a web/Tauri UI feel like a
+   desktop application and avoid the AI-slop web look, BEFORE building. The tell
+   right now is that it reads as a web page; kill that (see the section below).
 
-3. **Exact, full feature parity, every tab.** "Every single tab needs to have
-   all the features from the old apps, every single one. Exactly how it was.
-   I see a lot of differences in your features." `app/PARITY.md` catalogs 214
-   features (union of the four old apps). Treat it as a contract; verify each
-   feature against the actual old source code, do not approximate.
+3. **Full feature parity — Library Manager FIRST.** Start with the Library
+   Manager and give it EVERY feature from `git/Hardware/tools/LibraryManager.py`,
+   exactly as it works there. STMP features are secondary ("STMP was ass"). The
+   `app/PARITY.md` LibraryManager section (111 items) is the contract for this
+   tab; verify each against the actual source, do not approximate.
 
-## The reference UI — FOUND (this is why the current build looks wrong)
+## The reference UI and the real problem
 
-Sadad said "PySide6," but there is **no PySide6 anywhere** in either repo
-(grep confirmed). The previous session matched the wrong thing: it styled the
-app after `tools/LibraryManager.py`, which is the **PyQt5** KiCad library
-manager. That is NOT the look Sadad wants.
+The target look is the **PyQt5 KiCad Library Manager**:
+`git/Hardware/tools/LibraryManager.py` (its `_THEME_QSS` around line 2611 is the
+exact stylesheet — palette, 8pt type, flat widgets, 3-column splitter, status
+bar). Ignore the earlier note in git history that pointed at the STMP web app —
+Sadad's words: "I want it to look like the library manager and have all the
+features of it over the STMP; STMP was ass to begin with." STMP is deprioritized.
 
-The real reference is the **STMP React web app**:
-- **`git/STMP/web/src/App.tsx` + `git/STMP/web/src/App.css` + `index.css`** —
-  a Vite/React front end. This is the STMP pinout / switch-fabric tool's UI.
-- It is served in a desktop window by `git/STMP/src/stm_helper/desktop.py` via
-  **pywebview / WebView2** (a web UI in a native shell — that's the "app" Sadad
-  is picturing). `stm_helper/ui/` holds the bundled/served assets.
+**The real problem:** "this UI you can tell it's a web UI." The previous session
+matched the QSS *tokens* (colors, fonts, sizes — verified via computed styles)
+but the result still reads as a web app, not a native desktop tool. Matching
+hex values is not enough. The rebuild has to kill the web-app tells and make it
+feel native:
+- Density and spacing of a desktop app, not roomy web margins.
+- Native-feeling widgets: a real tree/table with header sections and row
+  striping, a QSplitter-style 3-column layout with drag handles, a real menu bar
+  / toolbar, a proper bottom status bar with a progress area — not floating
+  rounded "cards" with web hover effects.
+- No web-isms: no big rounded card shadows, no bouncy transitions, no oversized
+  touch-target buttons, no emoji/badge decoration, no gradients.
 
-**First action: open `git/STMP/web/src/App.css` and `App.tsx` and match THAT
-design** (type, spacing, layout, components). Confirm with Sadad and get a
-screenshot of the running STMP web app if possible. The whole reason the last
-build "looked nothing like it" is it copied the PyQt manager instead of this
-React web UI.
+**First action: open `LibraryManager.py`, run the real app if possible (or read
+its layout code + QSS), and rebuild the web UI to look like that native window.**
+Get a screenshot of the running PyQt app from Sadad if you can — it's the ground
+truth for "does this look native or like a web page."
 
 ## What the project is
 
@@ -92,8 +100,9 @@ originals — re-verify every one against the real old source.
 
 ## Mistakes to NOT repeat
 
-- Don't match `tools/LibraryManager.py` blindly — confirm the real reference UI
-  first (Sadad says PySide6, and I never found a PySide6 file).
+- The reference is `tools/LibraryManager.py` (PyQt5). Matching its QSS tokens is
+  NOT enough — the last build did that and still "looks like a web UI." Match the
+  native feel (density, widgets, no web-isms), not just the colors.
 - Don't shape the schema around the old STM-Helper tables. Design fresh, delete
   `app/backend/stm32switch/`.
 - Don't invent UI elements the reference doesn't have (stat-cards with big
@@ -108,15 +117,15 @@ originals — re-verify every one against the real old source.
 
 ## Suggested first steps for the new session
 
-1. **Study the real reference UI**: `git/STMP/web/src/App.css` + `App.tsx`
-   (the STMP React web app). Match its design language. Confirm with Sadad +
-   screenshot the running STMP web app.
-2. **Research** (web) polished desktop/Tauri UI patterns that avoid the AI-slop
-   look — real type scales, spacing, component libraries, density.
-3. **Design the new pin-DB schema** from first principles; document it; port
-   `builder` + `switch_engine` onto it; delete `stm32switch`.
-4. **Rebuild the UI tab by tab**, implementing EVERY `PARITY.md` feature exactly
-   as the old apps had it; verify each against source.
+1. **Rebuild the Library Manager tab first**, to look like the native PyQt app
+   in `git/Hardware/tools/LibraryManager.py` and to have ALL of its features.
+   Get a screenshot of the running PyQt app from Sadad as ground truth.
+2. **Research** (web) how to make a Tauri/web UI look like a native desktop app
+   (density, native widgets, no web-isms) — real repos/design systems, not
+   generic advice. Use the frontend-design skill and the preview MCP if present.
+3. Only after the Library Manager is right: the other tabs, then the ground-up
+   schema redesign (document it; port `builder` + `switch_engine`; delete
+   `stm32switch`). STMP features are lowest priority.
 
 ## Key paths
 
@@ -126,10 +135,10 @@ originals — re-verify every one against the real old source.
   `cubemx/builder.py`, `library/`, `netdeck/`).
 - `app/backend/stm32switch/` — OLD generator, now unused → **delete in rebuild**.
 - `app/frontend/src/App.tsx` + `App.css` — current UI (rebuild).
-- **Visual reference (the target look): `git/STMP/web/src/App.css` + `App.tsx`**
-  (STMP React web UI, served via `stm_helper/desktop.py` pywebview).
-- Feature reference: `git/Hardware/tools/LibraryManager.py` (PyQt5 library
-  manager) for the Manager/library features; `git/STMP/` (`stm_helper`,
-  `stm32switch`, `web/`) for the STMP pinout features.
+- **Visual + feature reference (the target): `git/Hardware/tools/LibraryManager.py`**
+  (PyQt5). QSS is `_THEME_QSS` ~line 2611; layout build is ~line 1461+. Make the
+  web UI look like this native app and carry all its features.
+- STMP (lowest priority): `git/STMP/` (`stm_helper`, `stm32switch`, `web/`) for
+  the pinout features only — deprioritized.
 - Recent commits on `git/Hardware` `main` document the app-owned-DB fix and the
   UI passes; `git log` there for detail.
