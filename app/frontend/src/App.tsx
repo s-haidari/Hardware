@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useMemo, useState } from 'react'
 import {
   Package, Cpu, Cable, Database, FolderInput, Plug, RefreshCw,
   Trash2, Download, FileCog, Save, Search, Check, X, TriangleAlert, Circle,
-  Sun, Moon, GitBranch,
+  Sun, Moon, GitBranch, FileText,
 } from 'lucide-react'
 import './App.css'
 
@@ -328,7 +328,9 @@ function PinsView() {
             <button className={tab === 'matrix' ? 'on' : ''} onClick={() => setTab('matrix')}>Full matrix</button>
           </div>
           <div className="row">
-            <a className="btn" href={api(`/api/pins/${pkg}/switch-cells.csv`)}><Download size={15} />Export CSV</a>
+            <a className="btn" href={api(`/api/pins/${pkg}/report.html`)} target="_blank" rel="noreferrer"><FileText size={15} />HTML report</a>
+            <a className="btn" href={api(`/api/pins/${pkg}/switch-cells.csv`)}><Download size={15} />CSV</a>
+            <a className="btn" href={api(`/api/pins/${pkg}/report.md`)} download={`${pkg}-switch-report.md`}><Download size={15} />Markdown</a>
             <button className="btn" onClick={genAuthority}><FileCog size={15} />Generate authority</button>
           </div>
         </div>

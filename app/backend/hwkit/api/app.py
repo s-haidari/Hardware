@@ -18,7 +18,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse, Response
+from fastapi.responses import HTMLResponse, PlainTextResponse, Response
 from pydantic import BaseModel
 
 from ..core import config
@@ -357,6 +357,25 @@ def pins_switch_csv(package: str) -> str:
         writer.writeheader()
         writer.writerows(sr.to_csv_rows(rep))
         return buf.getvalue()
+    finally:
+        conn.close()
+
+
+@app.get("/api/pins/{package}/report.html", response_class=HTMLResponse)
+def pins_report_html(package: str) -> str:
+    conn = _conn()
+    try:
+        rep = se.package_report(conn, package)
+        return sr.to_html([rep], title=f"{package} switch-cell report")
+    finally:
+        conn.close()
+
+
+@app.get("/api/pins/{package}/report.md", response_class=PlainTextResponse)
+def pins_report_md(package: str) -> str:
+    conn = _conn()
+    try:
+        return sr.to_markdown(se.package_report(conn, package))
     finally:
         conn.close()
 
