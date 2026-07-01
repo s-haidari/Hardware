@@ -1810,6 +1810,9 @@ class LibraryManagerWindow(QMainWindow):
         # --- "KiCad Tools" tab ---
         tools_tab = self._build_tools_tab()
 
+        # --- "STM32 Pins" tab ---
+        stm32_tab = self._build_stm32_tab()
+
         # Cross-thread signal wiring (log widget now exists)
         self.log_signal.connect(self.log.write)
         self.pull_done.connect(self.refresh_library)
@@ -1829,6 +1832,7 @@ class LibraryManagerWindow(QMainWindow):
         self.main_stack = QStackedWidget()
         self.main_stack.addWidget(library_tab)   # index 0 -> "KICAD Manager"
         self.main_stack.addWidget(tools_tab)     # index 1 -> "KICAD Tools"
+        self.main_stack.addWidget(stm32_tab)     # index 2 -> "STM32 Pins"
         self._select_tab(0)                      # KICAD Manager is the default
         main_layout.addWidget(self.main_stack, 1)
 
@@ -1878,7 +1882,19 @@ class LibraryManagerWindow(QMainWindow):
                 pass
         self.tools_widget = KiCadToolsWidget(self, projects_dir, save_dir_cb=_save)
         return self.tools_widget
-   
+
+    def _build_stm32_tab(self) -> QWidget:
+        """The STM32 Pins tab (CubeMX database + switch-decision matrix + authority)."""
+        try:
+            from stm32_pins_tab import Stm32PinsWidget
+        except Exception as e:
+            w = QWidget()
+            lay = QVBoxLayout(w)
+            lay.addWidget(QLabel(f"STM32 Pins unavailable:\n{e}"))
+            return w
+        self.stm32_widget = Stm32PinsWidget(self)
+        return self.stm32_widget
+
     def create_header(self) -> CardWidget:
         """Create header with repo info"""
         card = CardWidget("")
@@ -1911,7 +1927,7 @@ class LibraryManagerWindow(QMainWindow):
         # The section tabs ARE the title — custom underline buttons for crisp
         # rendering (KICAD Manager / KICAD Tools).
         self.nav_btns = []
-        for i, name in enumerate(["KICAD Manager", "KICAD Tools"]):
+        for i, name in enumerate(["KICAD Manager", "KICAD Tools", "STM32 Pins"]):
             b = QPushButton(name)
             b.setObjectName("navTab")
             b.setCheckable(True)

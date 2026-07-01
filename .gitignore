@@ -79,3 +79,7 @@ app/frontend/src-tauri/binaries/
 # The built database is derived, so it is ignored and auto-built on first run.
 app/backend/data/
 *.sqlite
+
+# --- Generated STM32 pin database (rebuild from the app) ---
+tools/data/
+*.sqlite
