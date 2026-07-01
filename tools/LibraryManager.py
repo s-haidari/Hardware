@@ -469,6 +469,220 @@ def find_kicad_dir() -> Optional[Path]:
     return Path(hits[-1]) if hits else None
 
 
+# ---------------------------------------------------------------------------
+# KiCad-sync repair — make placed parts resolve their footprint + 3D model.
+#
+# On import, parts were copied into the shared library verbatim, so:
+#   * symbols kept the vendor's footprint nickname (or a bare name), not
+#     "MyFootprints:<name>", so the footprint did not resolve when placed, and
+#   * footprints got no "(model ...)" line, so no 3D model attached.
+# These helpers rewrite those cross-references to the shared library, and
+# register MySymbols / MyFootprints / ${MY3DMODELS} in KiCad's config so the
+# references resolve. (Ported from app/backend/hwkit; kept inline so this app
+# stays self-contained.)
+# ---------------------------------------------------------------------------
+FP_NICKNAME = "MyFootprints"
+MODEL_VAR = "MY3DMODELS"
+MODEL_VAR_REF = "${MY3DMODELS}"
+
+_FP_PROP_RE = re.compile(r'(\(property\s+"Footprint"\s+")([^"]*)(")')
+_MODEL_PATH_RE = re.compile(r'(\(model\s+)("[^"]*"|[^"\s)]+)')
+
+
+def footprint_name(value: str) -> str:
+    """Footprint name with any library nickname stripped.
+    'STUSB4500QTR:QFN50…' -> 'QFN50…'; bare 'RM_10_ADI' -> itself."""
+    value = (value or "").strip()
+    return value.split(":")[-1] if value else ""
+
+
+def qualify_footprint(value: str, nickname: str = FP_NICKNAME) -> str:
+    """Return '<nickname>:<footprintName>' for the shared lib (idempotent)."""
+    name = footprint_name(value)
+    return f"{nickname}:{name}" if name else ""
+
+
+def rewrite_symbol_footprint(symbol_text: str, nickname: str = FP_NICKNAME) -> str:
+    """Rewrite the Footprint property inside a symbol block to the shared lib."""
+    def repl(m: "re.Match") -> str:
+        return m.group(1) + qualify_footprint(m.group(2), nickname) + m.group(3)
+    return _FP_PROP_RE.sub(repl, symbol_text, count=1)
+
+
+def footprint_has_model(footprint_text: str) -> bool:
+    return "(model" in footprint_text
+
+
+def _model_block(filename: str) -> str:
+    return (
+        f'  (model "{MODEL_VAR_REF}/{filename}"\n'
+        f"    (offset (xyz 0 0 0))\n"
+        f"    (scale (xyz 1 1 1))\n"
+        f"    (rotate (xyz 0 0 0))\n"
+        f"  )\n"
+    )
+
+
+def set_footprint_model(footprint_text: str, filename: str) -> str:
+    """Repair the path of the first existing (model …) line."""
+    def repl(m: "re.Match") -> str:
+        return f'{m.group(1)}"{MODEL_VAR_REF}/{filename}"'
+    return _MODEL_PATH_RE.sub(repl, footprint_text, count=1)
+
+
+def ensure_footprint_model(footprint_text: str, filename: str) -> str:
+    """Guarantee the footprint references ${MY3DMODELS}/<filename> exactly once:
+    repair an existing (model …) line, else insert one before the closing paren."""
+    if footprint_has_model(footprint_text):
+        return set_footprint_model(footprint_text, filename)
+    idx = footprint_text.rstrip().rfind(")")
+    if idx == -1:
+        return footprint_text
+    return footprint_text[:idx] + _model_block(filename) + footprint_text[idx:]
+
+
+def find_kicad_config_dir() -> Optional[Path]:
+    """KiCad per-user config dir (highest version) under %APPDATA%/kicad."""
+    override = os.environ.get("KICAD_CONFIG_HOME")
+    if override and Path(override).exists():
+        return Path(override)
+    base = Path(os.environ.get("APPDATA", "")) / "kicad"
+    if not base.exists():
+        return None
+    dirs = sorted([d for d in base.iterdir() if d.is_dir()])
+    return dirs[-1] if dirs else None
+
+
+def _lib_table_has(text: str, nickname: str) -> bool:
+    return re.search(r'\(name\s+"%s"\)' % re.escape(nickname), text) is not None
+
+
+def ensure_lib_entry(path: Path, root: str, nickname: str, uri: str, descr: str = "") -> bool:
+    """Ensure a (lib …) row for nickname exists in a KiCad lib-table. True if changed."""
+    header = f"({root}\n\t(version 7)\n)\n"
+    text = read_text(path) if path.exists() else header
+    if _lib_table_has(text, nickname):
+        return False
+    entry = f'\t(lib (name "{nickname}") (type "KiCad") (uri "{uri}") (options "") (descr "{descr}"))\n'
+    idx = text.rstrip().rfind(")")
+    write_text(path, text[:idx] + entry + text[idx:])
+    return True
+
+
+def ensure_env_var(common_path: Path, name: str, value: str) -> bool:
+    """Ensure kicad_common.json defines environment var name = value. True if changed."""
+    data: Dict = {}
+    if common_path.exists():
+        try:
+            data = json.loads(read_text(common_path))
+        except Exception:
+            data = {}
+    env = data.get("environment") if isinstance(data.get("environment"), dict) else {}
+    vars_ = env.get("vars") if isinstance(env.get("vars"), dict) else {}
+    if vars_.get(name) == value:
+        return False
+    vars_[name] = value
+    env["vars"] = vars_
+    data["environment"] = env
+    write_text(common_path, json.dumps(data, indent=2))
+    return True
+
+
+def register_libraries(cfg: Dict[str, str], log: UILog) -> bool:
+    """Register MySymbols + MyFootprints and define ${MY3DMODELS} in KiCad config."""
+    cfgdir = find_kicad_config_dir()
+    if cfgdir is None:
+        log.write("Register: KiCad config dir not found (is KiCad installed?).")
+        return False
+    sym = ensure_lib_entry(cfgdir / "sym-lib-table", "sym_lib_table", "MySymbols",
+                           str(cfg["SymbolLib"]).replace("\\", "/"))
+    fp = ensure_lib_entry(cfgdir / "fp-lib-table", "fp_lib_table", "MyFootprints",
+                          str(cfg["FootprintLib"]).replace("\\", "/"))
+    envset = ensure_env_var(cfgdir / "kicad_common.json", MODEL_VAR,
+                            str(cfg["ModelLib"]).replace("\\", "/"))
+    log.write(f"KiCad registration ({cfgdir.name}): MySymbols "
+              f"{'added' if sym else 'ok'}, MyFootprints {'added' if fp else 'ok'}, "
+              f"${{{MODEL_VAR}}} {'set' if envset else 'ok'}.")
+    return sym or fp or envset
+
+
+def _norm_name(s: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(s).lower())
+
+
+def match_model_for_footprint(fp_stem: str, model_files: List[Path]) -> Optional[Path]:
+    """Best-effort match of a footprint to a 3D model file by normalized name.
+    Footprint 'IC_TPS2121RUXR' -> model 'TPS2121RUXR.step'."""
+    fpn = _norm_name(fp_stem)
+    if not fpn:
+        return None
+    best = None
+    best_len = 0
+    for m in model_files:
+        mn = _norm_name(m.stem)
+        if len(mn) < 4:
+            continue
+        if mn == fpn or mn in fpn or fpn in mn:
+            if len(mn) > best_len:
+                best, best_len = m, len(mn)
+    return best
+
+
+def repair_library(cfg: Dict[str, str], log: UILog) -> Dict[str, int]:
+    """Fix the whole shared library so placed parts resolve in KiCad:
+    rewrite every symbol's Footprint to MyFootprints:<name>, add/repair each
+    footprint's ${MY3DMODELS}/<file> model line (best-name model match), and
+    register the libraries + env var. Returns a counts dict."""
+    result = {"symbols_fixed": 0, "footprints_fixed": 0, "footprints_no_model": 0}
+
+    # 1) symbol -> footprint nickname
+    sym_path = Path(cfg["SymbolLib"])
+    if sym_path.exists():
+        text = read_text(sym_path)
+        blocks = extract_symbol_blocks(text)
+        new_blocks = []
+        for b in blocks:
+            nb = rewrite_symbol_footprint(b, FP_NICKNAME)
+            if nb != b:
+                result["symbols_fixed"] += 1
+            new_blocks.append(nb)
+        if result["symbols_fixed"]:
+            new_text = insert_blocks_into_target(
+                '(kicad_symbol_lib (version 20211014) (generator "LibraryManager.py"))\n)\n',
+                new_blocks)
+            write_text(sym_path, new_text)
+
+    # 2) footprint -> 3D model line
+    fp_dir = Path(cfg["FootprintLib"])
+    mdl_dir = Path(cfg["ModelLib"])
+    model_files = [p for p in mdl_dir.glob("*")
+                   if p.suffix.lower() in (".step", ".stp", ".wrl")] if mdl_dir.exists() else []
+    unmatched: List[str] = []
+    if fp_dir.exists():
+        for fp in sorted(fp_dir.glob("*.kicad_mod")):
+            m = match_model_for_footprint(fp.stem, model_files)
+            t = read_text(fp)
+            if m is None:
+                if not footprint_has_model(t):
+                    unmatched.append(fp.stem)
+                continue
+            nt = ensure_footprint_model(t, m.name)
+            if nt != t:
+                write_text(fp, nt)
+                result["footprints_fixed"] += 1
+    result["footprints_no_model"] = len(unmatched)
+
+    # 3) register in KiCad
+    register_libraries(cfg, log)
+
+    log.write(f"Repair: {result['symbols_fixed']} symbol footprint link(s) fixed, "
+              f"{result['footprints_fixed']} footprint model line(s) fixed.")
+    if unmatched:
+        preview = ", ".join(unmatched[:10]) + ("…" if len(unmatched) > 10 else "")
+        log.write(f"Repair: {len(unmatched)} footprint(s) had no matching 3D model: {preview}")
+    return result
+
+
 def remove_symbol_by_index(symbol_lib_path: Path, index: int, log: UILog,
                            expected_name: Optional[str] = None) -> bool:
     """Remove exactly ONE symbol block, identified by its position in the file.
