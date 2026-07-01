@@ -101,6 +101,12 @@ PA9→`UART_BOOT_RX`, PA10→`UART_BOOT_TX`. `VSSA`→`VSSA_TGT`; parallel trace
 including the port-C remap present on LQFP64) and left reserved No-Connect. LQFP100 correctly flags the
 F469/F479 pin-shift (debug-capable at both the base and shifted sockets).
 
+## Reference enrichment (from the DB, no fetch)
+Each position also carries **`peripherals`** — the sorted distinct peripheral-instance roots available
+at that socket across the whole family (e.g. `SPI1`, `TIM4`, `USART3`, `I2S1`, `ADC1`, `OTG`, `FMC`),
+derived from every CubeMX `<Signal>`. Extra extraction tags: **`is_wakeup`** (WKUP pins — reset/glitch
+entry) and **`is_usb`** (USB DP/DM). The tab's Search filters on peripherals too.
+
 ## Full-spec field sources (Phase 2)
 - **electrical**: VDD/VDDA range from the CubeMX `<Voltage Max Min>` element (MCU-level, aggregated);
   per-pin `max_io_current_ma` = per-family datasheet constant (small cited table).

@@ -249,7 +249,8 @@ class Stm32PinsWidget(QWidget):
             if q and q not in " ".join(str(v) for v in (
                     p["position"], p["pin_names"], p["role_set"],
                     p["tags"].get("bootloader_periph", []), _tag_summary(p["tags"]),
-                    p.get("breakout", {}).get("service_nets", []))).lower():
+                    p.get("breakout", {}).get("service_nets", []),
+                    p.get("peripherals", []))).lower():
                 hide = True
             self.table.setRowHidden(i, hide)
 

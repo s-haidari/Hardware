@@ -224,6 +224,24 @@ def _blob_at(conn: sqlite3.Connection, package: str) -> tuple:
     return blob, ecs
 
 
+_PERIPH_SKIP = {"GPIO", ""}
+
+
+def _peripherals_at(conn: sqlite3.Connection, package: str) -> dict:
+    """position -> sorted distinct peripheral-instance roots available across the
+    whole family (e.g. I2C1, SPI1, TIM2, USART2, ADC1, OTG, FMC, SDIO). Reference
+    data for the extraction platform: what every socket pin can be wired to."""
+    out: dict = defaultdict(set)
+    for pin, sig in conn.execute(
+        "SELECT DISTINCT p.physical_pin_number, f.signal FROM mcu_package_pin p "
+        "JOIN mcu m ON m.id = p.mcu_id JOIN pin_function f ON f.mcu_package_pin_id = p.id "
+        "WHERE m.package_name = ? AND f.signal IS NOT NULL AND f.signal <> ''", (package,)):
+        root = re.split(r"[_-]", str(sig))[0].upper()
+        if root not in _PERIPH_SKIP:
+            out[int(pin)].add(root)
+    return {k: sorted(v) for k, v in out.items()}
+
+
 def _breakout_map(tokens: set, canon_names, roles: set, ecs: set, switch_class: str) -> dict:
     """The frozen parent-board service net(s) a position must reach (breakout),
     orthogonal to the switch decision. Sources: Connector Contract Rev B + 5E."""
@@ -315,6 +333,7 @@ def build(conn: sqlite3.Connection, package: str) -> dict:
     fam_names = _families_at(conn, package)
     adg = _adg714_map(rep)
     blob, ecs = _blob_at(conn, package)
+    periph = _peripherals_at(conn, package)
 
     names: dict = defaultdict(lambda: defaultdict(int))
     for pin, nm, n in conn.execute(
@@ -353,6 +372,9 @@ def build(conn: sqlite3.Connection, package: str) -> dict:
                     assignment[key] = "VSSA_TGT"
         tags = _position_tags(roles_at.get(d.pin, set()), fam_names.get(d.pin, set()))
         tags["is_trace"] = breakout["trace"]
+        text = " ".join(tokens)
+        tags["is_wakeup"] = "WKUP" in text
+        tags["is_usb"] = "USB" in text
 
         positions.append({
             "position": d.pin,
@@ -360,6 +382,7 @@ def build(conn: sqlite3.Connection, package: str) -> dict:
             "pin_names": pin_names,
             "role_set": {k: v for k, v in sorted(d.identities.items(), key=lambda kv: -kv[1])},
             "pin_type_set": sorted({t for t in [d.role_label] if t}),
+            "peripherals": periph.get(d.pin, []),
             "tags": tags,
             "breakout": breakout,
             "electrical": None,   # filled below (package-wide, referenced per position)
