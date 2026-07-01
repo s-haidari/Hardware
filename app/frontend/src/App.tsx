@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import './App.css'
 
-type View = 'library' | 'pins' | 'netclasses'
+type View = 'library' | 'pins' | 'netclasses' | 'database'
 
 interface Audit {
   libs_root: string
@@ -289,6 +289,50 @@ interface NetClass {
   clearance?: number; members?: string[]; [k: string]: unknown
 }
 
+interface DbStatus {
+  cubemx_source: string; source_present: boolean; xml_files: number
+  database: string; database_present: boolean; mcu_count: number
+}
+
+function DatabaseView() {
+  const [st, setSt] = useState<DbStatus | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState('')
+  const refresh = () => getJSON<DbStatus>('/api/database/status').then(setSt).catch((e) => setMsg(String(e)))
+  useEffect(refresh, [])
+
+  const rebuild = async () => {
+    setBusy(true); setMsg('Building the database from CubeMX XML…')
+    try {
+      const r = await fetch(api('/api/database/build'), { method: 'POST' })
+      const j = await r.json()
+      setMsg(r.ok ? `Built ${j.mcus} MCUs, ${j.pins} pins, ${j.roles} roles (.bak written). Reload Pins to see fresh data.` : `Error: ${j.detail}`)
+      refresh()
+    } catch (e) { setMsg(String(e)) } finally { setBusy(false) }
+  }
+
+  return (
+    <div className="view">
+      <h1>Database</h1>
+      <p className="sub">The STM32 pin database is built from scratch out of the CubeMX MCU XML — owned by this app, not the old tool. Rebuilding reproduces the hand-verified ground truth (LQFP64 = 11 switch pins).</p>
+      {st && (
+        <div className="grid">
+          <Stat label="CubeMX XML files" value={st.xml_files} tone={st.source_present ? 'ok' : 'bad'} />
+          <Stat label="MCUs in database" value={st.mcu_count} tone={st.mcu_count ? 'ok' : 'bad'} />
+          <Stat label="Database present" value={st.database_present ? 'yes' : 'no'} tone={st.database_present ? 'ok' : 'bad'} />
+        </div>
+      )}
+      {st && <div className="banner">Source: <span className="mono">{st.cubemx_source}</span><br />Database: <span className="mono">{st.database}</span></div>}
+      <div className="row">
+        <button className="btn" onClick={rebuild} disabled={busy || !st?.source_present}>{busy ? 'Building…' : 'Rebuild from CubeMX'}</button>
+        <button className="btn ghost" onClick={refresh}>Refresh</button>
+        {msg && <span className="msg">{msg}</span>}
+      </div>
+      {st && !st.source_present && <div className="banner bad">CubeMX source not found. Set <span className="mono">HWKIT_CUBEMX</span> to the db/mcu folder.</div>}
+    </div>
+  )
+}
+
 function NetclassesView() {
   const [classes, setClasses] = useState<NetClass[]>([])
   const [path, setPath] = useState('')
@@ -375,6 +419,7 @@ export default function App() {
     { id: 'library', label: 'Library' },
     { id: 'pins', label: 'Pins / Switch' },
     { id: 'netclasses', label: 'Netclasses' },
+    { id: 'database', label: 'Database' },
   ]
   return (
     <div className="app">
@@ -389,6 +434,7 @@ export default function App() {
         {view === 'library' && <LibraryView />}
         {view === 'pins' && <PinsView />}
         {view === 'netclasses' && <NetclassesView />}
+        {view === 'database' && <DatabaseView />}
       </main>
     </div>
   )

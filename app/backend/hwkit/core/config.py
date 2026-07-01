@@ -60,6 +60,17 @@ def kicad_config_dir() -> Path | None:
 MODEL_DIR_VAR = "MY3DMODELS"
 
 
+def cubemx_source_dir() -> Path:
+    """The CubeMX MCU XML set the database is built from. Override: ``HWKIT_CUBEMX``."""
+    env = os.environ.get("HWKIT_CUBEMX")
+    if env:
+        return Path(env)
+    bundled = Path(__file__).resolve().parents[2] / "cubemx_db" / "mcu"  # app/backend/cubemx_db/mcu
+    if bundled.exists():
+        return bundled
+    return Path.home() / "git" / "STMP" / "src" / "cubemx_db" / "mcu"
+
+
 def authority_dir() -> Path:
     """Where the pinout authority files are written (the vault data/ per spec).
     Override: ``HWKIT_AUTHORITY``."""

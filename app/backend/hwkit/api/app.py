@@ -61,6 +61,39 @@ def _conn() -> sqlite3.Connection:
     return conn
 
 
+@app.get("/api/database/status")
+def database_status() -> dict:
+    src = config.cubemx_source_dir()
+    db = config.stm_database_path()
+    xml = len(list(src.glob("*.xml"))) if src.exists() else 0
+    mcus = 0
+    if db.exists():
+        conn = sqlite3.connect(db)
+        try:
+            mcus = int(conn.execute("SELECT COUNT(*) FROM mcu").fetchone()[0])
+        except sqlite3.Error:
+            mcus = 0
+        finally:
+            conn.close()
+    return {"cubemx_source": str(src), "source_present": src.exists(), "xml_files": xml,
+            "database": str(db), "database_present": db.exists(), "mcu_count": mcus}
+
+
+@app.post("/api/database/build")
+def database_build() -> dict:
+    """Rebuild the STM pin database from the CubeMX XML (app-owned, from scratch)."""
+    from ..cubemx import builder
+    src = config.cubemx_source_dir()
+    if not src.exists():
+        raise HTTPException(status_code=404, detail=f"CubeMX source not found: {src}")
+    db = config.stm_database_path()
+    if db.exists():
+        shutil.copyfile(db, db.with_suffix(db.suffix + ".bak"))
+    res = builder.build_database(src, db)
+    return {"source": str(src), "database": str(db),
+            "mcus": res.mcus, "pins": res.pins, "roles": res.roles, "packages": res.packages}
+
+
 @app.get("/api/health")
 def health() -> dict:
     db = config.stm_database_path()

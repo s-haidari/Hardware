@@ -73,3 +73,6 @@ app/backend/dist/
 app/backend/build/
 app/backend/*.spec
 app/frontend/src-tauri/binaries/
+
+# Bundled CubeMX XML source (19MB, 427 files; build DB from it locally)
+app/backend/cubemx_db/
