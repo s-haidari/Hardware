@@ -1770,12 +1770,11 @@ class LibraryManagerWindow(QMainWindow):
         # --- Header bar (shared across tabs) ---
         main_layout.addWidget(self.create_header_bar())
 
-        # --- "KICAD Manager" tab: drop zone + 3-column splitter ---
+        # --- "KICAD Manager" tab: 3-column splitter (drop zone lives in Workflow) ---
         library_tab = QWidget()
         lib_layout = QVBoxLayout(library_tab)
         lib_layout.setSpacing(10)
         lib_layout.setContentsMargins(0, 6, 0, 0)
-        lib_layout.addWidget(self.create_drop_zone())
 
         central_splitter = QSplitter(Qt.Horizontal)
         central_splitter.setHandleWidth(6)
@@ -2131,7 +2130,7 @@ class LibraryManagerWindow(QMainWindow):
         """Fix every placed part's footprint + 3D-model links across the whole
         shared library, and register the libs + ${MY3DMODELS} in KiCad."""
         reply = QMessageBox.question(
-            self, "Repair Library (KiCad sync)",
+            self, "Repair Footprints and Models in KICAD",
             "Rewrite every symbol's footprint to MyFootprints:<name>, add the "
             "${MY3DMODELS}/<file> 3D-model line to each footprint (best-name "
             "match), and register the libraries + ${MY3DMODELS} in KiCad?\n\n"
@@ -2305,72 +2304,87 @@ class LibraryManagerWindow(QMainWindow):
         return card
    
     def create_workflow(self) -> CardWidget:
-        """Create workflow buttons (Step 0-4)"""
+        """Workflow column, grouped by purpose: Import / Sync / Maintenance,
+        plus a 'More…' overflow for rarely-used actions and the Root/Downloads
+        path buttons. The drop zone lives in the Import group."""
         card = CardWidget("Workflow")
         card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        # Make workflow taller so step buttons are prominent
         card.setMinimumHeight(360)
         layout = card.contentLayout()
-        layout.setSpacing(6)
+        layout.setSpacing(5)
         layout.setContentsMargins(4, 6, 4, 6)
 
-        # Button style used for workflow and advanced button
-        btn_style = """
-            QPushButton {
-                text-align: left;
-                padding: 6px 10px;
-                font-size: 8pt;
-            }
-        """
+        btn_style = "QPushButton { text-align: left; padding: 6px 10px; font-size: 8pt; }"
 
-        st = self.style()
+        def section(text):
+            lbl = QLabel(text.upper())
+            lbl.setObjectName("wfSection")
+            layout.addWidget(lbl)
 
-        # Advanced dropdown placed above the step buttons; full-width and sized like the steps
-        adv_menu = QMenu()
-        adv_btn = QPushButton("Advanced")
-        adv_btn.setIcon(lucide_icon("sliders-horizontal", LUCIDE_NEUTRAL))
-        adv_btn.setMaximumHeight(34)
-        adv_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        adv_btn.setStyleSheet(btn_style)
-        adv_actions = [
-            ("Pull", self.do_pull),
-            ("Push", self.do_push),
-            ("Stage and Commit", self.do_stage_commit),
-            ("Process Folder", self.do_process_folder),
-            ("Export Catalog", self.do_export_catalog),
-            ("Register libs in KiCad", self.do_register_kicad),
+        def add_btn(label, cb, icon_name, icon_color, height=32):
+            b = QPushButton(label)
+            b.setIcon(lucide_icon(icon_name, icon_color))
+            b.setStyleSheet(btn_style)
+            b.setMaximumHeight(height)
+            b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            b.clicked.connect(cb)
+            layout.addWidget(b)
+            return b
+
+        # ── Import: drop parts in, process, clean ──────────────────────────
+        section("Import")
+        self.drop_zone = DropZone()
+        self.drop_zone.setMinimumHeight(46)
+        self.drop_zone.setMaximumHeight(64)
+        self.drop_zone.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.drop_zone.files_dropped.connect(self.handle_dropped_files)
+        try:
+            self.drop_zone.chk_process.stateChanged.connect(
+                lambda s: setattr(self, 'process_on_drop', bool(s)))
+            self.process_on_drop = bool(self.drop_zone.chk_process.isChecked())
+        except Exception:
+            pass
+        layout.addWidget(self.drop_zone)
+        add_btn("Open Downloads", lambda: os.startfile(self.cfg["Downloads"]), "folder-open", LUCIDE_NEUTRAL)
+        add_btn("Process ZIPs", self.do_process_zips, "play", LUCIDE_NEUTRAL)
+        add_btn("Clean Leftovers", lambda: clean_leftovers(self.cfg, self.log, self.refresh_library), "trash-2", LUCIDE_RED)
+
+        # ── Sync: git ──────────────────────────────────────────────────────
+        section("Sync")
+        add_btn("Pull (Fast-Forward)", self.do_pull, "download", LUCIDE_BLUE)
+        add_btn("Push", self.do_push, "upload", LUCIDE_GREEN)
+        add_btn("Stage, Commit && Push", self.do_commit_push, "save", LUCIDE_GREEN)
+
+        # ── Maintenance: library-wide fixes ────────────────────────────────
+        section("Maintenance")
+        add_btn("Repair Footprints and Models in KICAD", self.do_repair_library, "wrench", LUCIDE_AMBER)
+        add_btn("Remove Duplicates", self.on_remove_duplicates, "copy-x", LUCIDE_NEUTRAL)
+        add_btn("Export Catalog", self.do_export_catalog, "package", LUCIDE_NEUTRAL)
+        add_btn("Register libs in KiCad", self.do_register_kicad, "link-2", LUCIDE_NEUTRAL)
+
+        # ── More… (rarely used) ────────────────────────────────────────────
+        adv_menu = QMenu(card)
+        for label, cb in [
+            ("Stage and Commit (no push)", self.do_stage_commit),
+            ("Process Folder…", self.do_process_folder),
             ("Start Watcher", lambda: self.watcher.start()),
             ("Stop Watcher", lambda: self.watcher.stop()),
             ("Open Libraries", lambda: os.startfile(self.cfg["Libs"])),
             ("Open Log File", lambda: os.startfile(self.cfg["LogFile"])),
-        ]
-        for label, cb in adv_actions:
+        ]:
             a = adv_menu.addAction(label)
             a.triggered.connect(lambda checked=False, fn=cb: fn())
-        # Attach menu to QPushButton and show on click
+        adv_btn = QPushButton("More…")
+        adv_btn.setIcon(lucide_icon("sliders-horizontal", LUCIDE_NEUTRAL))
+        adv_btn.setStyleSheet(btn_style)
+        adv_btn.setMaximumHeight(30)
+        adv_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         adv_btn.setMenu(adv_menu)
         adv_btn.clicked.connect(adv_btn.showMenu)
+        layout.addSpacing(6)
         layout.addWidget(adv_btn)
 
-        # Full step labels with clear descriptions and icons (all uniform style)
-        buttons = [
-            ("Step 0: Pull (Fast-Forward)", self.do_pull, ("download", LUCIDE_BLUE)),
-            ("Step 1: Open Downloads", lambda: os.startfile(self.cfg["Downloads"]), ("folder-open", LUCIDE_NEUTRAL)),
-            ("Step 2: Process ZIPs", self.do_process_zips, ("play", LUCIDE_NEUTRAL)),
-            ("Step 3: Clean Leftovers", lambda: clean_leftovers(self.cfg, self.log, self.refresh_library), ("trash-2", LUCIDE_RED)),
-            ("Step 4: Stage, Commit, Push", self.do_commit_push, ("upload", LUCIDE_GREEN)),
-        ]
-
-        for text, callback, (icon_name, icon_color) in buttons:
-            btn = QPushButton(text)
-            btn.setIcon(lucide_icon(icon_name, icon_color))
-            btn.setStyleSheet(btn_style)
-            btn.setMaximumHeight(36)
-            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            btn.clicked.connect(callback)
-            layout.addWidget(btn)
-
-        # Root / Downloads buttons placed under the step buttons as requested
+        # Root / Downloads path buttons at the bottom
         row = QHBoxLayout()
         row.setSpacing(6)
         # Repo root button
@@ -2496,13 +2510,13 @@ class LibraryManagerWindow(QMainWindow):
         btn_grid.setColumnStretch(0, 1)
         btn_grid.setColumnStretch(1, 1)
         st = self.style()
+        # Per-item actions only; library-wide maintenance (Repair, Remove
+        # Duplicates) lives in the Workflow > Maintenance group.
         actions = [
             ("Refresh", ("refresh-cw", LUCIDE_NEUTRAL), self.refresh_library),
             ("Open", ("folder-open", LUCIDE_NEUTRAL), self.on_tree_open),
             ("Open in KICAD", ("external-link", LUCIDE_NEUTRAL), self.open_in_kicad),
             ("Delete", ("trash-2", LUCIDE_RED), self.on_tree_delete),
-            ("Remove Duplicates", ("copy-x", LUCIDE_NEUTRAL), self.on_remove_duplicates),
-            ("Repair Library (KiCad sync)", ("wrench", LUCIDE_AMBER), self.do_repair_library),
         ]
         for i, (label, (icon_name, icon_color), cb) in enumerate(actions):
             b = QPushButton(label)
@@ -2510,10 +2524,7 @@ class LibraryManagerWindow(QMainWindow):
             b.setMaximumHeight(28)
             b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             b.clicked.connect(cb)
-            if i < 4:
-                btn_grid.addWidget(b, i // 2, i % 2)
-            else:
-                btn_grid.addWidget(b, i - 2, 0, 1, 2)   # 5th, 6th each span a row
+            btn_grid.addWidget(b, i // 2, i % 2)
         layout.addLayout(btn_grid)
 
         # Tree widget (multi-select). Date is the LAST column so path stays text(2).
@@ -2950,6 +2961,7 @@ class LibraryManagerWindow(QMainWindow):
         QToolButton#iconBtn:hover { color: @TITLE_FG@; }
         QFrame#card { border: 1px solid @BORDER@; border-radius: 12px; background-color: @@CARD_BG@@; margin-top: 6px; }
         QLabel#cardTitle { color: @TITLE_FG@; padding: 6px 8px 2px 8px; font-weight: 800; font-size: 10pt; }
+        QLabel#wfSection { color: @FG_DIM@; font-weight: 800; font-size: 7pt; padding: 7px 4px 1px 4px; }
         QLabel#previewPane { background-color: @@LOG_BG@@; border: 1px solid @BORDER@; border-radius: 10px; color: @FG_DIM@; }
         QToolButton { background: transparent; border: 1px solid @BORDER@; border-radius: 7px; padding: 6px 10px; font-weight: 600; }
         QToolButton:hover { border-color: @ACCENT@; }
