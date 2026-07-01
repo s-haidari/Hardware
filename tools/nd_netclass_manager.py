@@ -512,6 +512,33 @@ def create_vault_standard_template() -> NetClassManager:
 
     return manager
 
+
+# The editable vault standard is saved here; when absent, the built-in default
+# above is used. "Save as Vault Standard" writes this file so the canonical
+# standard can be changed without editing code.
+VAULT_STANDARD_PATH = Path(__file__).resolve().parent / "vault_standard.json"
+
+
+def load_vault_standard() -> NetClassManager:
+    """The vault-standard net classes: the saved editable standard if present,
+    otherwise the built-in default template."""
+    if VAULT_STANDARD_PATH.exists():
+        try:
+            m = NetClassManager()
+            m.import_template(VAULT_STANDARD_PATH)
+            if m.list_netclasses():
+                return m
+        except Exception:
+            pass
+    return create_vault_standard_template()
+
+
+def save_vault_standard(manager: NetClassManager) -> Path:
+    """Persist `manager` as the canonical vault standard."""
+    manager.export_template(VAULT_STANDARD_PATH)
+    return VAULT_STANDARD_PATH
+
+
 # ═══════════════════════════════════════════════════════════════════
 # CLI INTERFACE
 # ═══════════════════════════════════════════════════════════════════

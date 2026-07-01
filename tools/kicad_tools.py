@@ -13,6 +13,7 @@ are discovered generically (any folder containing a .kicad_pro, ignoring
 .history). The reusable cores are vendored as nd_*.py (pure stdlib).
 """
 import os
+import sys
 import subprocess
 from pathlib import Path
 from typing import List, Optional
@@ -24,8 +25,13 @@ from PyQt5.QtWidgets import (
     QMessageBox, QAbstractItemView, QHeaderView, QSizePolicy, QApplication,
     QColorDialog, QScrollArea, QToolButton, QMenu, QWidgetAction, QStyle
 )
-from PyQt5.QtGui import QColor, QIcon, QImage, QPixmap
+from PyQt5.QtGui import QColor, QIcon, QImage, QPixmap, QPainter
 from PyQt5.QtCore import Qt
+try:
+    from PyQt5.QtSvg import QSvgRenderer
+    _HAVE_QTSVG = True
+except Exception:
+    _HAVE_QTSVG = False
 
 
 def _gray_icon(style, sp, size: int = 16) -> QIcon:
@@ -41,8 +47,43 @@ def _gray_icon(style, sp, size: int = 16) -> QIcon:
             img.setPixelColor(x, y, QColor(g, g, g, c.alpha()))
     return QIcon(QPixmap.fromImage(img))
 
+
+# Lucide icons (MIT), tinted — matches the main window. SVGs bundled in tools/lucide/.
+_LU_NEUTRAL = "#9aa3b2"
+_LU_BLUE = "#5b9bd5"
+_LU_GREEN = "#5aa469"
+_LU_RED = "#cc5b5b"
+_LU_AMBER = "#c99a2e"
+_LU_CACHE = {}
+
+
+def _lucide(name: str, color: str = _LU_NEUTRAL, size: int = 16) -> QIcon:
+    key = (name, color, size)
+    if key in _LU_CACHE:
+        return _LU_CACHE[key]
+    icon = QIcon()
+    if _HAVE_QTSVG:
+        try:
+            base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+            svg = (base / "lucide" / f"{name}.svg").read_text(encoding="utf-8").replace("currentColor", color)
+            r = QSvgRenderer(bytearray(svg, encoding="utf-8"))
+            pm = QPixmap(size, size)
+            pm.fill(Qt.transparent)
+            p = QPainter(pm)
+            r.render(p)
+            p.end()
+            icon = QIcon(pm)
+        except Exception:
+            icon = QIcon()
+    _LU_CACHE[key] = icon
+    return icon
+
+
 import nd_wizard as wiz
-from nd_netclass_manager import NetClass, NetClassManager, create_vault_standard_template
+from nd_netclass_manager import (
+    NetClass, NetClassManager, create_vault_standard_template,
+    load_vault_standard, save_vault_standard,
+)
 from nd_project_settings_manager import ProjectSettings, ProjectSettingsManager
 
 
@@ -409,20 +450,21 @@ class KiCadToolsWidget(QWidget):
         w = QWidget(); v = QVBoxLayout(w); v.setSpacing(8)
         st = self.style()
         bar = QHBoxLayout(); bar.setSpacing(6)
-        for label, icon, fn in [
-            ("Load Vault Template", QStyle.SP_FileDialogContentsView, self._nc_load_template),
-            ("Load from Project", QStyle.SP_DirOpenIcon, self._nc_load_project),
-            ("Add", QStyle.SP_FileDialogNewFolder, self._nc_add),
-            ("Remove", QStyle.SP_TrashIcon, self._nc_remove),
-            ("Sort by Priority", QStyle.SP_ArrowDown, self._nc_sort_by_priority),
-            ("Import…", QStyle.SP_ArrowDown, self._nc_import),
-            ("Export…", QStyle.SP_ArrowUp, self._nc_export),
+        for label, icon_name, icon_color, fn in [
+            ("Load Vault Standard", "folder-open", _LU_NEUTRAL, self._nc_load_template),
+            ("Save as Vault Standard", "save", _LU_AMBER, self._nc_save_vault_standard),
+            ("Load from Project", "folder", _LU_NEUTRAL, self._nc_load_project),
+            ("Add", "plus", _LU_GREEN, self._nc_add),
+            ("Remove", "trash-2", _LU_RED, self._nc_remove),
+            ("Sort by Priority", "sliders-horizontal", _LU_NEUTRAL, self._nc_sort_by_priority),
+            ("Import…", "file-down", _LU_NEUTRAL, self._nc_import),
+            ("Export…", "file-up", _LU_NEUTRAL, self._nc_export),
         ]:
-            b = QPushButton(label); b.setIcon(_gray_icon(st,icon)); b.clicked.connect(fn)
+            b = QPushButton(label); b.setIcon(_lucide(icon_name, icon_color)); b.clicked.connect(fn)
             bar.addWidget(b)
         bar.addStretch()
         b_sync = QPushButton("Sync to Selected Projects")
-        b_sync.setIcon(_gray_icon(st,QStyle.SP_BrowserReload)); b_sync.clicked.connect(self._nc_sync)
+        b_sync.setIcon(_lucide("refresh-cw", _LU_BLUE)); b_sync.clicked.connect(self._nc_sync)
         bar.addWidget(b_sync)
         v.addLayout(bar)
 
@@ -489,8 +531,24 @@ class KiCadToolsWidget(QWidget):
                 self._nc_set_color_item(r, col, chosen.name())
 
     def _nc_load_template(self):
-        self._nc_set_rows(create_vault_standard_template())
-        self.log("Loaded vault-standard net classes.")
+        self._nc_set_rows(load_vault_standard())
+        self.log("Loaded the vault standard net classes.")
+
+    def _nc_save_vault_standard(self):
+        if self.nc_table.rowCount() == 0:
+            QMessageBox.information(self, "Vault Standard", "No net classes to save."); return
+        reply = QMessageBox.question(
+            self, "Save as Vault Standard",
+            "Overwrite the vault standard with the current net classes?\n\n"
+            "'Load Vault Standard' will load these from now on.",
+            QMessageBox.Yes | QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            return
+        try:
+            path = save_vault_standard(self._nc_manager_from_table())
+            self.log(f"Saved current net classes as the vault standard ({path.name}).")
+        except Exception as e:
+            QMessageBox.warning(self, "Vault Standard", f"Could not save: {e}")
 
     def _nc_load_project(self):
         pros = self.selected_pro_files()
