@@ -22,11 +22,11 @@ const ToastCtx = createContext<(msg: string, kind?: Kind) => void>(() => {})
 const useToast = () => useContext(ToastCtx)
 
 /* ── shared bits ────────────────────────────────────────── */
-function Metric({ label, value, tone, icon }: { label: string; value: React.ReactNode; tone?: string; icon?: React.ReactNode }) {
+function Metric({ label, value, tone }: { label: string; value: React.ReactNode; tone?: string; icon?: React.ReactNode }) {
   return (
     <div className={`metric ${tone ?? ''}`}>
       <div className="v">{value}</div>
-      <div className="l">{icon}{label}</div>
+      <div className="l">{label}</div>
     </div>
   )
 }
@@ -191,7 +191,7 @@ function LibraryView() {
               <tbody>
                 {shown.map((t, i) => (
                   <tr key={t.type + t.name + i} className={sel === t ? 'sel' : ''} onClick={() => setSel(t)} style={{ cursor: 'pointer' }}>
-                    <td><span className={`ftype ${t.type}`}>{t.type.slice(0, 3)}</span></td>
+                    <td><span className="ftype">{t.type}</span></td>
                     <td>{t.name}{t.dup && <span className="tag" style={{ marginLeft: 6 }}>dup</span>}</td>
                     <td className="mono dim" style={{ maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.location}</td>
                     <td className="dim">{t.date}</td>
@@ -575,9 +575,9 @@ export default function App() {
     <ToastCtx.Provider value={notify}>
       <div className="app">
         <div className="header">
-          <span className="logo"><Package size={16} /></span>
+          <span className="apptitle">KICAD</span>
           {NAV.map((n) => (
-            <button key={n.id} className={`navtab ${view === n.id ? 'active' : ''}`} onClick={() => setView(n.id)}>{n.icon}{n.label}</button>
+            <button key={n.id} className={`navtab ${view === n.id ? 'active' : ''}`} onClick={() => setView(n.id)}>{n.label}</button>
           ))}
           <span className="grow" />
           <button className="icon-btn" title="Toggle theme" aria-label="Toggle theme" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
