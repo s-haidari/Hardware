@@ -113,6 +113,21 @@ class AuthorityTests(unittest.TestCase):
         self.assertIsNotNone(ea["usb_dfu"]["dp_pos"])
         self.assertIsNotNone(ea["usb_dfu"]["dn_pos"])
 
+    def test_electrical_from_datasheets(self):
+        """Per-family I/O limits from the fetched ST datasheets (open Q#1 closed)."""
+        e = auth.build(self.conn, "LQFP64")["electrical"]
+        self.assertEqual(e["max_io_current_ma"], 25)        # ±25 mA uniform F0–F7
+        self.assertEqual(e["injection_current_ma"], 5)      # ±5 mA per pin
+        self.assertTrue(e["ft_5v_tolerant"])
+        self.assertIsNotNone(e["vdda_range_v"])
+        # per-family total-I/O ceiling differs (F0/F3=80, F1=150, F2=120, F4=240, F7=120)
+        tot = e["total_io_current_ma"]
+        self.assertEqual(tot["STM32F0"], 80)
+        self.assertEqual(tot["STM32F1"], 150)
+        self.assertEqual(tot["STM32F4"], 240)
+        self.assertIn("DS", e["by_family"]["STM32F7"]["ds"])   # carries a datasheet cite
+        self.assertEqual(auth.FAMILY_ELECTRICAL["STM32F7"]["vdd_v"], [1.7, 3.6])
+
     def test_trace_captured_and_vssa_relabelled(self):
         d = auth.build(self.conn, "LQFP64")
         trace = d["extraction_access"]["trace_positions"]

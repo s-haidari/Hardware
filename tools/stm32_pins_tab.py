@@ -191,12 +191,21 @@ class Stm32PinsWidget(QWidget):
             return
         r = a["rollup"]
         ea = a.get("extraction_access", {})
+        el = a.get("electrical", {})
+        io, inj = el.get("max_io_current_ma"), el.get("injection_current_ma")
+        vdda = el.get("vdda_range_v") or el.get("vdd_range_v")
+        elec = ""
+        if io and vdda:
+            elec = (f"   |   I/O ±{io} mA · inj ±{inj} mA · VDDA {vdda[0]}–{vdda[1]} V · "
+                    f"{'5V-tolerant' if el.get('ft_5v_tolerant') else 'not 5V-tol'}")
+        self.rollup.setWordWrap(True)
         self.rollup.setText(
             f"{a['package']}  —  {a['manifest']['part_count']} parts · {r['positions_total']} positions · "
             f"must-switch {r['must_switch_count']} ({r['cells_min']} ADG714 cells; "
             f"{r['cells_as_built']} incl. osc) · osc-optional {r['osc_optional_count']} · "
             f"fixed {r['fixed_count']}   |   breakout {ea.get('service_breakout_count', 0)} "
-            f"(debug {len(ea.get('debug_positions', []))}, trace {len(ea.get('trace_positions', []))})")
+            f"(debug {len(ea.get('debug_positions', []))}, trace {len(ea.get('trace_positions', []))})"
+            f"{elec}")
 
         rows = a["positions"]
         self.table.setRowCount(len(rows))

@@ -77,10 +77,27 @@ BOOTLOADER_PINS: dict = {
     },
 }
 
-# family -> max I/O source/sink current per pin, mA (from ST datasheets).
-# UNVERIFIED — the datasheet fetch did not complete; left null rather than guessed
-# (vault Hard Rule 10). Fill with cited per-family constants later.
-IO_CURRENT_MA: dict = {}
+# Per-family I/O electrical limits, from the official ST datasheets fetched
+# 2026-07-01 and saved to the vault Sources/Datasheets/ (Hard Rule 10; PDFs
+# verified %PDF + rev). Values are datasheet absolute-max / operating limits.
+#   io_ma       = per-pin I_IO abs-max (source and sink), mA
+#   total_io_ma = ΣI_IO (or the device I_VDD/I_VSS ceiling that bounds it), mA
+#   inj_ma      = per-pin I_INJ, mA (±; FT/5V-tolerant pins take -inj/+0 only)
+#   vdd_v/vdda_v = operating range V; temp_c = 6-suffix ambient (7-suffix → +105)
+#   ft_5v       = family has 5V-tolerant (FT) I/O pins
+# Per-pin I_IO = ±25 mA and ΣI_INJ = ±25 mA are uniform across STM32F0–F7.
+# Full per-field citations: see docs/stm32-pins.md "I/O electrical (fetched)".
+FAMILY_ELECTRICAL: dict = {
+    "STM32F0": {"io_ma": 25, "total_io_ma": 80,  "inj_ma": 5, "vdd_v": [2.0, 3.6], "vdda_v": [2.4, 3.6], "temp_c": [-40, 85], "ft_5v": True, "ds": "DS9826 Rev 6, Table 22 §6.2 p.52"},
+    "STM32F1": {"io_ma": 25, "total_io_ma": 150, "inj_ma": 5, "vdd_v": [2.0, 3.6], "vdda_v": [2.0, 3.6], "temp_c": [-40, 85], "ft_5v": True, "ds": "DS5319 Rev 20, Table 7 §5.2 p.37"},
+    "STM32F2": {"io_ma": 25, "total_io_ma": 120, "inj_ma": 5, "vdd_v": [1.8, 3.6], "vdda_v": [1.8, 3.6], "temp_c": [-40, 85], "ft_5v": True, "ds": "DS6329 Rev 18, Table 12 §6.2 p.70"},
+    "STM32F3": {"io_ma": 25, "total_io_ma": 80,  "inj_ma": 5, "vdd_v": [2.0, 3.6], "vdda_v": [2.0, 3.6], "temp_c": [-40, 85], "ft_5v": True, "ds": "DocID026415 Rev 5, Table 17 §6.2 p.71"},
+    "STM32F4": {"io_ma": 25, "total_io_ma": 240, "inj_ma": 5, "vdd_v": [1.8, 3.6], "vdda_v": [1.8, 3.6], "temp_c": [-40, 85], "ft_5v": True, "ds": "DS8626 (DocID022152) Rev 5, Table 12 §5.2 p.78"},
+    "STM32F7": {"io_ma": 25, "total_io_ma": 120, "inj_ma": 5, "vdd_v": [1.7, 3.6], "vdda_v": [1.7, 3.6], "temp_c": [-40, 85], "ft_5v": True, "ds": "DS10916 Rev 5, Table 16 §6.2 p.121"},
+}
+# F4 total is package/sub-line dependent: F405/407 I_VDD/I_VSS = 240 mA; F427/429
+# (DS9405 Rev 5) = 270 mA with an explicit ΣI_IO = ±120 mA; F401/F411 lower
+# (~150 mA) — UNVERIFIED, flagged not asserted. See docs/stm32-pins.md.
 
 _DEBUG_ROLE = {"swclk": "SWCLK", "swdio": "SWDIO", "swo": "SWO", "jtag_extra": "JTAG"}
 _ANALOG_SUPPLY = {"power_vdda", "power_vref"}
@@ -150,7 +167,10 @@ def _bootloader_periph(fam_names: set) -> list:
 
 
 def _electrical(conn: sqlite3.Connection, package: str) -> dict:
-    """Package-wide VDD/VDDA range (from CubeMX <Voltage>) + IO current by family."""
+    """Package-wide electrical block: VDD range from CubeMX <Voltage> (per-part),
+    plus the datasheet I/O limits aggregated over the families in the package
+    (FAMILY_ELECTRICAL). Per-pin I_IO / I_INJ are uniform (±25 / ±5); VDD/VDDA
+    ranges and the total-I/O ceiling are the widest / per-family values."""
     vmins, vmaxs, fams = [], [], set()
     for vmin, vmax, fam in conn.execute(
         "SELECT vdd_min, vdd_max, family FROM mcu WHERE package_name = ?", (package,)):
@@ -162,10 +182,25 @@ def _electrical(conn: sqlite3.Connection, package: str) -> dict:
                 vmaxs.append(float(vmax))
         except ValueError:
             pass
-    currents = sorted({IO_CURRENT_MA[f] for f in fams if f in IO_CURRENT_MA})
+    known = [f for f in sorted(fams) if f in FAMILY_ELECTRICAL]
+    specs = [FAMILY_ELECTRICAL[f] for f in known]
+
+    def widest(key):
+        los = [s[key][0] for s in specs]
+        his = [s[key][1] for s in specs]
+        return [min(los), max(his)] if los and his else None
+
     return {
-        "vdd_range_v": [min(vmins), max(vmaxs)] if vmins and vmaxs else None,
-        "max_io_current_ma": currents[0] if len(currents) == 1 else (currents or None),
+        "vdd_range_v": [min(vmins), max(vmaxs)] if vmins and vmaxs else None,  # CubeMX per-part
+        "vdda_range_v": widest("vdda_v"),
+        "temp_range_c": widest("temp_c"),
+        "max_io_current_ma": max((s["io_ma"] for s in specs), default=None),   # per-pin abs-max
+        "injection_current_ma": max((s["inj_ma"] for s in specs), default=None),
+        "total_io_current_ma": {f: FAMILY_ELECTRICAL[f]["total_io_ma"] for f in known},
+        "ft_5v_tolerant": all(s["ft_5v"] for s in specs) if specs else None,
+        "by_family": {f: {k: FAMILY_ELECTRICAL[f][k]
+                          for k in ("io_ma", "total_io_ma", "inj_ma", "vdd_v", "vdda_v", "ft_5v", "ds")}
+                      for f in known},
     }
 
 

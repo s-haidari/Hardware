@@ -107,6 +107,34 @@ at that socket across the whole family (e.g. `SPI1`, `TIM4`, `USART3`, `I2S1`, `
 derived from every CubeMX `<Signal>`. Extra extraction tags: **`is_wakeup`** (WKUP pins — reset/glitch
 entry) and **`is_usb`** (USB DP/DM). The tab's Search filters on peripherals too.
 
+## I/O electrical (fetched 2026-07-01)
+Per-family I/O limits pulled from the **official ST datasheets** (from st.com, saved to the vault
+`Sources/Datasheets/`, PDFs verified `%PDF` + rev; Hard Rule 10). Encoded in
+`stm32_authority.FAMILY_ELECTRICAL`; `build()["electrical"]` aggregates them per package (widest VDD/VDDA,
+per-family total-I/O, uniform per-pin limits) alongside the CubeMX per-part VDD range. **Closes open question #1.**
+
+| Family | I_IO/pin | ΣI_IO total | I_INJ/pin | VDD (V) | VDDA (V) | 5V-tol | Datasheet (cited) |
+|---|---|---|---|---|---|---|---|
+| F0 | ±25 mA | ±80 mA | ±5 mA | 2.0–3.6 | 2.4–3.6 | yes | DS9826 R6 §6.2 Table 22 p.52 |
+| F1 | ±25 mA | ±150 mA | ±5 mA | 2.0–3.6 | 2.0–3.6 | yes | DS5319 R20 §5.2 Table 7 p.37 |
+| F2 | ±25 mA | ±120 mA | ±5 mA | 1.8–3.6 | 1.8–3.6 | yes | DS6329 R18 §6.2 Table 12 p.70 |
+| F3 | ±25 mA | ±80 mA | ±5 mA | 2.0–3.6 | 2.0–3.6 | yes | DocID026415 R5 §6.2 Table 17 p.71 |
+| F4 | ±25 mA | ±240 mA † | ±5 mA | 1.8–3.6 | 1.8–3.6 | yes | DS8626/DocID022152 R5 §5.2 Table 12 p.78 |
+| F7 | ±25 mA | ±120 mA | ±5 mA | 1.7–3.6 ‡ | 1.7–3.6 | yes | DS10916 R5 §6.2 Table 16 p.121 |
+
+Per-pin I_IO (±25 mA) and ΣI_INJ (±25 mA total) are uniform across F0–F7; each value was cross-checked against
+a second mention in the same datasheet (no disagreements). Temp = 6-suffix ambient −40..+85 °C (7-suffix →
++105 °C). "5V-tol" = the family has FT pins (V_IN up to 5.5 V; FT pins accept only −5/+0 mA injection, no
+positive injection). VDDA lower bound rises to 2.4 V when the ADC/DAC runs at full rate (F0/F2/F3).
+† **F4 total is sub-line dependent**: F405/407 I_VDD/I_VSS = 240 mA; F427/429 (DS9405 R5) = 270 mA with an
+explicit ΣI_IO = ±120 mA; F401/F411 lower (~150 mA) — **UNVERIFIED, flagged not asserted** (Hard Rule 10).
+‡ F7 VDD min 1.7 V requires an external supply supervisor (DS10916 R5 Table 18 note).
+
+**Provenance:** st.com (Akamai) required a full browser header set + `--compressed` for five families. For F4,
+st.com was unreachable from the fetch environment, so a **byte-identical** official ST PDF (Author
+STMICROELECTRONICS, DocID022152 Rev 5, 200 pp) was pulled from a component-search mirror and verified. Saved,
+`%PDF`-validated PDFs (1.9–5.7 MB each): `ST STM32F072 / F103 / F207 / F303 / F407 / F746 datasheet.pdf`.
+
 ## Full-spec field sources (Phase 2)
 - **electrical**: VDD/VDDA range from the CubeMX `<Voltage Max Min>` element (MCU-level, aggregated);
   per-pin `max_io_current_ma` = per-family datasheet constant (small cited table).
@@ -150,8 +178,9 @@ gitignored.
   NRST→SERVICE_NRST, IO→CARD_LANE_<pin>.
 
 ## Open questions / flags
-1. **max_io_current_ma is null** — the datasheet fetch did not complete; not guessed (Hard Rule 10). Fill
-   with cited per-family constants (STM32F I/O is typically ±25 mA abs-max) once a datasheet is saved.
+1. **max_io_current_ma → RESOLVED (2026-07-01).** All six ST datasheets fetched, saved, and cited — per-pin
+   I_IO = ±25 mA (uniform F0–F7), plus per-family ΣI_IO, injection, VDDA, temp, and 5V-tolerance. See the
+   "I/O electrical (fetched)" section. Residual: F4 total-I/O varies by sub-line (F401/F411 ~150 mA UNVERIFIED).
 2. **SWD folds into the IO identity for switching — RESOLVED (Sadad, 2026-07-01).** This is correct:
    SWD/SPI/I2C/UART are all one generic card lane for the *switch* decision, so folding them reproduces
    the verified counts (11/43); promoting SWD to a distinct switch identity would wrongly inflate them.
