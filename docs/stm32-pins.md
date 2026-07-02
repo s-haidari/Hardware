@@ -195,6 +195,16 @@ the DB is rebuilt on disk — confirming PyQt does live *data* updates natively 
 hot-reload is web's edge, and that's a dev convenience, not a user feature). Formatting lives in pure
 helpers (`_summary_html` / `_pin_detail_html`) so it stays unit-testable without a running GUI.
 
+### KiCad socket symbol (Phase D, 2026-07-02)
+`to_kicad_symbol(authority)` emits a KiCad 6+ `.kicad_sym` for the socketed target — one pin per socket
+position, **named by its authority net** (switched destination / fixed rail / `CARD_LANE_<pos>`), numbered
+by position, split left/right, power pins typed `power_in`, and the **stock LQFP footprint** referenced (no
+land pattern reinvented). `write_authority` now writes `<pkg>_socket.kicad_sym` alongside the YAML/JSON/TSV,
+so **Generate** / **Generate → Vault** produce the card's starting symbol straight from the derived pinout —
+the schematic never starts from hand-authored nets. Validated structurally (balanced S-expr, 64/100 pins,
+spec v6); a full `kicad-cli` load-check needs a desktop session (blocked headless here, same OLE wall as Qt)
+and can run in the KiCad sandbox. Pairs with the installed `kicad` skill for downstream design review.
+
 ## Full-spec field sources (Phase 2)
 - **electrical**: VDD/VDDA range from the CubeMX `<Voltage Max Min>` element (MCU-level, aggregated);
   per-pin `max_io_current_ma` = per-family datasheet constant (small cited table).

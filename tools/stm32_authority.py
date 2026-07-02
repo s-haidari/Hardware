@@ -675,6 +675,75 @@ def raw_tsv(conn: sqlite3.Connection, package: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# KiCad socket symbol (Phase D) — a .kicad_sym generated from the authority so the
+# card schematic starts from the derived per-pin nets, never hand-authored. Stock
+# LQFP footprint referenced (no land pattern reinvented). KiCad 6+ S-expression.
+# ─────────────────────────────────────────────────────────────────────────────
+_KICAD_FOOTPRINT = {
+    "LQFP64": "Package_QFP:LQFP-64_10x10mm_P0.5mm",
+    "LQFP100": "Package_QFP:LQFP-100_14x14mm_P0.5mm",
+}
+_POWER_NETS = {"VTARGET", "VDDA_TGT", "VREF_TGT", "VBAT_TGT", "VCAP_NODE", "GND", "VSSA_TGT"}
+
+
+def _sx(s) -> str:
+    return str(s).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _pin_kind(p: dict, net: str) -> str:
+    """KiCad electrical type for a socket pin from its net + switch class."""
+    if net in _POWER_NETS:
+        return "power_in"
+    if p["switch_class"] != db.SWITCH_NONE:
+        return "bidirectional"       # routed through the ADG714 mux
+    return "bidirectional"           # generic card lane / IO
+
+
+def to_kicad_symbol(authority: dict) -> str:
+    """A KiCad 6+ symbol-library string for the socketed target: one pin per socket
+    position, named by its authority net (switched destination / fixed net / lane),
+    numbered by position, split left/right, with the stock LQFP footprint."""
+    pkg = authority["package"]
+    positions = sorted(authority["positions"], key=lambda p: p["position"])
+    n_left = (len(positions) + 1) // 2
+    left, right = positions[:n_left], positions[n_left:]
+    pitch, hw, length = 2.54, 15.24, 2.54
+
+    def col_y(count):
+        top = (count - 1) / 2 * pitch
+        return [round(top - i * pitch, 2) for i in range(count)]
+
+    half_h = round((max(len(left), len(right)) / 2 * pitch) + pitch, 2)
+
+    def pin(p, side, y):
+        net = (p["assignment"].get("destination") or p["assignment"].get("net")
+               or f"CARD_LANE_{p['position']}")
+        at = f"(at {-(hw + length)} {y} 0)" if side == "L" else f"(at {hw + length} {y} 180)"
+        return (f'      (pin {_pin_kind(p, net)} line {at} (length {length})\n'
+                f'        (name "{_sx(net)}" (effects (font (size 1.27 1.27))))\n'
+                f'        (number "{p["position"]}" (effects (font (size 1.27 1.27)))))')
+
+    pins = ([pin(p, "L", y) for p, y in zip(left, col_y(len(left)))]
+            + [pin(p, "R", y) for p, y in zip(right, col_y(len(right)))])
+    sym = f"{pkg}_SOCKET"
+    fp = _KICAD_FOOTPRINT.get(pkg, "")
+    ref_y = round(half_h + 2.54, 2)
+    return (
+        '(kicad_symbol_lib (version 20211014) (generator stm32_authority)\n'
+        f'  (symbol "{sym}" (in_bom yes) (on_board yes)\n'
+        f'    (property "Reference" "U" (at 0 {ref_y} 0) (effects (font (size 1.27 1.27))))\n'
+        f'    (property "Value" "{sym}" (at 0 {-ref_y} 0) (effects (font (size 1.27 1.27))))\n'
+        f'    (property "Footprint" "{_sx(fp)}" (at 0 0 0) (effects (font (size 1.27 1.27)) hide))\n'
+        f'    (property "Datasheet" "" (at 0 0 0) (effects (font (size 1.27 1.27)) hide))\n'
+        f'    (symbol "{sym}_1_1"\n'
+        f'      (rectangle (start {-hw} {half_h}) (end {hw} {-half_h})\n'
+        f'        (stroke (width 0.254) (type default)) (fill (type background)))\n'
+        + "\n".join(pins) + "\n"
+        '    )\n  )\n)\n'
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Minimal block-style YAML emitter (stdlib only)
 # ─────────────────────────────────────────────────────────────────────────────
 def _yaml_scalar(v) -> str:
@@ -735,7 +804,8 @@ def to_yaml(data: dict) -> str:
 # Write
 # ─────────────────────────────────────────────────────────────────────────────
 def write_authority(conn: sqlite3.Connection, package: str, out_dir: Path) -> dict:
-    """Write pinout_authority_<pkg>.{yaml,json} + pins_<pkg>.tsv. Returns summary."""
+    """Write pinout_authority_<pkg>.{yaml,json} + pins_<pkg>.tsv + <pkg>_socket.kicad_sym.
+    Returns summary."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     data = build(conn, package)
@@ -745,9 +815,11 @@ def write_authority(conn: sqlite3.Connection, package: str, out_dir: Path) -> di
         to_yaml(data), encoding="utf-8", newline="\n")
     (out_dir / f"pins_{package}.tsv").write_text(
         raw_tsv(conn, package), encoding="utf-8", newline="\n")
+    (out_dir / f"{package}_socket.kicad_sym").write_text(
+        to_kicad_symbol(data), encoding="utf-8", newline="\n")
     return {
         "package": package, "out_dir": str(out_dir),
         "files": [f"pinout_authority_{package}.yaml", f"pinout_authority_{package}.json",
-                  f"pins_{package}.tsv"],
+                  f"pins_{package}.tsv", f"{package}_socket.kicad_sym"],
         "rollup": data["rollup"],
     }

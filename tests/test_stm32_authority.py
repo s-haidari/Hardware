@@ -55,13 +55,26 @@ class AuthorityTests(unittest.TestCase):
     def test_emit_yaml_json_tsv(self):
         out = Path(tempfile.mkdtemp())
         summ = auth.write_authority(self.conn, "LQFP64", out)
-        self.assertEqual(len(summ["files"]), 3)
+        self.assertEqual(len(summ["files"]), 4)   # yaml + json + tsv + kicad_sym
         j = json.loads((out / "pinout_authority_LQFP64.json").read_text(encoding="utf-8"))
         self.assertEqual(len(j["positions"]), 64)
         y = (out / "pinout_authority_LQFP64.yaml").read_text(encoding="utf-8")
         self.assertIn("must_switch_count: 11", y)
         tsv = (out / "pins_LQFP64.tsv").read_text(encoding="utf-8")
         self.assertGreater(len(tsv.splitlines()), 53)  # header + 53 parts x pins
+        self.assertTrue((out / "LQFP64_socket.kicad_sym").exists())
+
+    def test_kicad_symbol(self):
+        """Phase D: the generated KiCad socket symbol is well-formed (structural —
+        kicad-cli can't load-validate headlessly here, but the format is spec v6)."""
+        sym = auth.to_kicad_symbol(auth.build(self.conn, "LQFP64"))
+        self.assertTrue(sym.startswith("(kicad_symbol_lib"))
+        self.assertEqual(sym.count("("), sym.count(")"))       # balanced S-expr
+        self.assertEqual(sym.count("(pin "), 64)               # one pin per socket
+        self.assertIn("LQFP-64_10x10mm", sym)                  # stock footprint referenced
+        self.assertIn('name "VBAT_TGT"', sym)                  # pin 1 destination net
+        self.assertNotIn("00000000", sym)                      # coordinates rounded clean
+        self.assertEqual(auth.to_kicad_symbol(auth.build(self.conn, "LQFP100")).count("(pin "), 100)
 
     # ── extraction-access breakout (Layer B, orthogonal to switching) ──────
     @staticmethod
