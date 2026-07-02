@@ -149,6 +149,21 @@ class AuthorityTests(unittest.TestCase):
         self.assertIn("PB5", auth.BOOTLOADER_PINS["STM32F3"]["I2C"])   # I2C3 PA8/PB5
         self.assertIn("PA15", auth.BOOTLOADER_PINS["STM32F4"]["SPI"])  # SPI3 NSS
 
+    def test_card_materials_and_drift_gate(self):
+        """Phase B: the card passive BOM + the card-vs-authority drift-gate linter."""
+        a = auth.build(self.conn, "LQFP64")
+        cm = a["card_materials"]
+        self.assertEqual(cm["adg714_cells"], 2)                # 11 must-switch -> 2 cells
+        self.assertEqual(cm["vcap_required_families"], ["STM32F2", "STM32F4", "STM32F7"])
+        self.assertTrue(any("ADG714" in i["part"] for i in cm["items"]))
+        self.assertTrue(any("2.2uF" in i["part"] for i in cm["items"]))    # VCAP caps
+        # drift gate: a correct card passes; the classic SWCLK/cell drift fails
+        good = auth.lint_card(a, {"must_switch_count": 11, "adg714_cells": 2, "swclk_pos": 49})
+        self.assertTrue(all(f["ok"] for f in good))
+        bad = auth.lint_card(a, {"swclk_pos": 76, "adg714_cells": 8})
+        self.assertFalse(any(f["ok"] for f in bad))
+        self.assertEqual({f["field"]: f["actual"] for f in bad}, {"swclk_pos": 49, "adg714_cells": 2})
+
     def test_five_v_tolerance_per_family(self):
         """Per-pin 5V-tolerance from the datasheet I/O-structure column, incl. the
         part-dependent analog pins (PA0 FT on F2/F4/F7, not on F0/F1/F3)."""

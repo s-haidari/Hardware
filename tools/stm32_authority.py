@@ -468,6 +468,84 @@ def _extraction_access(positions: list) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 # Build the authority
 # ─────────────────────────────────────────────────────────────────────────────
+def card_materials(authority: dict) -> dict:
+    """Per-package passive BOM for the NETDECK plug-in card, derived from the switch
+    rollup + FAMILY_POWER. Worst-cased across the families the package covers (the
+    card sockets one target at a time, but must physically carry the caps the
+    neediest family wants). A materials guide, not a placed BOM."""
+    r = authority["rollup"]
+    power = authority["electrical"].get("power", {})
+    vcap_fams = sorted(f for f, p in power.items() if p.get("vcap"))
+    n_vdd = max((p.get("n_vdd") or 0) for p in power.values()) if power else 0
+    items = [{
+        "ref": "U_SW_*", "part": "ADG714 (4x SPST, 8 ch/pkg)", "qty": r["cells_as_built"],
+        "role": "switch fabric",
+        "note": f"{r['must_switch_count']} must-switch (+{r['osc_optional_count']} osc-optional) "
+                f"-> {r['cells_min']} min / {r['cells_as_built']} as-built cells",
+    }]
+    if vcap_fams:
+        items.append({
+            "ref": "C_VCAP_1/2", "part": "2.2uF ceramic X7R (ESR<2ohm)", "qty": 2,
+            "role": "regulator VCAP",
+            "note": f"required for {', '.join(vcap_fams)} sockets (VCAP_1/VCAP_2); "
+                    f"F0/F1/F3 have no VCAP pin (DNP/harmless)",
+        })
+    if n_vdd:
+        items.append({
+            "ref": "C_DEC_*", "part": "100nF ceramic X7R", "qty": n_vdd,
+            "role": "VDD decoupling", "note": f"one per VDD/VSS pair (worst-case {n_vdd} on LQFP100)",
+        })
+    items.append({"ref": "C_BULK", "part": "4.7uF ceramic", "qty": 1, "role": "bulk",
+                  "note": "one bulk cap per package"})
+    items.append({"ref": "C_VDDA/VREF", "part": "1uF + 10-100nF ceramic", "qty": 4,
+                  "role": "VDDA / VREF+ decoupling",
+                  "note": "1uF // 10nF on VDDA; + VREF+ pair where VREF+ is a separate pin"})
+    return {
+        "package": authority["package"],
+        "adg714_cells": r["cells_as_built"],
+        "vcap_required_families": vcap_fams,
+        "decoupling_100nf_count": n_vdd or None,
+        "items": items,
+        "note": "Worst-cased across the families this package covers; the card sockets one "
+                "target at a time. VCAP caps populate for F2/F4/F7 sockets.",
+    }
+
+
+def lint_card(authority: dict, claims: dict) -> list:
+    """Drift-gate: check a Build Card's asserted numbers against the authority.
+    `claims` is any subset of: must_switch_count, adg714_cells, adg714_cells_min,
+    osc_optional_count, fixed_count, positions_total, and the debug pin positions
+    swdio_pos / swclk_pos / swo_pos / tdi_pos / ntrst_pos / nrst_pos. Returns a
+    finding per claimed field: {field, claimed, actual, ok, detail}. Catches the
+    SWCLK-pin-79-vs-76 / ADG714-6-vs-8 drift this generator exists to kill."""
+    r = authority["rollup"]
+    ea = authority.get("extraction_access", {})
+    actuals = {
+        "must_switch_count": (r["must_switch_count"], ""),
+        "adg714_cells": (r["cells_as_built"], "as-built incl. osc"),
+        "adg714_cells_min": (r["cells_min"], "must-switch only"),
+        "osc_optional_count": (r["osc_optional_count"], ""),
+        "fixed_count": (r["fixed_count"], ""),
+        "positions_total": (r["positions_total"], ""),
+    }
+    net_key = {"SWDIO_PARENT": "swdio_pos", "SWCLK_PARENT": "swclk_pos", "SWO_PARENT": "swo_pos",
+               "TDI_PARENT": "tdi_pos", "NTRST_PARENT": "ntrst_pos", "SERVICE_NRST": "nrst_pos"}
+    for c in ea.get("coresight20", []):
+        k = net_key.get(c.get("net"))
+        if k and c.get("target_pos"):
+            actuals[k] = (c["target_pos"], "from CoreSight-20 map")
+    findings = []
+    for field, claimed in claims.items():
+        if field not in actuals:
+            findings.append({"field": field, "claimed": claimed, "actual": None,
+                             "ok": None, "detail": "unknown field (not checked)"})
+            continue
+        actual, detail = actuals[field]
+        findings.append({"field": field, "claimed": claimed, "actual": actual,
+                         "ok": claimed == actual, "detail": detail})
+    return findings
+
+
 def build(conn: sqlite3.Connection, package: str) -> dict:
     rep = db.package_report(conn, package)
     fam_names = _families_at(conn, package)
@@ -555,9 +633,9 @@ def build(conn: sqlite3.Connection, package: str) -> dict:
         "SELECT DISTINCT family FROM mcu WHERE package_name = ?", (package,))})
 
     incl_osc = rep.must_switch_count + rep.osc_optional_count
-    return {
+    data = {
         "package": package,
-        "schema_version": 2,
+        "schema_version": 3,
         "manifest": {
             "part_count": len(parts),
             "supported_parts": parts,
@@ -579,6 +657,8 @@ def build(conn: sqlite3.Connection, package: str) -> dict:
         "extraction_access": _extraction_access(positions),
         "positions": positions,
     }
+    data["card_materials"] = card_materials(data)
+    return data
 
 
 def raw_tsv(conn: sqlite3.Connection, package: str) -> str:

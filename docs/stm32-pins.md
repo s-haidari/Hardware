@@ -177,6 +177,14 @@ UNVERIFIED" flag** (that open question is now closed; each F4 sub-line was fetch
 pin-option rows): adds F1 CAN2 PB5/PB6 + PA9 VBUS-sense, F3 I2C3 (PA8/PB5), F4 SPI1-4 + I2C4, and F7's
 **both** CAN1 (PD0/PD1) and CAN2 (PB5/PB13). Sharpens the per-position `bootloader_periph` tags.
 
+### Card materials + drift-gate (Phase B, 2026-07-02)
+`build()` now emits **`card_materials`** — the plug-in card's passive BOM derived from the switch rollup +
+FAMILY_POWER: ADG714 count, VCAP caps (2×2.2 µF, populated for F2/F4/F7 sockets), 100 nF decoupling (one per
+VDD pair, worst-cased across families), 4.7 µF bulk, VDDA/VREF caps. **`lint_card(authority, claims)`** is
+the drift-gate: pass a Build Card's asserted numbers (`must_switch_count`, `adg714_cells`, `swclk_pos`, …)
+and it returns ok/mismatch per field against the authority — catching the exact SWCLK-76-vs-49 /
+ADG714-8-vs-2 drift this generator exists to kill.
+
 ## Full-spec field sources (Phase 2)
 - **electrical**: VDD/VDDA range from the CubeMX `<Voltage Max Min>` element (MCU-level, aggregated);
   per-pin `max_io_current_ma` = per-family datasheet constant (small cited table).
