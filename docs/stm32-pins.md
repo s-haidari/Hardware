@@ -160,6 +160,23 @@ FT on F2/F4/F7 but 3.3V-only on F0/F1/F3, so e.g. the PA0 socket is 5V-safe unde
 FT pins lose 5V tolerance while in analog (ADC) or oscillator mode (PC14/15/PH0/1) per each datasheet's
 I/O-structure footnote. Non-GPIO pins (power/ground/reset/boot) are not classified (`five_v = null`).
 
+### Power / decoupling + reconciled electrical (2026-07-02)
+**`FAMILY_POWER`** (per family, cited) drives the card's passive BOM: external **VCAP** need (F2/F4/F7 =
+2×2.2 µF on VCAP_1/2, ESR<2 Ω; F0/F1/F3 = none), **VBAT** and **VREF+** ranges, the **decoupling recipe**
+(100 nF per VDD/VSS pair + 4.7 µF bulk; VDDA 10–100 nF+1 µF; VREF cap), and the LQFP100 VDD/VSS pin counts.
+Surfaced in `build()["electrical"]` as `power`, `vcap_required`, `vbat_range_v`, `vref_range_v`.
+
+**Electrical metric reconciled:** `total_io_ma` is now unambiguously the **ΣI_IO** (sum of all I/O pins)
+where the datasheet states it (`metric=sigma_io`), else the device **I_VDD/I_VSS supply** total
+(`metric=supply_total`), with `supply_total_ma` carried separately. This fixed F4 (ΣI_IO = **120 mA**; the
+old 240 was the F405/407 *supply* total). Verified **F4 sub-line supply totals** (`F4_SUBLINE_SUPPLY_MA`):
+F401/F411 = 160, F405/407 = 240, F429 = 270, F446 = 240, F469 = 290 — **retiring the "F401/F411 ~150
+UNVERIFIED" flag** (that open question is now closed; each F4 sub-line was fetched + cited).
+
+**Bootloader map** rebuilt from the **exhaustive AN2606 Rev 62** transcription (225 device/peripheral/
+pin-option rows): adds F1 CAN2 PB5/PB6 + PA9 VBUS-sense, F3 I2C3 (PA8/PB5), F4 SPI1-4 + I2C4, and F7's
+**both** CAN1 (PD0/PD1) and CAN2 (PB5/PB13). Sharpens the per-position `bootloader_periph` tags.
+
 ## Full-spec field sources (Phase 2)
 - **electrical**: VDD/VDDA range from the CubeMX `<Voltage Max Min>` element (MCU-level, aggregated);
   per-pin `max_io_current_ma` = per-family datasheet constant (small cited table).

@@ -35,21 +35,23 @@ NET_DICT: dict = dict(db.TARGET_NET)
 # family -> {bootloader_periph: {canonical_pin_name, ...}}  (from ST AN2606).
 # A socket position is tagged with a periph when one of its per-part pin names
 # matches, for that part's family. Source: ST AN2606 Rev 62 (Mar 2024) system-
-# memory-boot-mode tables (unchanged in Rev 70); PDF saved in the vault at
+# memory-boot-mode per-device tables, EXHAUSTIVELY transcribed 2026-07-02 (225
+# device/peripheral/pin-option rows across F0-F7); PDF saved in the vault at
 # Sources/Datasheets/. Per family = the UNION of ROM-bootloader pins across its
-# sub-lines. USART1=PA9/PA10 and USB-DFU=PA11/PA12 are universal. See
-# docs/stm32-pins.md. Higher-density pins (PIx/PEx/PFx) simply never match on
-# LQFP64/LQFP100. F0/F3 have no CAN/SPI bootloader; F2 has no I2C/SPI bootloader.
+# sub-lines and pin-options. USART1=PA9/PA10 and USB-DFU FS=PA11/PA12 are
+# universal. Notable: F1 CAN2 is PB5/PB6 + PA9 VBUS-sense; F3 adds I2C3 (PA8/PB5);
+# F4 adds SPI1-4 + I2C4; F7 has BOTH CAN1 (PD0/PD1) and CAN2 (PB5/PB13). Higher-
+# density pins (PIx/PEx) never match on LQFP64/LQFP100. See docs/stm32-pins.md.
 BOOTLOADER_PINS: dict = {
     "STM32F0": {
-        "USART": {"PA9", "PA10", "PA14", "PA15", "PA2", "PA3"},
+        "USART": {"PA2", "PA3", "PA9", "PA10", "PA14", "PA15"},
         "I2C": {"PB6", "PB7"},
         "USB-DFU": {"PA11", "PA12"},
     },
     "STM32F1": {
         "USART": {"PA9", "PA10", "PD5", "PD6"},
-        "CAN": {"PB5", "PB6"},                       # connectivity line: CAN2 RX=PB5, TX=PB6
-        "USB-DFU": {"PA11", "PA12"},
+        "CAN": {"PB5", "PB6"},                       # F105/107 CAN2 RX=PB5, TX=PB6
+        "USB-DFU": {"PA9", "PA11", "PA12"},          # PA9 = VBUS sense on F105/107
     },
     "STM32F2": {
         "USART": {"PA9", "PA10", "PB10", "PB11", "PC10", "PC11"},
@@ -57,23 +59,25 @@ BOOTLOADER_PINS: dict = {
         "USB-DFU": {"PA11", "PA12"},
     },
     "STM32F3": {
-        "USART": {"PA9", "PA10", "PD5", "PD6"},
-        "I2C": {"PB6", "PB7", "PA8"},
+        "USART": {"PA2", "PA3", "PA9", "PA10", "PD5", "PD6"},
+        "I2C": {"PA8", "PB5", "PB6", "PB7"},         # I2C1 PB6/7 + I2C3 PA8/PB5
         "USB-DFU": {"PA11", "PA12"},
     },
     "STM32F4": {
-        "USART": {"PA9", "PA10", "PB10", "PB11", "PC10", "PC11"},
+        "USART": {"PA2", "PA3", "PA9", "PA10", "PB10", "PB11", "PC10", "PC11", "PD5", "PD6"},
         "CAN": {"PB5", "PB13"},
+        "I2C": {"PA8", "PB3", "PB4", "PB6", "PB7", "PB9", "PB10", "PB11", "PB14", "PB15", "PC9", "PF0", "PF1"},
+        "SPI": {"PA4", "PA5", "PA6", "PA7", "PA15", "PB4", "PB5", "PB12", "PB13", "PB14", "PB15",
+                "PC2", "PC3", "PC7", "PC10", "PC11", "PC12", "PE11", "PE12", "PE13", "PE14",
+                "PI0", "PI1", "PI2", "PI3"},
         "USB-DFU": {"PA11", "PA12"},
-        "I2C": {"PB6", "PB7", "PB9", "PF0", "PF1", "PA8", "PC9"},
-        "SPI": {"PA4", "PA5", "PA6", "PA7", "PI0", "PI1", "PI2", "PI3", "PE11", "PE12", "PE13", "PE14"},
     },
     "STM32F7": {
         "USART": {"PA9", "PA10", "PB10", "PB11", "PC10", "PC11"},
-        "CAN": {"PD0", "PD1"},                       # F7: CAN1 RX=PD0, TX=PD1
+        "CAN": {"PB5", "PB13", "PD0", "PD1"},        # CAN1 PD0/PD1 + CAN2 PB5/PB13
+        "I2C": {"PA8", "PB6", "PB9", "PC9", "PF0", "PF1"},
+        "SPI": {"PA4", "PA5", "PA6", "PA7", "PE11", "PE12", "PE13", "PE14", "PI0", "PI1", "PI2", "PI3"},
         "USB-DFU": {"PA11", "PA12"},
-        "I2C": {"PB6", "PB9", "PF0", "PF1", "PA8", "PC9"},
-        "SPI": {"PA4", "PA5", "PA6", "PA7", "PI0", "PI1", "PI2", "PI3", "PE11", "PE12", "PE13", "PE14"},
     },
 }
 
@@ -88,16 +92,55 @@ BOOTLOADER_PINS: dict = {
 # Per-pin I_IO = ±25 mA and ΣI_INJ = ±25 mA are uniform across STM32F0–F7.
 # Full per-field citations: see docs/stm32-pins.md "I/O electrical (fetched)".
 FAMILY_ELECTRICAL: dict = {
-    "STM32F0": {"io_ma": 25, "total_io_ma": 80,  "inj_ma": 5, "vdd_v": [2.0, 3.6], "vdda_v": [2.4, 3.6], "temp_c": [-40, 85], "ft_5v": True, "ds": "DS9826 Rev 6, Table 22 §6.2 p.52"},
-    "STM32F1": {"io_ma": 25, "total_io_ma": 150, "inj_ma": 5, "vdd_v": [2.0, 3.6], "vdda_v": [2.0, 3.6], "temp_c": [-40, 85], "ft_5v": True, "ds": "DS5319 Rev 20, Table 7 §5.2 p.37"},
-    "STM32F2": {"io_ma": 25, "total_io_ma": 120, "inj_ma": 5, "vdd_v": [1.8, 3.6], "vdda_v": [1.8, 3.6], "temp_c": [-40, 85], "ft_5v": True, "ds": "DS6329 Rev 18, Table 12 §6.2 p.70"},
-    "STM32F3": {"io_ma": 25, "total_io_ma": 80,  "inj_ma": 5, "vdd_v": [2.0, 3.6], "vdda_v": [2.0, 3.6], "temp_c": [-40, 85], "ft_5v": True, "ds": "DocID026415 Rev 5, Table 17 §6.2 p.71"},
-    "STM32F4": {"io_ma": 25, "total_io_ma": 240, "inj_ma": 5, "vdd_v": [1.8, 3.6], "vdda_v": [1.8, 3.6], "temp_c": [-40, 85], "ft_5v": True, "ds": "DS8626 (DocID022152) Rev 5, Table 12 §5.2 p.78"},
-    "STM32F7": {"io_ma": 25, "total_io_ma": 120, "inj_ma": 5, "vdd_v": [1.7, 3.6], "vdda_v": [1.7, 3.6], "temp_c": [-40, 85], "ft_5v": True, "ds": "DS10916 Rev 5, Table 16 §6.2 p.121"},
+    "STM32F0": {"io_ma": 25, "total_io_ma": 80,  "metric": "sigma_io",     "sup_ma": None, "inj_ma": 5, "vdd_v": [2.0, 3.6], "vdda_v": [2.4, 3.6], "temp_c": [-40, 85], "ft_5v": True, "ds": "DS9826 Rev 6, Table 22 §6.2 p.52"},
+    "STM32F1": {"io_ma": 25, "total_io_ma": 150, "metric": "supply_total", "sup_ma": 150,  "inj_ma": 5, "vdd_v": [2.0, 3.6], "vdda_v": [2.0, 3.6], "temp_c": [-40, 85], "ft_5v": True, "ds": "DS5319 Rev 20, Table 7 §5.2 p.37"},
+    "STM32F2": {"io_ma": 25, "total_io_ma": 120, "metric": "supply_total", "sup_ma": 120,  "inj_ma": 5, "vdd_v": [1.8, 3.6], "vdda_v": [1.8, 3.6], "temp_c": [-40, 85], "ft_5v": True, "ds": "DS6329 Rev 18, Table 12 §6.2 p.70"},
+    "STM32F3": {"io_ma": 25, "total_io_ma": 80,  "metric": "sigma_io",     "sup_ma": 160,  "inj_ma": 5, "vdd_v": [2.0, 3.6], "vdda_v": [2.0, 3.6], "temp_c": [-40, 85], "ft_5v": True, "ds": "DocID026415 Rev 5, Table 17 §6.2 p.71"},
+    "STM32F4": {"io_ma": 25, "total_io_ma": 120, "metric": "sigma_io",     "sup_ma": 240,  "inj_ma": 5, "vdd_v": [1.8, 3.6], "vdda_v": [1.8, 3.6], "temp_c": [-40, 85], "ft_5v": True, "ds": "DS8626 (DocID022152) Rev 5, Table 12 §5.2 p.78"},
+    "STM32F7": {"io_ma": 25, "total_io_ma": 120, "metric": "sigma_io",     "sup_ma": None, "inj_ma": 5, "vdd_v": [1.7, 3.6], "vdda_v": [1.7, 3.6], "temp_c": [-40, 85], "ft_5v": True, "ds": "DS10916 Rev 5, Table 16 §6.2 p.121"},
 }
-# F4 total is package/sub-line dependent: F405/407 I_VDD/I_VSS = 240 mA; F427/429
-# (DS9405 Rev 5) = 270 mA with an explicit ΣI_IO = ±120 mA; F401/F411 lower
-# (~150 mA) — UNVERIFIED, flagged not asserted. See docs/stm32-pins.md.
+# total_io_ma = the datasheet's binding all-I/O current ceiling: the explicit
+# ΣI_IO ("sum of all I/O + control pins") row where the DS states it
+# (metric=sigma_io), else the device I_VDD/I_VSS supply total (metric=supply_total).
+# sup_ma = the device I_VDD/I_VSS supply ceiling where separately stated. Verified
+# 2026-07-02: every F4 sub-line has ΣI_IO = 120 mA (the old 240 was the F405/407
+# *supply* total, mislabelled); the supply total varies by sub-line (below). The
+# earlier "F401/F411 ~150 UNVERIFIED" guess is retired: 120 ΣI_IO / 160 supply.
+F4_SUBLINE_SUPPLY_MA: dict = {   # device I_VDD/I_VSS total (mA); ΣI_IO = 120 for all
+    "STM32F401": 160, "STM32F411": 160, "STM32F405/407": 240,
+    "STM32F429": 270, "STM32F446": 240, "STM32F469": 290,
+}
+# Sources: DS10086 R5 (F401), DS10314 R8 (F411), DS9405 R13 (F429),
+# DS10693/DocID027107 R6 (F446), DS11189 R8 (F469), DocID022152 R5 (F405/407).
+
+# Per-family POWER / decoupling design data, from the official ST datasheets
+# (fetched 2026-07-02, saved to the vault Sources/Datasheets/, cited). Drives the
+# NETDECK plug-in-card passive BOM (card_materials in the authority rollup).
+#   vcap        = family needs external cap(s) on the internal 1.2V regulator output
+#   vcap_value  = the required capacitor(s)
+#   vbat_v / vref_v = VBAT and VREF+ operating ranges (vref None = internally VDDA)
+#   decoupling  = the datasheet's recommended decoupling recipe
+#   n_vdd/n_vss = digital VDD/VSS pin count on LQFP100 (None = not verifiable)
+FAMILY_POWER: dict = {
+    "STM32F0": {"vcap": False, "vcap_value": None, "vbat_v": [1.65, 3.6], "vref_v": None,
+                "decoupling": "3x100nF (per VDD/VSS pair) + 4.7uF bulk; VDDA 10nF+1uF; VDDIO2 100nF+4.7uF",
+                "n_vdd": 3, "n_vss": 4, "ds": "DS9826 Rev 6, Fig 13 p.49 / Table 24 p.53"},
+    "STM32F1": {"vcap": False, "vcap_value": None, "vbat_v": [1.8, 3.6], "vref_v": [2.4, 3.6],
+                "decoupling": "5x100nF (per VDD/VSS pair) + 4.7uF bulk (on VDD3); VDDA 10nF+1uF; VREF+ 10nF+1uF",
+                "n_vdd": 5, "n_vss": 5, "ds": "DS5319 Rev 20, Fig 14 p.36 / Table 9 p.38"},
+    "STM32F2": {"vcap": True, "vcap_value": "2x2.2uF (VCAP_1/2, ESR<2ohm)", "vbat_v": [1.65, 3.6], "vref_v": [1.8, 3.6],
+                "decoupling": "100nF per VDD/VSS pair + 4.7uF bulk; VDDA 100nF+1uF; VREF+ 100nF+1uF",
+                "n_vdd": 6, "n_vss": 3, "ds": "DS6329 Rev 18, sec 3.16.2 p.26 / Fig 19 p.68 / Table 16 p.73"},
+    "STM32F3": {"vcap": False, "vcap_value": None, "vbat_v": [1.65, 3.6], "vref_v": [2.0, 3.6],
+                "decoupling": "100nF per VDD/VSS pair + 4.7uF bulk; VDDA 10nF+1uF; VREF+ 10nF+1uF",
+                "n_vdd": 4, "n_vss": 4, "ds": "DocID026415 Rev 5, Fig 12 p.69 / Table 19 p.72"},
+    "STM32F4": {"vcap": True, "vcap_value": "2x2.2uF (VCAP_1/2, ESR<2ohm)", "vbat_v": [1.65, 3.6], "vref_v": [1.8, 3.6],
+                "decoupling": "100nF per VDD/VSS pair + 4.7uF bulk; VDDA 10nF+1uF; VREF+ 10nF+1uF",
+                "n_vdd": None, "n_vss": None, "ds": "DS8626 (DocID022152) Rev 5, sec 2.2.16 p.26 / Fig 21 p.76 / Table 16 p.81"},
+    "STM32F7": {"vcap": True, "vcap_value": "2x2.2uF (VCAP_1/2, ESR<2ohm)", "vbat_v": [1.65, 3.6], "vref_v": [1.7, 3.6],
+                "decoupling": "100nF per VDD/VSS pair + 4.7uF bulk; VDDA 100nF+1uF; VREF+ 100nF+1uF; VDDUSB 100nF+1uF",
+                "n_vdd": 5, "n_vss": 5, "ds": "DS10916 Rev 5, sec 3.18.1 p.28 / Fig 22 p.119 / Table 20 p.125"},
+}
 
 # Per-family set of GPIOs that are NOT 5V-tolerant (I/O structure = TTa/TC, i.e.
 # 3.3V-only). Every other GPIO is structurally FT (5V-tolerant in digital mode).
@@ -215,17 +258,30 @@ def _electrical(conn: sqlite3.Connection, package: str) -> dict:
         his = [s[key][1] for s in specs]
         return [min(los), max(his)] if los and his else None
 
+    pfams = [f for f in known if f in FAMILY_POWER]
+
+    def widest_p(key):
+        vals = [FAMILY_POWER[f][key] for f in pfams if FAMILY_POWER[f].get(key)]
+        return [min(v[0] for v in vals), max(v[1] for v in vals)] if vals else None
+
     return {
         "vdd_range_v": [min(vmins), max(vmaxs)] if vmins and vmaxs else None,  # CubeMX per-part
         "vdda_range_v": widest("vdda_v"),
+        "vbat_range_v": widest_p("vbat_v"),
+        "vref_range_v": widest_p("vref_v"),
         "temp_range_c": widest("temp_c"),
         "max_io_current_ma": max((s["io_ma"] for s in specs), default=None),   # per-pin abs-max
         "injection_current_ma": max((s["inj_ma"] for s in specs), default=None),
         "total_io_current_ma": {f: FAMILY_ELECTRICAL[f]["total_io_ma"] for f in known},
+        "supply_total_ma": {f: FAMILY_ELECTRICAL[f]["sup_ma"] for f in known},
+        "vcap_required": any(FAMILY_POWER[f]["vcap"] for f in pfams) if pfams else None,
         "ft_5v_tolerant": all(s["ft_5v"] for s in specs) if specs else None,
+        "f4_subline_supply_ma": dict(F4_SUBLINE_SUPPLY_MA) if "STM32F4" in known else {},
         "by_family": {f: {k: FAMILY_ELECTRICAL[f][k]
-                          for k in ("io_ma", "total_io_ma", "inj_ma", "vdd_v", "vdda_v", "ft_5v", "ds")}
+                          for k in ("io_ma", "total_io_ma", "metric", "sup_ma", "inj_ma",
+                                    "vdd_v", "vdda_v", "ft_5v", "ds")}
                       for f in known},
+        "power": {f: dict(FAMILY_POWER[f]) for f in pfams},
     }
 
 

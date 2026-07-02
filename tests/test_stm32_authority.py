@@ -120,13 +120,34 @@ class AuthorityTests(unittest.TestCase):
         self.assertEqual(e["injection_current_ma"], 5)      # ±5 mA per pin
         self.assertTrue(e["ft_5v_tolerant"])
         self.assertIsNotNone(e["vdda_range_v"])
-        # per-family total-I/O ceiling differs (F0/F3=80, F1=150, F2=120, F4=240, F7=120)
+        # total-I/O = ΣI_IO where explicit (F0/F3/F4/F7) else supply (F1/F2)
         tot = e["total_io_current_ma"]
         self.assertEqual(tot["STM32F0"], 80)
         self.assertEqual(tot["STM32F1"], 150)
-        self.assertEqual(tot["STM32F4"], 240)
+        self.assertEqual(tot["STM32F4"], 120)   # ΣI_IO (the 240 was the *supply* total)
+        self.assertEqual(e["by_family"]["STM32F4"]["metric"], "sigma_io")
+        self.assertEqual(e["supply_total_ma"]["STM32F4"], 240)
         self.assertIn("DS", e["by_family"]["STM32F7"]["ds"])   # carries a datasheet cite
         self.assertEqual(auth.FAMILY_ELECTRICAL["STM32F7"]["vdd_v"], [1.7, 3.6])
+
+    def test_power_bootloader_and_f4_sublines(self):
+        """Phase A: FAMILY_POWER (VCAP/VBAT/VREF), exhaustive AN2606 bootloader,
+        and the verified F4 sub-line supply totals."""
+        e = auth.build(self.conn, "LQFP64")["electrical"]
+        # VCAP: F2/F4/F7 need it, F0/F1/F3 don't
+        self.assertTrue(e["vcap_required"])                      # F2/F4/F7 present
+        self.assertTrue(e["power"]["STM32F4"]["vcap"])
+        self.assertIn("2.2", e["power"]["STM32F4"]["vcap_value"])
+        self.assertFalse(e["power"]["STM32F0"]["vcap"])
+        self.assertEqual(e["vbat_range_v"], [1.65, 3.6])
+        self.assertIsNotNone(e["vref_range_v"])
+        # F4 sub-line supply totals (F401/F411 verified, retires the ~150 guess)
+        self.assertEqual(e["f4_subline_supply_ma"]["STM32F401"], 160)
+        self.assertEqual(e["f4_subline_supply_ma"]["STM32F469"], 290)
+        # exhaustive AN2606 bootloader: F7 has both CAN buses; F3 I2C3; F4 SPI
+        self.assertEqual(auth.BOOTLOADER_PINS["STM32F7"]["CAN"], {"PB5", "PB13", "PD0", "PD1"})
+        self.assertIn("PB5", auth.BOOTLOADER_PINS["STM32F3"]["I2C"])   # I2C3 PA8/PB5
+        self.assertIn("PA15", auth.BOOTLOADER_PINS["STM32F4"]["SPI"])  # SPI3 NSS
 
     def test_five_v_tolerance_per_family(self):
         """Per-pin 5V-tolerance from the datasheet I/O-structure column, incl. the
