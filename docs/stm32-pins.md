@@ -185,6 +185,16 @@ the drift-gate: pass a Build Card's asserted numbers (`must_switch_count`, `adg7
 and it returns ok/mismatch per field against the authority — catching the exact SWCLK-76-vs-49 /
 ADG714-8-vs-2 drift this generator exists to kill.
 
+### Tab UX (Phase C, 2026-07-02)
+The `STM32 Pins` tab gains a **detail panel** (right of the matrix, in a splitter): select a socket row →
+its full detail (switch/ADG714, breakout + via, tags, per-family 5V verdict, bootloader, peripherals, VDD);
+with nothing selected it shows the **package summary card** (rollup + electrical + the `card_materials`
+passive BOM). A **Generate → Vault** button writes the authority into
+`Brain/Wiki/Datasets/STM32 Pinout Authority/`, and a `QFileSystemWatcher` **live-reloads** the matrix when
+the DB is rebuilt on disk — confirming PyQt does live *data* updates natively (no web app needed; only code
+hot-reload is web's edge, and that's a dev convenience, not a user feature). Formatting lives in pure
+helpers (`_summary_html` / `_pin_detail_html`) so it stays unit-testable without a running GUI.
+
 ## Full-spec field sources (Phase 2)
 - **electrical**: VDD/VDDA range from the CubeMX `<Voltage Max Min>` element (MCU-level, aggregated);
   per-pin `max_io_current_ma` = per-family datasheet constant (small cited table).

@@ -164,6 +164,22 @@ class AuthorityTests(unittest.TestCase):
         self.assertFalse(any(f["ok"] for f in bad))
         self.assertEqual({f["field"]: f["actual"] for f in bad}, {"swclk_pos": 49, "adg714_cells": 2})
 
+    def test_tab_detail_helpers(self):
+        """Phase C: the tab's pure HTML helpers (skip if PyQt5 unavailable)."""
+        try:
+            import stm32_pins_tab as tab
+        except Exception as e:  # pragma: no cover
+            raise unittest.SkipTest(f"stm32_pins_tab (PyQt5) unavailable: {e}")
+        a = auth.build(self.conn, "LQFP64")
+        s = tab._summary_html(a)
+        self.assertIn("Card materials", s)
+        self.assertIn("2.2uF", s)                    # VCAP shown in the summary
+        self.assertIn("VCAP required", s)
+        p46 = next(p for p in a["positions"] if p["position"] == 46)
+        self.assertIn("SWDIO_PARENT", tab._pin_detail_html(p46))
+        pa0 = next(p for p in a["positions"] if "PA0" in p["pin_names"])
+        self.assertIn("part-dependent", tab._pin_detail_html(pa0))
+
     def test_five_v_tolerance_per_family(self):
         """Per-pin 5V-tolerance from the datasheet I/O-structure column, incl. the
         part-dependent analog pins (PA0 FT on F2/F4/F7, not on F0/F1/F3)."""
