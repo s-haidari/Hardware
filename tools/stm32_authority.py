@@ -589,6 +589,62 @@ ADG714_BUS = [
 ]
 
 
+# Service / debug nets -> connector contact (Connector Contract Rev B).
+SERVICE_CONTACT = {
+    "SWDIO_PARENT": "LA-1", "SWCLK_PARENT": "LA-3", "SWO_PARENT": "LA-5",
+    "SERVICE_NRST": "LA-7", "TDI_PARENT": "LA-35", "NTRST_PARENT": "LA-37",
+    "SERVICE_BOOT0": "RA-14", "UART_BOOT_TX": "RA-6", "UART_BOOT_RX": "RA-8",
+    "USB_DP_TGT": "RA-2", "USB_DN_TGT": "RA-4",
+    "SERVICE_OSC_IN": "RA-10", "SERVICE_OSC_OUT": "RA-12",
+}
+# net -> category (drives the colour and grouping in the connections view)
+_NET_CATEGORY = {
+    "VTARGET": "power", "VBAT_TGT": "power",
+    "VDDA_TGT": "analog", "VREF_TGT": "analog",
+    "GND": "ground", "VSSA_TGT": "ground", "VCAP_NODE": "core",
+    "SWDIO_PARENT": "service", "SWCLK_PARENT": "service", "SWO_PARENT": "service",
+    "SERVICE_NRST": "service", "TDI_PARENT": "service", "NTRST_PARENT": "service",
+    "SERVICE_BOOT0": "service", "UART_BOOT_TX": "service", "UART_BOOT_RX": "service",
+    "USB_DP_TGT": "service", "USB_DN_TGT": "service",
+    "SERVICE_OSC_IN": "service", "SERVICE_OSC_OUT": "service",
+}
+
+
+def _dest_contact(dest: str) -> str:
+    if dest in RAIL_CONTACT:
+        cs = RAIL_CONTACT[dest]
+        return cs[0] if cs else ("GND plane" if dest == "GND" else "local cap")
+    if dest in SERVICE_CONTACT:
+        return SERVICE_CONTACT[dest]
+    return "lane row"
+
+
+def socket_connections(authority: dict) -> list:
+    """Every socket pin's connection to the parent, not just the switched ones. Per pin:
+    the middle component (switch for switched pins, a 33-ohm series resistor for GPIO
+    lanes, or a direct link for fixed power and debug/service), the destination net and
+    its category, and the connector contact."""
+    out = []
+    for p in sorted(authority["positions"], key=lambda p: p["position"]):
+        pin = p["position"]
+        name = list(p["pin_names"])[0] if p["pin_names"] else ""
+        service = [n for n in p.get("breakout", {}).get("service_nets", []) if n]
+        if p["switch_class"] == db.SWITCH_MUST:
+            dest, kind = p["assignment"]["adg714"]["destination"], "switch"
+        elif service:
+            dest, kind = service[0], "direct"
+        else:
+            net = p["assignment"].get("net") or p["assignment"].get("destination") or ""
+            if net in _NET_CATEGORY:
+                dest, kind = net, "direct"          # fixed power / ground rail
+            else:
+                dest, kind = f"CARD_LANE_{pin:03d}", "resistor"   # GPIO -> series R -> lane
+        cat = _NET_CATEGORY.get(dest, "lane")
+        out.append({"pin": pin, "name": name, "kind": kind, "dest": dest,
+                    "category": cat, "contact": _dest_contact(dest)})
+    return out
+
+
 def card_wiring(authority: dict) -> dict:
     """The switch fabric wired terminal by terminal, mapping the tool's derived channels
     onto the vault's Connector Contract. Per channel: the ADG714 S/D terminal pins, the

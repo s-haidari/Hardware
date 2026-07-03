@@ -299,7 +299,7 @@ def pin_map_svg(authority: dict, w: int = 460, h: int = 460, selected=None) -> s
     return "".join(s)
 
 
-_SVG_FONT = "Inter,'Segoe UI',system-ui,Arial"
+_SVG_FONT = "Geist,Inter,'Segoe UI',system-ui,Arial"
 _SVG_MONO = "'JetBrains Mono',Consolas,monospace"
 _RAIL_COLOR = {
     "VTARGET": "#e5534b", "VBAT_TGT": "#e5534b",                       # power rails, red
@@ -410,6 +410,77 @@ def fabric_svg(a: dict) -> str:
             s.append(f'<text x="28" y="{iy}" fill="{_MUT}" font-size="11" font-family="{_SVG_MONO}">{it["qty"]}x</text>')
             s.append(f'<text x="60" y="{iy}" fill="{_TXT}" font-size="11.5">{_esc(it["part"])}</text>')
             s.append(f'<text x="{W-28}" y="{iy}" fill="{_MUT}" font-size="11" text-anchor="end">{_esc(it["role"])}</text>')
+    s.append("</svg>")
+    return "".join(s)
+
+
+_CAT_COLOR = {"power": "#e5534b", "analog": "#e6a030", "ground": "#9aa1a9",
+              "core": "#8b6fe8", "service": "#24b196", "lane": "#4c8df0"}
+_CAT_LABEL = [("All", None), ("Switched", "switch"), ("Power", "power"), ("Analog", "analog"),
+              ("Ground", "ground"), ("Core VCAP", "core"), ("Debug & service", "service"),
+              ("GPIO lanes", "lane")]
+
+
+def _sw_glyph(cx, cy, col):
+    lx, rx = cx - 20, cx + 20
+    return (f'<rect x="{lx-10}" y="{cy-13}" width="{rx-lx+20}" height="26" rx="8" fill="{_CARD}" stroke="{_LINE}"/>'
+            f'<circle cx="{lx}" cy="{cy}" r="3.4" fill="none" stroke="{_TXT}" stroke-width="1.6"/>'
+            f'<circle cx="{rx}" cy="{cy}" r="2.8" fill="{_TXT}"/>'
+            f'<line x1="{lx}" y1="{cy}" x2="{rx}" y2="{cy}" stroke="{col}" stroke-width="2.8" stroke-linecap="round"/>')
+
+
+def _res_glyph(cx, cy, col):
+    d, up = f"M {cx-24} {cy}", True
+    for x in (cx-18, cx-11, cx-4, cx+3, cx+10, cx+17):
+        d += f" L {x} {cy + (-6 if up else 6)}"
+        up = not up
+    d += f" L {cx+24} {cy}"
+    return (f'<rect x="{cx-32}" y="{cy-13}" width="64" height="26" rx="8" fill="{_CARD}" stroke="{_LINE}"/>'
+            f'<path d="{d}" fill="none" stroke="{col}" stroke-width="1.9"/>')
+
+
+def _dir_glyph(cx, cy, col):
+    return f'<circle cx="{cx}" cy="{cy}" r="4.5" fill="{_CARD}" stroke="{col}" stroke-width="2.2"/>'
+
+
+def connections_svg(a: dict, cat=None) -> str:
+    """Every socket pin's connection as a row: target socket -> path component
+    (switch / resistor / direct) -> parent header, coloured by destination."""
+    conns = sauth.socket_connections(a)
+    if cat == "switch":
+        conns = [c for c in conns if c["kind"] == "switch"]
+    elif cat:
+        conns = [c for c in conns if c["category"] == cat]
+    W, rowh, top = 908, 46, 96
+    scx, scw, hdx, hdw = 24, 184, 660, 224
+    H = top + max(1, len(conns)) * rowh + 24
+    s = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" font-family="{_SVG_FONT}">',
+         f'<rect width="{W}" height="{H}" fill="{_PANEL}"/>',
+         f'<text x="24" y="40" fill="{_TXT}" font-size="16" font-weight="700">Socket Connections</text>',
+         f'<text x="24" y="62" fill="{_MUT}" font-size="12">{len(conns)} pins. Each routes to the '
+         f'parent through a switch, a series resistor, or a direct link.</text>']
+    for x, t, anch in ((scx, "TARGET SOCKET", "start"), ((scx+scw+hdx)/2, "PATH", "middle"),
+                       (hdx, "PARENT HEADER", "start")):
+        s.append(f'<text x="{x:.0f}" y="{top-14}" fill="#a2a2a8" font-size="9" font-weight="700" '
+                 f'letter-spacing="1" text-anchor="{anch}">{t}</text>')
+    for i, c in enumerate(conns):
+        y = top + i * rowh + rowh / 2
+        col = _CAT_COLOR.get(c["category"], "#4c8df0")
+        s.append(f'<line x1="{scx+scw}" y1="{y}" x2="{hdx}" y2="{y}" stroke="{col}" stroke-width="2.2"/>')
+        s.append(f'<circle cx="{scx+scw}" cy="{y}" r="3" fill="{col}"/><circle cx="{hdx}" cy="{y}" r="3" fill="{col}"/>')
+        s.append(f'<rect x="{scx}" y="{y-18}" width="{scw}" height="36" rx="9" fill="{_CARD}"/>'
+                 f'<rect x="{scx}" y="{y-18}" width="3.5" height="36" rx="2" fill="{col}"/>')
+        s.append(f'<text x="{scx+16}" y="{y+5}" fill="{_TXT}" font-size="13" font-weight="700">Pin {c["pin"]}'
+                 f'<tspan dx="9" fill="{_MUT}" font-weight="400" font-size="12">{_esc(c["name"])}</tspan></text>')
+        mx = (scx + scw + hdx) / 2
+        s.append({"switch": _sw_glyph, "resistor": _res_glyph, "direct": _dir_glyph}[c["kind"]](mx, y, col))
+        clbl = {"switch": "SWITCH", "resistor": "33 &#937;", "direct": "DIRECT"}[c["kind"]]
+        s.append(f'<text x="{mx:.0f}" y="{y-16}" fill="#a2a2a8" font-size="8" font-weight="700" '
+                 f'letter-spacing="0.6" text-anchor="middle">{clbl}</text>')
+        s.append(f'<rect x="{hdx}" y="{y-18}" width="{hdw}" height="36" rx="9" fill="{_CARD}"/>'
+                 f'<rect x="{hdx+hdw-3.5}" y="{y-18}" width="3.5" height="36" rx="2" fill="{col}"/>')
+        s.append(f'<text x="{hdx+16}" y="{y+5}" fill="{col}" font-size="12.5" font-weight="700">{_esc(c["dest"])}'
+                 f'<tspan dx="9" fill="{_MUT}" font-weight="400" font-size="11">{_esc(c["contact"])}</tspan></text>')
     s.append("</svg>")
     return "".join(s)
 
@@ -754,7 +825,7 @@ class Stm32PinsWidget(QWidget):
 
         bar.addWidget(QLabel("View:"))
         self.view_combo = QComboBox()
-        self.view_combo.addItems(["Pin map", "Table", "Card BOM"])
+        self.view_combo.addItems(["Pin map", "Table", "Connections"])
         self.view_combo.currentIndexChanged.connect(lambda i: self.stack.setCurrentIndex(i))
         bar.addWidget(self.view_combo)
         root.addLayout(bar)
@@ -888,6 +959,15 @@ class Stm32PinsWidget(QWidget):
         page = QWidget()
         lay = QVBoxLayout(page)
         lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+        frow = QHBoxLayout()
+        frow.addWidget(QLabel("Show:"))
+        self.conn_combo = QComboBox()
+        self.conn_combo.addItems([lbl for lbl, _ in _CAT_LABEL])
+        self.conn_combo.currentTextChanged.connect(self._on_conn_filter)
+        frow.addWidget(self.conn_combo)
+        frow.addStretch()
+        lay.addLayout(frow)
         self.bom_svg = QSvgWidget()
         self._bom_area = QScrollArea()
         self._bom_area.setWidgetResizable(False)
@@ -895,6 +975,11 @@ class Stm32PinsWidget(QWidget):
         self._bom_area.setStyleSheet("QScrollArea{border:none;background:%s;}" % _PANEL)
         lay.addWidget(self._bom_area)
         return page
+
+    def _on_conn_filter(self, _t=None):
+        if self.authority:
+            cat = dict(_CAT_LABEL).get(self.conn_combo.currentText())
+            self._load_svg(self.bom_svg, connections_svg(self.authority, cat))
 
     # ── selection + dashboard ───────────────────────────────────────
     def _maps(self):
@@ -963,7 +1048,8 @@ class Stm32PinsWidget(QWidget):
                        f"{fv.get('not_tolerant_any_part', 0)} never")
         self.sc_elec.set(f"±{el.get('max_io_current_ma', '?')} mA I/O",
                          f"VDDA {vdda[0]}–{vdda[1]} V · VCAP {el.get('vcap_required')}" if vdda else "")
-        self._load_svg(self.bom_svg, fabric_svg(a))
+        cat = dict(_CAT_LABEL).get(self.conn_combo.currentText()) if hasattr(self, "conn_combo") else None
+        self._load_svg(self.bom_svg, connections_svg(a, cat))
 
     # ── data ───────────────────────────────────────────────────────
     def _load_if_ready(self):

@@ -2963,7 +2963,7 @@ class LibraryManagerWindow(QMainWindow):
     }
     # @@KEY@@ -> background hex, @KEY@ -> text/border hex (substituted in _build_qss).
     _THEME_QSS = """
-        QWidget { color: @FG@; font-family: "Inter","Segoe UI Variable Text","Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif; font-size: 8pt; }
+        QWidget { color: @FG@; font-family: "Geist","Inter","Segoe UI Variable Text","Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif; font-size: 8pt; }
         QMainWindow { background: transparent; }
         QWidget#rootCentral { background-color: @@WIN_BG@@; }
         QFrame#headerBar { background: transparent; border: none; }
@@ -3458,7 +3458,7 @@ def main():
     try:
         from PyQt5.QtGui import QFontDatabase
         fams = set(QFontDatabase().families())
-        for fam in ("Inter", "Segoe UI Variable Text", "Segoe UI"):
+        for fam in ("Geist", "Inter", "Segoe UI Variable Text", "Segoe UI"):
             if fam in fams:
                 app.setFont(QFont(fam, 9))   # compact base size
                 break

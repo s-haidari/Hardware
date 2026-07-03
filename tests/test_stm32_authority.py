@@ -343,10 +343,11 @@ class AuthorityTests(unittest.TestCase):
         if spi:
             w.periph_combo.setCurrentText(spi)
             self.assertTrue(w.pin_map.highlight)                      # peripheral -> highlight
-        w.view_combo.setCurrentText("Card BOM")
-        svg = tab.fabric_svg(w.authority)                            # switch-fabric diagram
-        self.assertIn("S1/D1", svg)
-        self.assertIn("Switch cell 1", svg)
+        w.view_combo.setCurrentText("Connections")
+        svg = tab.connections_svg(w.authority)                       # all-pins connection view
+        self.assertIn("Socket Connections", svg)
+        self.assertIn("SWITCH", svg)                                 # switched pins present
+        self.assertIn("DIRECT", svg)                                 # direct-connect pins present
         self.assertNotIn("ADG714", svg)                              # part name not shown in the app
 
 
