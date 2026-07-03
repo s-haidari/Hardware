@@ -325,8 +325,10 @@ class AuthorityTests(unittest.TestCase):
             w.periph_combo.setCurrentText(spi)
             self.assertTrue(w.pin_map.highlight)                      # peripheral -> highlight
         w.view_combo.setCurrentText("Card BOM")
-        self.assertIn("S1/D1", w.bom_view.toPlainText())             # switch-fabric map
-        self.assertIn("ADG714BRUZ-REEL", w.bom_view.toPlainText())
+        svg = tab.fabric_svg(w.authority)                            # switch-fabric diagram
+        self.assertIn("S1/D1", svg)
+        self.assertIn("ADG714 #1", svg)
+        self.assertIn("RU_24_ADI", svg)
 
 
 if __name__ == "__main__":

@@ -11,14 +11,15 @@ import html
 import os
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QFileSystemWatcher, pyqtSignal, QRectF
+from PyQt5.QtCore import Qt, QFileSystemWatcher, pyqtSignal, QRectF, QByteArray
 from PyQt5.QtGui import QColor, QBrush, QPainter, QPen
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox, QLineEdit,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QSizePolicy,
     QFileDialog, QMessageBox, QApplication, QSplitter, QTextEdit, QStackedWidget,
-    QFrame,
+    QFrame, QScrollArea,
 )
+from PyQt5.QtSvg import QSvgWidget
 
 # palette (mirrors the app's dark theme)
 _PANEL, _CARD, _TXT, _MUT, _LINE = "#212124", "#26262b", "#ededf0", "#90909a", "#33333a"
@@ -282,9 +283,100 @@ def pin_map_svg(authority: dict, w: int = 460, h: int = 460, selected=None) -> s
     return "".join(s)
 
 
+_SVG_FONT = "Inter,'Segoe UI',system-ui,Arial"
+_SVG_MONO = "'JetBrains Mono',Consolas,monospace"
+_RAIL_COLOR = {
+    "VTARGET": "#d78a6b", "VBAT_TGT": "#d78a6b",                       # power rails, warm
+    "GND": "#6b7076", "VSSA_TGT": "#6b7076",                           # ground, grey
+    "VDDA_TGT": "#cf9f57", "VREF_TGT": "#cf9f57",                      # analog supply, amber
+    "VCAP_NODE": "#8f9fd4",                                            # core cap, periwinkle
+    "SERVICE_BOOT0": "#5fadad", "SERVICE_NRST": "#5fadad", "SERVICE_OSC_IN": "#5fadad",
+}
+
+
+def _rail_color(net):
+    return _RAIL_COLOR.get(net, "#8a8f96")
+
+
+def fabric_svg(a: dict) -> str:
+    """The ADG714 switch fabric as a visual diagram: one chip per cell, eight
+    colour-coded channels each routing a socket pin to its target rail."""
+    cells = sauth.adg714_cell_map(a)
+    r = a["rollup"]
+    pinname = {p["position"]: (list(p["pin_names"])[0] if p["pin_names"] else "")
+               for p in a["positions"]}
+    colw, gap, chh, top = 432, 20, 30, 50
+    cellh = 8 * chh + top
+    cols = 1 if len(cells) <= 1 else 2
+    rows = -(-len(cells) // cols)
+    W = 28 + cols * colw + (cols - 1) * gap + 28
+    cm = a.get("card_materials", {})
+    foot = cm.get("items", [])
+    H = 88 + rows * (cellh + gap) + (46 + len(foot) * 22 if foot else 0)
+    s = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" font-family="{_SVG_FONT}">',
+         f'<rect width="{W}" height="{H}" fill="{_PANEL}"/>',
+         f'<text x="28" y="36" fill="{_TXT}" font-size="16" font-weight="700">'
+         f'{a["package"]} switch fabric</text>',
+         f'<text x="28" y="58" fill="{_MUT}" font-size="12">'
+         f'{r["must_switch_count"]} must-switch pins use {r["channel_count"]} one-hot channels '
+         f'across {r["cells_min"]} cells. Each channel routes one socket pin to its target rail.</text>']
+    for i, cell in enumerate(cells):
+        cx = 28 + (i % cols) * (colw + gap)
+        cy = 80 + (i // cols) * (cellh + gap)
+        used = sum(1 for sw in cell["switches"] if not sw["spare"])
+        s.append(f'<rect x="{cx}" y="{cy}" width="{colw}" height="{cellh}" rx="12" fill="{_CARD}"/>')
+        s.append(f'<text x="{cx+16}" y="{cy+27}" fill="{_TXT}" font-size="13" font-weight="700">'
+                 f'ADG714 #{cell["cell"]}</text>')
+        s.append(f'<text x="{cx+colw-16}" y="{cy+27}" fill="{_MUT}" font-size="10.5" '
+                 f'text-anchor="end" font-family="{_SVG_MONO}">{cell["footprint"]} · {used}/8</text>')
+        y = cy + top - 4
+        for sw in cell["switches"]:
+            spare = sw["spare"]
+            dim = "#5c5c64"
+            s.append(f'<text x="{cx+16}" y="{y+19}" fill="{dim if spare else _MUT}" '
+                     f'font-size="10.5" font-family="{_SVG_MONO}">SW{sw["channel"]}</text>')
+            s.append(f'<rect x="{cx+48}" y="{y+3}" width="50" height="22" rx="6" fill="{_PANEL}" '
+                     f'stroke="{_LINE}"/>')
+            s.append(f'<text x="{cx+73}" y="{y+18}" fill="{dim if spare else _TXT}" font-size="10.5" '
+                     f'text-anchor="middle" font-family="{_SVG_MONO}">{sw["s_pin"]}/{sw["d_pin"]}</text>')
+            if spare:
+                s.append(f'<line x1="{cx+108}" y1="{y+14}" x2="{cx+colw-18}" y2="{y+14}" '
+                         f'stroke="{_LINE}" stroke-dasharray="3 4"/>')
+                s.append(f'<text x="{cx+colw/2+30:.0f}" y="{y+18}" fill="{dim}" font-size="10.5" '
+                         f'text-anchor="middle">Spare</text>')
+                y += chh
+                continue
+            c = _rail_color(sw["destination"])
+            s.append(f'<circle cx="{cx+116}" cy="{y+14}" r="4" fill="{c}"/>')
+            s.append(f'<text x="{cx+128}" y="{y+18}" fill="{_TXT}" font-size="11" '
+                     f'font-family="{_SVG_MONO}">pin {sw["position"]} {_esc(pinname.get(sw["position"],""))}</text>')
+            pill = sw["destination"] or ""
+            pw = 14 + len(pill) * 6.4
+            px = cx + colw - 16 - pw
+            s.append(f'<line x1="{cx+232}" y1="{y+14}" x2="{px-6:.0f}" y2="{y+14}" stroke="{c}" '
+                     f'stroke-width="1.3" opacity="0.5"/>')
+            s.append(f'<rect x="{px:.0f}" y="{y+3}" width="{pw:.0f}" height="22" rx="11" fill="{c}" opacity="0.2"/>')
+            s.append(f'<text x="{px+pw/2:.0f}" y="{y+18}" fill="{c}" text-anchor="middle" '
+                     f'font-size="10.5" font-family="{_SVG_MONO}" font-weight="600">{_esc(pill)}</text>')
+            y += chh
+    if foot:
+        fy = 80 + rows * (cellh + gap) + 10
+        s.append(f'<text x="28" y="{fy+14}" fill="{_TXT}" font-size="13" font-weight="700">'
+                 f'Passive materials</text>')
+        for j, it in enumerate(foot):
+            iy = fy + 38 + j * 22
+            s.append(f'<text x="28" y="{iy}" fill="{_MUT}" font-size="11" '
+                     f'font-family="{_SVG_MONO}">{it["qty"]}x</text>')
+            s.append(f'<text x="60" y="{iy}" fill="{_TXT}" font-size="11.5">{_esc(it["part"])}</text>')
+            s.append(f'<text x="{W-28}" y="{iy}" fill="{_MUT}" font-size="11" text-anchor="end">'
+                     f'{_esc(it["role"])}</text>')
+    s.append("</svg>")
+    return "".join(s)
+
+
 class _NumItem(QTableWidgetItem):
     """Table item that sorts by its numeric UserRole, so the Pin column orders
-    1, 2, … 10, … 64 rather than lexicographically (1, 10, 11, … 2, …)."""
+    1, 2, ... 10, ... 64 rather than lexicographically (1, 10, 11, ... 2, ...)."""
     def __lt__(self, other):
         try:
             return int(self.data(Qt.UserRole)) < int(other.data(Qt.UserRole))
@@ -561,9 +653,12 @@ class Stm32PinsWidget(QWidget):
         page = QWidget()
         lay = QVBoxLayout(page)
         lay.setContentsMargins(0, 0, 0, 0)
-        self.bom_view = QTextEdit()
-        self.bom_view.setReadOnly(True)
-        lay.addWidget(self.bom_view)
+        self.bom_svg = QSvgWidget()
+        area = QScrollArea()
+        area.setWidgetResizable(False)
+        area.setWidget(self.bom_svg)
+        area.setStyleSheet("QScrollArea{border:none;background:%s;}" % _PANEL)
+        lay.addWidget(area)
         return page
 
     # ── selection + dashboard ───────────────────────────────────────
@@ -602,6 +697,11 @@ class Stm32PinsWidget(QWidget):
         self.map_detail.setHtml(html_)
         self.detail.setHtml(html_)
 
+    @staticmethod
+    def _load_svg(widget, svg):
+        widget.load(QByteArray(svg.encode("utf-8")))
+        widget.setFixedSize(widget.renderer().defaultSize())
+
     def _update_dashboard(self):
         a = self.authority
         if not a:
@@ -619,32 +719,7 @@ class Stm32PinsWidget(QWidget):
                        f"{fv.get('not_tolerant_any_part', 0)} never")
         self.sc_elec.set(f"±{el.get('max_io_current_ma', '?')} mA I/O",
                          f"VDDA {vdda[0]}–{vdda[1]} V · VCAP {el.get('vcap_required')}" if vdda else "")
-        cm = a.get("card_materials", {})
-        rows = "".join(
-            f"<tr><td style='text-align:right;padding-right:8px'>{i['qty']}×</td>"
-            f"<td>{_esc(i['part'])}</td>"
-            f"<td style='color:{_MUT};padding-left:10px'>{_esc(i['role'])}</td></tr>"
-            for i in cm.get("items", []))
-        map_html = []
-        for cell in sauth.adg714_cell_map(a):
-            body = "".join(
-                f"<tr><td style='color:{_MUT};padding-right:10px'>SW{sw['channel']}</td>"
-                f"<td style='padding-right:10px'>{sw['s_pin']}/{sw['d_pin']}</td>"
-                f"<td style='padding-right:10px'>"
-                f"{'—' if sw['spare'] else 'pin ' + str(sw['position'])}</td>"
-                f"<td style='padding-right:10px'>{_esc(sw['pin_name'])}</td>"
-                f"<td style='color:{_BREAKOUT_COLOR}'>"
-                f"{_esc('(spare)' if sw['spare'] else (sw['destination'] or '—'))}</td></tr>"
-                for sw in cell["switches"])
-            map_html.append(
-                f"<p style='margin:8px 0 2px'><b>Cell {cell['cell']}</b> "
-                f"<span style='color:{_MUT}'>{cell['symbol']} · {cell['footprint']}</span></p>"
-                f"<table>{body}</table>")
-        self.bom_view.setHtml(
-            f"<h3>{a['package']} — switch-fabric map (ADG714 cell → socket pin)</h3>"
-            + "".join(map_html)
-            + f"<h3 style='margin-top:14px'>Plug-in card passive BOM</h3><table>{rows}</table>"
-            f"<p style='color:{_MUT}'>{_esc(cm.get('note', ''))}</p>")
+        self._load_svg(self.bom_svg, fabric_svg(a))
 
     # ── data ───────────────────────────────────────────────────────
     def _load_if_ready(self):
