@@ -563,43 +563,43 @@ def detail_svg(a: dict, pos=None) -> str:
 
     def section(label):
         nonlocal y
-        body.append(f'<text x="{pad}" y="{y}" fill="{_MUT}" font-size="10" font-weight="700" '
+        body.append(f'<text x="{pad}" y="{y}" fill="{_MUT}" font-size="{_FS_CAP}" font-weight="700" '
                     f'letter-spacing="0.5">{label}</text>')
-        y += 20
+        y += 19
 
     def chips(items):
         """Uniform-width chips laid out in a grid (every bubble the same length)."""
         nonlocal y
         if not items:
             return
-        cw = min(max(16 + len(str(lab)) * 6.4 for lab, _, _ in items), W - 2 * pad)
-        per = max(1, int((W - 2 * pad + 7) / (cw + 7)))
+        cw = min(max(14 + len(str(lab)) * 5.9 for lab, _, _ in items), W - 2 * pad)
+        per = max(1, int((W - 2 * pad + 6) / (cw + 6)))
         for i, (lab, col, fill) in enumerate(items):
             c = i % per
             if c == 0 and i:
-                y += 28
-            cx = pad + c * (cw + 7)
+                y += 24
+            cx = pad + c * (cw + 6)
             if fill:
-                body.append(f'<rect x="{cx:.0f}" y="{y-15}" width="{cw:.0f}" height="22" rx="11" fill="{col}"/>')
+                body.append(f'<rect x="{cx:.0f}" y="{y-14}" width="{cw:.0f}" height="{_CHIP_H}" rx="9" fill="{col}"/>')
                 tc = "#161618"
             else:
-                body.append(f'<rect x="{cx:.0f}" y="{y-15}" width="{cw:.0f}" height="22" rx="11" '
-                            f'fill="{col}" fill-opacity="0.15" stroke="{col}" stroke-opacity="0.45"/>')
+                body.append(f'<rect x="{cx:.0f}" y="{y-14}" width="{cw:.0f}" height="{_CHIP_H}" rx="9" '
+                            f'fill="{col}" fill-opacity="0.14" stroke="{col}" stroke-opacity="0.42"/>')
                 tc = col
-            body.append(f'<text x="{cx+cw/2:.0f}" y="{y}" fill="{tc}" text-anchor="middle" '
-                        f'font-size="11" font-family="{_SVG_FONT}" font-weight="600">{_esc(lab)}</text>')
-        y += 30
+            body.append(f'<text x="{cx+cw/2:.0f}" y="{y-1}" fill="{tc}" text-anchor="middle" '
+                        f'font-size="{_FS_CHIP}" font-family="{_SVG_FONT}" font-weight="600">{_esc(lab)}</text>')
+        y += 26
 
     if pos is None:
         r = a["rollup"]
         cats = sauth.category_lists(a)
-        body.append(f'<text x="{pad}" y="{y}" fill="{_TXT}" font-size="16" font-weight="700">'
+        body.append(f'<text x="{pad}" y="{y}" fill="{_TXT}" font-size="{_FS_TITLE}" font-weight="700">'
                     f'{a["package"]}</text>')
-        y += 21
-        body.append(f'<text x="{pad}" y="{y}" fill="{_MUT}" font-size="11.5">'
+        y += 19
+        body.append(f'<text x="{pad}" y="{y}" fill="{_MUT}" font-size="{_FS_BODY}">'
                     f'{a["manifest"]["part_count"]} parts, {r["positions_total"]} positions. '
                     f'{r["must_switch_count"]} pins switch.</text>')
-        y += 26
+        y += 24
         byp = {p["position"]: p for p in a["positions"]}
         namemap = {pos: (next(iter(p["pin_names"]), "") or "") for pos, p in byp.items()}
         rolemap = {pos: list(p["role_set"].keys()) for pos, p in byp.items()}
@@ -618,8 +618,8 @@ def detail_svg(a: dict, pos=None) -> str:
         _named = [n for _, _, nums in _pill_secs for n in nums] or [1]
         _max_num = max(len(str(n)) for n in _named)
         _max_nm = max((len(namemap.get(n, "")) for n in _named), default=4)
-        name_off = 12 + _max_num * 6.9 + 11
-        pill_w = min(W - 2 * pad, name_off + _max_nm * 6.2 + 12)
+        name_off = 12 + _max_num * 6.4 + 10
+        pill_w = min(W - 2 * pad, name_off + _max_nm * 5.9 + 12)
         pill_per = max(1, int((W - 2 * pad + 7) / (pill_w + 7)))
 
         def _role_chips_from(rx, y0, roles, col):
@@ -644,10 +644,10 @@ def detail_svg(a: dict, pos=None) -> str:
                 body.append(f'<rect x="{pad}" y="{y-15}" width="{W-2*pad}" height="26" rx="8" '
                             f'fill="{col}" fill-opacity="0.09"/>')
                 body.append(f'<rect x="{pad}" y="{y-15}" width="3" height="26" rx="1.5" fill="{col}"/>')
-                body.append(f'<text x="{pad+13}" y="{y+1}" fill="{col}" font-size="11" '
+                body.append(f'<text x="{pad+13}" y="{y+1}" fill="{col}" font-size="{_FS_BODY}" '
                             f'font-family="{_SVG_MONO}" font-weight="700">{n}</text>')
-                body.append(f'<text x="{pad+13 + len(str(n))*7.2 + 8:.0f}" y="{y+1}" fill="{_TXT}" '
-                            f'font-size="11">{_esc(nm)}</text>')
+                body.append(f'<text x="{pad+13 + len(str(n))*6.6 + 8:.0f}" y="{y+1}" fill="{_TXT}" '
+                            f'font-size="{_FS_BODY}">{_esc(nm)}</text>')
                 _role_chips_from(W - pad - 8, y + 1, roles, col)
                 y += 31
 
@@ -660,11 +660,11 @@ def detail_svg(a: dict, pos=None) -> str:
                     y += 27
                 cx = pad + c * (pill_w + 7)
                 nm = namemap.get(n, "")
-                body.append(f'<rect x="{cx:.0f}" y="{y-15}" width="{pill_w:.0f}" height="22" rx="11" '
+                body.append(f'<rect x="{cx:.0f}" y="{y-14}" width="{pill_w:.0f}" height="{_CHIP_H}" rx="9" '
                             f'fill="{col}" fill-opacity="0.13" stroke="{col}" stroke-opacity="0.4"/>')
-                body.append(f'<text x="{cx+12:.0f}" y="{y}" fill="{col}" font-size="10.5" '
+                body.append(f'<text x="{cx+12:.0f}" y="{y-1}" fill="{col}" font-size="{_FS_CHIP}" '
                             f'font-family="{_SVG_MONO}" font-weight="700">{n}</text>')
-                body.append(f'<text x="{cx+name_off:.0f}" y="{y}" fill="{col}" font-size="10.5" '
+                body.append(f'<text x="{cx+name_off:.0f}" y="{y-1}" fill="{col}" font-size="{_FS_CHIP}" '
                             f'font-family="{_SVG_FONT}">{_esc(nm)}</text>')
             y += 31
 
@@ -672,8 +672,8 @@ def detail_svg(a: dict, pos=None) -> str:
             for label, col, nums in secs:
                 section(f"{label} ({len(nums)})")
                 if not nums:
-                    body.append(f'<text x="{pad}" y="{y}" fill="{_MUT}" font-size="11">None.</text>')
-                    y += 24
+                    body.append(f'<text x="{pad}" y="{y}" fill="{_MUT}" font-size="{_FS_BODY}">None.</text>')
+                    y += 22
                     continue
                 render(nums, col)
     else:
@@ -687,61 +687,62 @@ def detail_svg(a: dict, pos=None) -> str:
         name = list(p["pin_names"])[0] if p["pin_names"] else ""
         dest = conn["dest"] if conn else ""
         contact = conn["contact"] if conn else ""
-        # header row + kind badge
-        body.append(f'<text x="{pad}" y="{y}" fill="{_TXT}" font-size="19" font-weight="700">Pin {pos}</text>')
-        body.append(f'<text x="{pad + 44 + len(str(pos)) * 12}" y="{y}" fill="{_MUT}" '
-                    f'font-size="11.5">{p.get("side", "").capitalize()}</text>')
-        tw = 16 + len(kindlbl) * 6.6
-        body.append(f'<rect x="{W-pad-tw:.0f}" y="{y-15}" width="{tw:.0f}" height="21" rx="10.5" fill="{col}"/>')
-        body.append(f'<text x="{W-pad-tw/2:.0f}" y="{y}" fill="#161618" text-anchor="middle" '
-                    f'font-size="11" font-weight="600">{kindlbl}</text>')
-        y += 26
+        neu = _MUT                                      # neutral bar/wire; colour only the destination
+        # header row + kind badge (badge is the one coloured accent up top)
+        body.append(f'<text x="{pad}" y="{y}" fill="{_TXT}" font-size="{_FS_TITLE}" font-weight="700">Pin {pos}</text>')
+        body.append(f'<text x="{pad + 42 + len(str(pos)) * 8}" y="{y}" fill="{_MUT}" '
+                    f'font-size="{_FS_BODY}">{p.get("side", "").capitalize()}</text>')
+        tw = 14 + len(kindlbl) * 5.9
+        body.append(f'<rect x="{W-pad-tw:.0f}" y="{y-13}" width="{tw:.0f}" height="{_CHIP_H}" rx="9" fill="{col}"/>')
+        body.append(f'<text x="{W-pad-tw/2:.0f}" y="{y-1}" fill="#161618" text-anchor="middle" '
+                    f'font-size="{_FS_CHIP}" font-weight="600">{kindlbl}</text>')
+        y += 24
         cx = W / 2
-        # socket card
-        body.append(f'<rect x="{pad}" y="{y}" width="{W-2*pad}" height="54" rx="10" fill="{_CARD}"/>'
-                    f'<rect x="{pad}" y="{y}" width="3.5" height="54" rx="2" fill="{col}"/>')
-        body.append(_chip_icon2(pad + 32, y + 27, col))
-        body.append(f'<text x="{pad+58}" y="{y+23}" fill="{_TXT}" font-size="15" font-weight="700">{_esc(name)}</text>')
-        body.append(f'<text x="{pad+58}" y="{y+41}" fill="{_MUT}" font-size="10.5">ZIF socket contact {pos}</text>')
-        body.append(f'<text x="{W-pad-10}" y="{y+30}" fill="#a2a2a8" font-size="8.5" font-weight="700" '
+        # socket card (neutral)
+        body.append(f'<rect x="{pad}" y="{y}" width="{W-2*pad}" height="50" rx="10" fill="{_CARD}"/>'
+                    f'<rect x="{pad}" y="{y}" width="3" height="50" rx="1.5" fill="{neu}"/>')
+        body.append(_chip_icon2(pad + 30, y + 25, neu))
+        body.append(f'<text x="{pad+54}" y="{y+21}" fill="{_TXT}" font-size="{_FS_CARD}" font-weight="700">{_esc(name)}</text>')
+        body.append(f'<text x="{pad+54}" y="{y+38}" fill="{_MUT}" font-size="{_FS_CAP}">ZIF socket contact {pos}</text>')
+        body.append(f'<text x="{W-pad-10}" y="{y+27}" fill="#a2a2a8" font-size="8" font-weight="700" '
                     f'text-anchor="end" letter-spacing="0.8">SOCKET</text>')
-        y += 54
-        # connection line + component badge
-        body.append(f'<line x1="{cx}" y1="{y}" x2="{cx}" y2="{y+50}" stroke="{col}" stroke-width="2.4"/>')
-        complbl = {"switch": "Switch", "resistor": "33 &#937; Series Resistor", "direct": "Direct Link"}[kind]
-        bw = 26 + len(complbl.replace("&#937;", "O")) * 6.4
-        body.append(f'<rect x="{cx-bw/2:.0f}" y="{y+12}" width="{bw:.0f}" height="26" rx="13" '
-                    f'fill="{_PANEL}" stroke="{col}"/>')
-        body.append(f'<text x="{cx:.0f}" y="{y+29}" fill="{col}" text-anchor="middle" font-size="11" '
-                    f'font-weight="600">{complbl}</text>')
         y += 50
-        # header card
-        body.append(f'<rect x="{pad}" y="{y}" width="{W-2*pad}" height="54" rx="10" fill="{_CARD}"/>'
-                    f'<rect x="{pad}" y="{y}" width="3.5" height="54" rx="2" fill="{col}"/>')
-        body.append(_conn_icon2(pad + 32, y + 27, col))
-        body.append(f'<text x="{pad+58}" y="{y+23}" fill="{col}" font-size="14" font-weight="700">{_esc(dest)}</text>')
-        body.append(f'<text x="{pad+58}" y="{y+41}" fill="{_MUT}" font-size="10.5">{_esc(contact)}</text>')
-        body.append(f'<text x="{W-pad-10}" y="{y+30}" fill="#a2a2a8" font-size="8.5" font-weight="700" '
+        # connection line + component badge (neutral)
+        body.append(f'<line x1="{cx}" y1="{y}" x2="{cx}" y2="{y+44}" stroke="{neu}" stroke-width="2"/>')
+        complbl = {"switch": "Switch", "resistor": "33 &#937; Series R", "direct": "Direct"}[kind]
+        bw = 22 + len(complbl.replace("&#937;", "O")) * 5.9
+        body.append(f'<rect x="{cx-bw/2:.0f}" y="{y+11}" width="{bw:.0f}" height="22" rx="11" '
+                    f'fill="{_PANEL}" stroke="{neu}"/>')
+        body.append(f'<text x="{cx:.0f}" y="{y+26}" fill="{_MUT}" text-anchor="middle" '
+                    f'font-size="{_FS_CHIP}" font-weight="600">{complbl}</text>')
+        y += 44
+        # header card (the destination — the one coloured card)
+        body.append(f'<rect x="{pad}" y="{y}" width="{W-2*pad}" height="50" rx="10" fill="{_CARD}"/>'
+                    f'<rect x="{pad}" y="{y}" width="3" height="50" rx="1.5" fill="{col}"/>')
+        body.append(_conn_icon2(pad + 30, y + 25, col))
+        body.append(f'<text x="{pad+54}" y="{y+21}" fill="{col}" font-size="{_FS_CARD}" font-weight="700">{_esc(dest)}</text>')
+        body.append(f'<text x="{pad+54}" y="{y+38}" fill="{_MUT}" font-size="{_FS_CAP}">{_esc(contact)}</text>')
+        body.append(f'<text x="{W-pad-10}" y="{y+27}" fill="#a2a2a8" font-size="8" font-weight="700" '
                     f'text-anchor="end" letter-spacing="0.8">HEADER</text>')
-        y += 54 + 16
+        y += 50 + 14
         # explanation for switched pins
         why = sauth.switch_rationale(p)
         if why and kind == "switch":
             lines, line = [], ""
             for wd in why.split():
-                if len(line) + len(wd) > 46:
+                if len(line) + len(wd) > 50:
                     lines.append(line)
                     line = wd
                 else:
                     line = (line + " " + wd).strip()
             lines.append(line)
-            bh = 24 + len(lines) * 15
+            bh = 22 + len(lines) * 14
             body.append(f'<rect x="{pad}" y="{y-6}" width="{W-2*pad}" height="{bh}" rx="8" '
                         f'fill="{_CARD}" stroke="{_LINE}"/>')
-            body.append(f'<text x="{pad+10}" y="{y+9}" fill="{_MUT}" font-size="9.5" font-weight="700">EXPLANATION</text>')
+            body.append(f'<text x="{pad+10}" y="{y+8}" fill="{_MUT}" font-size="{_FS_CAP}" font-weight="700">EXPLANATION</text>')
             for i, ln in enumerate(lines):
-                body.append(f'<text x="{pad+10}" y="{y+26+i*15}" fill="{_TXT}" font-size="11">{_esc(ln)}</text>')
-            y += bh + 12
+                body.append(f'<text x="{pad+10}" y="{y+23+i*14}" fill="{_TXT}" font-size="{_FS_BODY}">{_esc(ln)}</text>')
+            y += bh + 10
         fv = p.get("five_v")
         if fv is not None:
             section("5V TOLERANCE")
@@ -758,7 +759,7 @@ def detail_svg(a: dict, pos=None) -> str:
         if el.get("vdd_range_v"):
             section("ELECTRICAL")
             vd = el["vdd_range_v"]
-            body.append(f'<text x="{pad}" y="{y}" fill="{_TXT}" font-size="11.5">'
+            body.append(f'<text x="{pad}" y="{y}" fill="{_TXT}" font-size="{_FS_BODY}">'
                         f'VDD {vd[0]}–{vd[1]} V. Per-pin I/O up to {el.get("max_io_current_ma", "?")} mA.</text>')
             y += 24
     H = y + 14
@@ -772,9 +773,14 @@ def detail_band_svg(a: dict, pos, width: int, height: int = 224) -> str:
     selected socket pin has: a switched pin fans out to (1) its ADG714 channel — the
     real Source/Drain terminal pins — landing on a delivered rail at a connector
     contact, and (2) a default IO lane through a 33 ohm series resistor. Two tones
-    only: an accent for the firmware-switched path, neutral for the hardwired ones."""
+    Colour is used sparingly: the wiring itself is neutral, and only the delivered
+    destination node (plus the pin's badge) carries its net-category colour."""
     W, H, pad = max(700, int(width)), height, 22
-    ACC = _SWITCH_COLOR[sdb.SWITCH_MUST]
+    NEU = _MUT
+
+    def catcol(cat):
+        return _CAT_COLOR.get(cat, "#4c8df0")
+
     s = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" font-family="{_SVG_FONT}">',
          f'<rect width="{W}" height="{H}" fill="{_PANEL}"/>']
     if pos is None:
@@ -788,8 +794,9 @@ def detail_band_svg(a: dict, pos, width: int, height: int = 224) -> str:
     kind = conn["kind"] if conn else "direct"
     name = next(iter(p["pin_names"]), "") if p["pin_names"] else ""
     kindlbl = {"switch": "Switched", "resistor": "IO lane", "direct": "Direct"}[kind]
+    pcol = catcol(conn["category"]) if conn else NEU
 
-    # ── build the branches: each is (caption, [(title, sub, accent), ...]) ──
+    # ── branches: (caption, [(title, sub, colour-or-None)]); None = neutral node ──
     branches = []
     if kind == "switch":
         cw = sauth.card_wiring(a)
@@ -799,24 +806,24 @@ def detail_band_svg(a: dict, pos, width: int, height: int = 224) -> str:
                 else ("ground plane" if c["rail"] == "GND" else "local cap")
             branches.append(("SWITCHED ROLE", [
                 (f"ADG714 cell {c['cell']} · ch {c['channel']}",
-                 f"{c['s_pin']} pin {c['s_pin_num']} to {c['d_pin']} pin {c['d_pin_num']}", True),
-                (c["rail"], rail_sub, True)]))
+                 f"{c['s_pin']} pin {c['s_pin_num']} to {c['d_pin']} pin {c['d_pin_num']}", None),
+                (c["rail"], rail_sub, pcol)]))
             branches.append(("DEFAULT IO LANE", [
-                ("33 Ω series R", "R_IO", False),
-                (c["card_lane"], "lane row", False)]))
+                ("33 Ω series R", "R_IO", None),
+                (c["card_lane"], "lane row", catcol("lane"))]))
     elif kind == "resistor":
         branches.append(("IO LANE", [
-            ("33 Ω series R", "R_IO", False),
-            (conn["dest"], "lane row", False)]))
+            ("33 Ω series R", "R_IO", None),
+            (conn["dest"], "lane row", catcol("lane"))]))
     else:
         branches.append(("DIRECT", [
-            (conn["dest"], f"contact {conn['contact']}" if conn["contact"] else "hardwired", False)]))
+            (conn["dest"], f"contact {conn['contact']}" if conn["contact"] else "hardwired", pcol)]))
 
     # ── header block (left) ──
     s.append(f'<text x="{pad}" y="40" fill="{_TXT}" font-size="{_FS_TITLE}" font-weight="700">Pin {pos}</text>')
     s.append(f'<text x="{pad}" y="58" fill="{_MUT}" font-size="{_FS_BODY}">{_esc(name)} · '
              f'{p.get("side", "").capitalize()}</text>')
-    bp, _bw = _pill(pad, 70, kindlbl, ACC if kind == "switch" else _MUT, filled=(kind == "switch"))
+    bp, _bw = _pill(pad, 70, kindlbl, pcol, filled=(kind == "switch"))
     s.append(bp)
     if len(branches) > 1:
         s.append(f'<text x="{pad}" y="{H-16:.0f}" fill="{_MUT}" font-size="{_FS_CAP}">'
@@ -827,43 +834,41 @@ def detail_band_svg(a: dict, pos, width: int, height: int = 224) -> str:
     # ── node + wire helpers ──
     NH = 44
 
-    def node(x, cy, title, sub, accent):
-        col = ACC if accent else _MUT
+    def node(x, cy, title, sub, color):
+        barcol = color or NEU
         w = max(len(title) * 6.7, len(sub) * 5.8) + 28
         y = cy - NH / 2
         s.append(f'<rect x="{x:.0f}" y="{y:.0f}" width="{w:.0f}" height="{NH}" rx="9" fill="{_CARD}"/>'
-                 f'<rect x="{x:.0f}" y="{y:.0f}" width="3" height="{NH}" rx="1.5" fill="{col}"/>')
-        s.append(f'<text x="{x+13:.0f}" y="{cy-3:.0f}" fill="{ACC if accent else _TXT}" '
+                 f'<rect x="{x:.0f}" y="{y:.0f}" width="3" height="{NH}" rx="1.5" fill="{barcol}"/>')
+        s.append(f'<text x="{x+13:.0f}" y="{cy-3:.0f}" fill="{color or _TXT}" '
                  f'font-size="{_FS_CARD}" font-weight="700">{_esc(title)}</text>')
         s.append(f'<text x="{x+13:.0f}" y="{cy+13:.0f}" fill="{_MUT}" font-size="{_FS_CAP}">{_esc(sub)}</text>')
         return x + w
 
-    def wire(x1, y1, x2, y2, accent):
-        col = ACC if accent else _MUT
+    def wire(x1, y1, x2, y2):                             # wiring is always neutral
         if y1 == y2:
             s.append(f'<line x1="{x1:.0f}" y1="{y1:.0f}" x2="{x2:.0f}" y2="{y2:.0f}" '
-                     f'stroke="{col}" stroke-width="2"/>')
-        else:                                             # orthogonal elbow
+                     f'stroke="{NEU}" stroke-width="1.8"/>')
+        else:
             mx = x1 + 15
             s.append(f'<polyline points="{x1:.0f},{y1:.0f} {mx:.0f},{y1:.0f} {mx:.0f},{y2:.0f} '
-                     f'{x2:.0f},{y2:.0f}" fill="none" stroke="{col}" stroke-width="2"/>')
+                     f'{x2:.0f},{y2:.0f}" fill="none" stroke="{NEU}" stroke-width="1.8"/>')
 
     # ── socket node (shared source), then the branches to its right ──
     scy = H / 2 - 2
-    sr = node(pad + 150, scy, name or f"Pin {pos}", f"ZIF socket · contact {pos}", False)
+    sr = node(pad + 150, scy, name or f"Pin {pos}", f"ZIF socket · contact {pos}", None)
     rows = [scy] if len(branches) == 1 else [scy - 40, scy + 40]
     first_x = sr + 42
     for (caption, stops), rowy in zip(branches, rows):
-        acc0 = stops[0][2]
         s.append(f'<text x="{first_x:.0f}" y="{rowy-30:.0f}" fill="#a2a2a8" font-size="8" '
                  f'font-weight="700" letter-spacing="0.8">{caption}</text>')
-        wire(sr, scy, first_x, rowy, acc0)
+        wire(sr, scy, first_x, rowy)
         x, prev_r = first_x, None
-        for title, sub, accent in stops:
+        for title, sub, color in stops:
             if prev_r is not None:
-                wire(prev_r, rowy, x, rowy, accent)
-            s.append(f'<circle cx="{x:.0f}" cy="{rowy:.0f}" r="2.6" fill="{ACC if accent else _MUT}"/>')
-            prev_r = node(x, rowy, title, sub, accent)
+                wire(prev_r, rowy, x, rowy)
+            s.append(f'<circle cx="{x:.0f}" cy="{rowy:.0f}" r="2.4" fill="{color or NEU}"/>')
+            prev_r = node(x, rowy, title, sub, color)
             x = prev_r + 34
     s.append("</svg>")
     return "".join(s)
@@ -1147,16 +1152,16 @@ class ConnectionRow(QFrame):
 
     def restyle(self):
         rec = self._rec
-        col = _CAT_COLOR.get(rec["category"], "#4c8df0")
+        col = _CAT_COLOR.get(rec["category"], "#4c8df0")     # used only on the bar + destination
         border = col if self._selected else "transparent"
         self.setStyleSheet(
             f"#connRow{{background:{_CARD};border:1px solid {border};"
             f"border-left:3px solid {col};border-radius:8px;}}"
             f"#connRow:hover{{background:{_PANEL};}}"
-            f"#connChip{{color:{col};border:1px solid {col};border-radius:9px;"
+            f"#connChip{{color:{_MUT};border:1px solid {_LINE};border-radius:9px;"
             f"padding:1px 2px;font-size:9px;font-weight:700;}}")
         self._left.setText(
-            f"<span style='color:{col};font-family:JetBrains Mono;font-weight:700'>{self.pin}</span>"
+            f"<span style='color:{_MUT};font-family:JetBrains Mono;font-weight:700'>{self.pin}</span>"
             f"&nbsp;&nbsp;&nbsp;<span style='color:{_TXT};font-weight:600'>{html.escape(rec['name'])}</span>")
         self._right.setText(
             f"<span style='color:{col};font-weight:700'>{html.escape(rec['dest'])}</span>"
