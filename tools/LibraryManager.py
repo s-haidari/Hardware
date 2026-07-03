@@ -975,7 +975,7 @@ def process_existing_zips(cfg: Dict[str, str], log: UILog, refresh_cb=None, prog
         refresh_cb()
 
 def process_folder_dialog(cfg: Dict[str, str], log: UILog, refresh_cb=None):
-    folder = QFileDialog.getExistingDirectory(None, "Select extracted part folder", cfg["Downloads"])
+    folder = QFileDialog.getExistingDirectory(None, "Select Extracted Part Folder", cfg["Downloads"])
     if not folder:
         return
     folder_path = Path(folder)
@@ -1454,7 +1454,7 @@ class DropZone(QFrame):
         inner.addWidget(self.label)
 
         # Checkbox inside dashed box for process-on-drop
-        self.chk_process = QCheckBox("Process on drop")
+        self.chk_process = QCheckBox("Process on Drop")
         self.chk_process.setChecked(True)
         inner.addWidget(self.chk_process)
         inner.addStretch()
@@ -1565,7 +1565,7 @@ class PreviewView(QWidget):
                                      self._rx, self._ry, self._zoom)
                 p.setPen(QColor("#90909a"))
                 p.drawText(self.rect().adjusted(0, 0, -12, -8),
-                           Qt.AlignRight | Qt.AlignBottom, "drag to rotate · scroll to zoom")
+                           Qt.AlignRight | Qt.AlignBottom, "Drag to rotate · scroll to zoom")
             except Exception:
                 pass
         elif self._pixmap is not None:
@@ -2185,7 +2185,7 @@ class LibraryManagerWindow(QMainWindow):
         self._spawn(work)
 
     def do_process_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "Select extracted part folder", self.cfg["Downloads"])
+        folder = QFileDialog.getExistingDirectory(self, "Select Extracted Part Folder", self.cfg["Downloads"])
         if not folder:
             return
         folder_path = Path(folder)
@@ -2202,7 +2202,7 @@ class LibraryManagerWindow(QMainWindow):
     def change_path(self, key: str, btn: QPushButton):
         """Allow user to change a configured path (RepoRoot or Downloads)"""
         start = self.cfg.get(key, DEFAULTS.get(key, ""))
-        new = QFileDialog.getExistingDirectory(self, "Select folder", start)
+        new = QFileDialog.getExistingDirectory(self, "Select Folder", start)
         if not new:
             return
         new_path = Path(new)
@@ -2376,12 +2376,12 @@ class LibraryManagerWindow(QMainWindow):
         add_btn("Repair Footprints and Models in KICAD", self.do_repair_library, "wrench", LUCIDE_AMBER)
         add_btn("Remove Duplicates", self.on_remove_duplicates, "copy-x", LUCIDE_NEUTRAL)
         add_btn("Export Catalog", self.do_export_catalog, "package", LUCIDE_NEUTRAL)
-        add_btn("Register libs in KiCad", self.do_register_kicad, "link-2", LUCIDE_NEUTRAL)
+        add_btn("Register Libs in KiCad", self.do_register_kicad, "link-2", LUCIDE_NEUTRAL)
 
         # ── More… (rarely used) ────────────────────────────────────────────
         adv_menu = QMenu(card)
         for label, cb in [
-            ("Stage and Commit (no push)", self.do_stage_commit),
+            ("Stage and Commit (No Push)", self.do_stage_commit),
             ("Process Folder…", self.do_process_folder),
             ("Start Watcher", lambda: self.watcher.start()),
             ("Stop Watcher", lambda: self.watcher.stop()),
@@ -2491,12 +2491,12 @@ class LibraryManagerWindow(QMainWindow):
 
         # Toggles row: duplicates-only + group-by-component
         toggles = QHBoxLayout()
-        self.chk_dupes = QCheckBox("Duplicates only")
+        self.chk_dupes = QCheckBox("Duplicates Only")
         self.chk_dupes.setChecked(False)
         self.chk_dupes.setToolTip("Show only entries that have more than one copy")
         self.chk_dupes.stateChanged.connect(self.on_filter_change)
         toggles.addWidget(self.chk_dupes)
-        self.chk_group = QCheckBox("Group by component")
+        self.chk_group = QCheckBox("Group by Component")
         self.chk_group.setChecked(True)
         self.chk_group.setToolTip("Group the symbol, footprint and 3D model of a part together,\n"
                                   "even when their names differ slightly")
@@ -2608,14 +2608,14 @@ class LibraryManagerWindow(QMainWindow):
                 if img is not None:
                     self.preview.show_image(img)
                 else:
-                    self.preview.show_text("(could not render)")
+                    self.preview.show_text("(Could not render)")
                 s = footprint_summary(path) or {}
                 self.preview_info.setText(
                     f"{name}  ·  {s.get('pads', 0)} pads "
                     f"({s.get('smd_pads', 0)} SMD / {s.get('tht_pads', 0)} TH)  ·  "
                     f"{s.get('width_mm', '?')} × {s.get('height_mm', '?')} mm  ·  {date}")
             except Exception as e:
-                self.preview.show_text("(render error)")
+                self.preview.show_text("(Render error)")
                 self.preview_info.setText(str(e))
 
         elif t == "Model":
@@ -2642,7 +2642,7 @@ class LibraryManagerWindow(QMainWindow):
                     if float(dims.max()) < 1.0:
                         dims = dims * 1000.0
                     info = (f"{name}  ·  {dims[0]:.1f} × {dims[1]:.1f} × {dims[2]:.1f} mm  ·  "
-                            f"{len(faces)} tris  ·  {kb} KB  ·  drag to rotate  ·  {date}")
+                            f"{len(faces)} tris  ·  {kb} KB  ·  Drag to rotate  ·  {date}")
                     self._emit(self.preview_ready, (verts, faces), info, token)
                 except Exception:
                     self._emit(self.preview_ready, None, f"{name}  ·  {kb} KB  ·  {date}", token)
@@ -2908,7 +2908,7 @@ class LibraryManagerWindow(QMainWindow):
         if not sha:
             self.log_signal.emit("No commit selected to checkout")
             return
-        reply = QMessageBox.question(self, "Checkout commit",
+        reply = QMessageBox.question(self, "Checkout Commit",
                                      f"Checkout commit {sha}? This will change your working tree.",
                                      QMessageBox.Yes | QMessageBox.No)
         if reply != QMessageBox.Yes:

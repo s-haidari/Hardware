@@ -1127,7 +1127,7 @@ def main():
         options.append(display)
         project_map[display] = p
     
-    options.append("Enter custom path...")
+    options.append("Enter Custom Path...")
     
     p_idx = prompt_menu("Select project folder:", options)
     if p_idx == len(options) - 1:
@@ -1144,11 +1144,11 @@ def main():
 
     # Choose operation
     op_map = [
-        "Add tag prefix",
-        "Remove tag prefix", 
-        "Strip all tags (remove all prefixes)",
-        "Reset to unannotated (uses lib_id for correct type)",
-        "Custom find/replace"
+        "Add Tag Prefix",
+        "Remove Tag Prefix",
+        "Strip All Tags (remove all prefixes)",
+        "Reset to Unannotated (uses lib_id for correct type)",
+        "Custom Find/Replace"
     ]
     op_idx = prompt_menu("Choose operation:", op_map)
     
@@ -1184,10 +1184,10 @@ def main():
 
     # Choose scope
     scope_opts = [
-        "Schematics: nets/labels + sheet pins",
-        "Schematics: component references",
-        "PCBs: footprint references",
-        "All of the above"
+        "Schematics: Nets/Labels + Sheet Pins",
+        "Schematics: Component References",
+        "PCBs: Footprint References",
+        "All of the Above"
     ]
     scope_idx = prompt_menu("Select scope:", scope_opts)
     scope_sch_labels = scope_idx in (0, 3)

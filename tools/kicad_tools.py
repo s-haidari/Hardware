@@ -136,43 +136,43 @@ class KiCadToolsWidget(QWidget):
     # Project settings grouped like KiCad's dialog (all values in mils).
     PS_GROUPS = [
         ("Schematic", [
-            ("schematic_text_size", "Text size"),
-            ("schematic_line_width", "Line width"),
-            ("pin_symbol_size", "Pin symbol size"),
-            ("junction_size", "Junction size"),
+            ("schematic_text_size", "Text Size"),
+            ("schematic_line_width", "Line Width"),
+            ("pin_symbol_size", "Pin Symbol Size"),
+            ("junction_size", "Junction Size"),
         ]),
         ("PCB Text Boxes", [
-            ("pcb_text_size", "Text size"),
-            ("pcb_text_thickness", "Text thickness"),
+            ("pcb_text_size", "Text Size"),
+            ("pcb_text_thickness", "Text Thickness"),
         ]),
         ("Footprint Text", [
-            ("silk_text_size", "Silkscreen size"),
-            ("silk_text_thickness", "Silkscreen thickness"),
-            ("copper_text_size", "Copper size"),
-            ("copper_text_thickness", "Copper thickness"),
-            ("fab_text_size", "Fab size"),
-            ("fab_text_thickness", "Fab thickness"),
+            ("silk_text_size", "Silkscreen Size"),
+            ("silk_text_thickness", "Silkscreen Thickness"),
+            ("copper_text_size", "Copper Size"),
+            ("copper_text_thickness", "Copper Thickness"),
+            ("fab_text_size", "Fab Size"),
+            ("fab_text_thickness", "Fab Thickness"),
         ]),
-        ("Design Rules (defaults)", [
+        ("Design Rules (Defaults)", [
             ("default_clearance", "Clearance"),
-            ("default_track_width", "Track width"),
-            ("default_via_diameter", "Via diameter"),
-            ("default_via_drill", "Via drill"),
+            ("default_track_width", "Track Width"),
+            ("default_via_diameter", "Via Diameter"),
+            ("default_via_drill", "Via Drill"),
         ]),
         ("Minimum Constraints", [
-            ("min_via_diameter", "Min via diameter"),
-            ("min_via_annular_width", "Min via annular ring"),
-            ("min_through_hole", "Min through-hole"),
-            ("min_hole_to_hole", "Min hole-to-hole"),
-            ("min_hole_clearance", "Min hole clearance"),
-            ("min_microvia_diameter", "Min µvia diameter"),
-            ("min_microvia_drill", "Min µvia drill"),
-            ("min_copper_edge_clearance", "Min copper-to-edge"),
-            ("min_silk_clearance", "Min silk clearance"),
+            ("min_via_diameter", "Min Via Diameter"),
+            ("min_via_annular_width", "Min Via Annular Ring"),
+            ("min_through_hole", "Min Through-Hole"),
+            ("min_hole_to_hole", "Min Hole-to-Hole"),
+            ("min_hole_clearance", "Min Hole Clearance"),
+            ("min_microvia_diameter", "Min µVia Diameter"),
+            ("min_microvia_drill", "Min µVia Drill"),
+            ("min_copper_edge_clearance", "Min Copper-to-Edge"),
+            ("min_silk_clearance", "Min Silk Clearance"),
         ]),
         ("Solder Mask / Paste", [
-            ("solder_mask_clearance", "Mask clearance"),
-            ("solder_paste_margin", "Paste margin"),
+            ("solder_mask_clearance", "Mask Clearance"),
+            ("solder_paste_margin", "Paste Margin"),
         ]),
     ]
 
@@ -260,7 +260,7 @@ class KiCadToolsWidget(QWidget):
         QApplication.processEvents()
 
     def _browse(self):
-        d = QFileDialog.getExistingDirectory(self, "Select KICAD projects folder", self.dir_edit.text() or "")
+        d = QFileDialog.getExistingDirectory(self, "Select KICAD Projects Folder", self.dir_edit.text() or "")
         if d:
             self.dir_edit.setText(d)
             self.rescan()
@@ -311,13 +311,13 @@ class KiCadToolsWidget(QWidget):
         form.setLabelAlignment(Qt.AlignRight)
         self.op_combo = QComboBox()
         self.op_combo.addItems([
-            "Add tag prefix", "Remove tag prefix", "Strip all tags",
-            "Reset to unannotated (lib_id)", "Custom find / replace",
+            "Add Tag Prefix", "Remove Tag Prefix", "Strip All Tags",
+            "Reset to Unannotated (lib_id)", "Custom Find / Replace",
         ])
         self.op_combo.currentIndexChanged.connect(self._op_changed)
         form.addRow("Operation:", self.op_combo)
 
-        self.tag_edit = QLineEdit(); self.tag_edit.setPlaceholderText("e.g.  SH-   or   CG-")
+        self.tag_edit = QLineEdit(); self.tag_edit.setPlaceholderText("E.g.  SH-   or   CG-")
         self.find_edit = QLineEdit(); self.find_edit.setPlaceholderText("Find text")
         self.repl_edit = QLineEdit(); self.repl_edit.setPlaceholderText("Replace with")
         form.addRow("Tag:", self.tag_edit)
@@ -329,9 +329,9 @@ class KiCadToolsWidget(QWidget):
         scope_box = QFrame(); scope_box.setObjectName("card")
         sb = QVBoxLayout(scope_box); sb.setContentsMargins(10, 8, 10, 8); sb.setSpacing(4)
         sb.addWidget(QLabel("Scope"))
-        self.chk_sch_labels = QCheckBox("Schematic labels / nets"); self.chk_sch_labels.setChecked(True)
-        self.chk_sch_refs = QCheckBox("Schematic references"); self.chk_sch_refs.setChecked(True)
-        self.chk_pcb_refs = QCheckBox("PCB references"); self.chk_pcb_refs.setChecked(True)
+        self.chk_sch_labels = QCheckBox("Schematic Labels / Nets"); self.chk_sch_labels.setChecked(True)
+        self.chk_sch_refs = QCheckBox("Schematic References"); self.chk_sch_refs.setChecked(True)
+        self.chk_pcb_refs = QCheckBox("PCB References"); self.chk_pcb_refs.setChecked(True)
         sb.addWidget(self.chk_sch_labels); sb.addWidget(self.chk_sch_refs); sb.addWidget(self.chk_pcb_refs)
         v.addWidget(scope_box)
 
@@ -389,7 +389,7 @@ class KiCadToolsWidget(QWidget):
         do_pcb = self.chk_pcb_refs.isChecked()
         if apply:
             if QMessageBox.question(
-                self, "Apply changes",
+                self, "Apply Changes",
                 f"Apply '{self.op_combo.currentText()}' to {len(pros)} project(s)?\n"
                 f"A .bak is written next to every modified file.",
                 QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
@@ -526,7 +526,7 @@ class KiCadToolsWidget(QWidget):
         if self.NC_COLS[col][2] == "color":
             it = self.nc_table.item(r, col)
             cur = QColor(it.text()) if (it and it.text()) else QColor("#808080")
-            chosen = QColorDialog.getColor(cur, self, "Net class color")
+            chosen = QColorDialog.getColor(cur, self, "Net Class Color")
             if chosen.isValid():
                 self._nc_set_color_item(r, col, chosen.name())
 
@@ -628,7 +628,7 @@ class KiCadToolsWidget(QWidget):
         if not m.list_netclasses():
             QMessageBox.warning(self, "Net Classes", "No valid net classes to sync."); return
         if QMessageBox.question(
-            self, "Sync net classes",
+            self, "Sync Net Classes",
             f"Write {len(m.list_netclasses())} net class(es) into {len(pros)} project(s)?\n"
             f"User-created classes are preserved; a .bak is written.",
             QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
@@ -640,14 +640,14 @@ class KiCadToolsWidget(QWidget):
             self.log("Preserved unmanaged classes: " + ", ".join(m.last_preserved_unmanaged))
 
     def _nc_import(self):
-        f, _ = QFileDialog.getOpenFileName(self, "Import net-class template", "", "JSON (*.json)")
+        f, _ = QFileDialog.getOpenFileName(self, "Import Net-Class Template", "", "JSON (*.json)")
         if not f:
             return
         m = NetClassManager(); m.import_template(Path(f)); self._nc_set_rows(m)
         self.log(f"Imported template {Path(f).name}.")
 
     def _nc_export(self):
-        f, _ = QFileDialog.getSaveFileName(self, "Export net-class template", "netclasses.json", "JSON (*.json)")
+        f, _ = QFileDialog.getSaveFileName(self, "Export Net-Class Template", "netclasses.json", "JSON (*.json)")
         if not f:
             return
         self._nc_manager_from_table().export_template(Path(f))
@@ -718,7 +718,7 @@ class KiCadToolsWidget(QWidget):
         if not pros:
             QMessageBox.information(self, "Project Settings", "No projects selected."); return
         if QMessageBox.question(
-            self, "Sync settings",
+            self, "Sync Settings",
             f"Apply these drawing defaults + design rules to {len(pros)} project(s)?\n"
             f"A .bak is written next to each.",
             QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:

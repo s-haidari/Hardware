@@ -195,7 +195,7 @@ def _summary_html(a: dict) -> str:
 
     lists_html = (
         "<p><b>Pin lists (socket #):</b></p><table cellspacing='0'>"
-        + _row("Must-switch", _SWITCH_COLOR[sdb.SWITCH_MUST], cats["must_switch"])
+        + _row("Must-Switch", _SWITCH_COLOR[sdb.SWITCH_MUST], cats["must_switch"])
         + _row("Oscillator (optional)", _SWITCH_COLOR[sdb.SWITCH_OSC_OPTIONAL], cats["osc_optional"])
         + _row("Breakout", _BREAKOUT_COLOR, cats["breakout"])
         + _row("5V all-parts", _MUT, cats["five_v_all_parts"])
@@ -344,7 +344,7 @@ def _contact_str(rail):
     cs = sauth.RAIL_CONTACT.get(rail, [])
     if cs:
         return cs[0] + (f" +{len(cs)-1}" if len(cs) > 1 else "")
-    return "GND plane" if rail == "GND" else "local cap"
+    return "GND plane" if rail == "GND" else "Local cap"
 
 
 def fabric_svg(a: dict) -> str:
@@ -443,8 +443,8 @@ def fabric_svg(a: dict) -> str:
 _CAT_COLOR = {"power": "#e5534b", "analog": "#e6a030", "ground": "#9aa1a9",
               "core": "#8b6fe8", "service": "#24b196", "lane": "#4c8df0"}
 _CAT_LABEL = [("All", None), ("Switched", "switch"), ("Power", "power"), ("Analog", "analog"),
-              ("Ground", "ground"), ("Core VCAP", "core"), ("Debug & service", "service"),
-              ("GPIO lanes", "lane")]
+              ("Ground", "ground"), ("Core VCAP", "core"), ("Debug & Service", "service"),
+              ("GPIO Lanes", "lane")]
 
 
 def _sw_glyph(cx, cy, col):
@@ -793,7 +793,7 @@ def detail_band_svg(a: dict, pos, width: int, height: int = 224) -> str:
     conn = next((c for c in sauth.socket_connections(a) if c["pin"] == pos), None)
     kind = conn["kind"] if conn else "direct"
     name = next(iter(p["pin_names"]), "") if p["pin_names"] else ""
-    kindlbl = {"switch": "Switched", "resistor": "IO lane", "direct": "Direct"}[kind]
+    kindlbl = {"switch": "Switched", "resistor": "IO Lane", "direct": "Direct"}[kind]
     pcol = catcol(conn["category"]) if conn else NEU
 
     # ── branches: (caption, [(title, sub, colour-or-None)]); None = neutral node ──
@@ -802,22 +802,22 @@ def detail_band_svg(a: dict, pos, width: int, height: int = 224) -> str:
         cw = sauth.card_wiring(a)
         c = next((x for x in cw["channels"] if x["socket_pin"] == pos), None)
         if c:
-            rail_sub = ("contact " + " / ".join(c["connector_contacts"])) if c["connector_contacts"] \
-                else ("ground plane" if c["rail"] == "GND" else "local cap")
+            rail_sub = ("Contact " + " / ".join(c["connector_contacts"])) if c["connector_contacts"] \
+                else ("Ground plane" if c["rail"] == "GND" else "Local cap")
             branches.append(("SWITCHED ROLE", [
-                (f"ADG714 cell {c['cell']} · ch {c['channel']}",
-                 f"{c['s_pin']} pin {c['s_pin_num']} to {c['d_pin']} pin {c['d_pin_num']}", None),
+                (f"ADG714 Cell {c['cell']} · Ch {c['channel']}",
+                 f"{c['s_pin']} Pin {c['s_pin_num']} to {c['d_pin']} Pin {c['d_pin_num']}", None),
                 (c["rail"], rail_sub, pcol)]))
             branches.append(("DEFAULT IO LANE", [
-                ("33 Ω series R", "R_IO", None),
-                (c["card_lane"], "lane row", catcol("lane"))]))
+                ("33 Ω Series R", "R_IO", None),
+                (c["card_lane"], "Lane row", catcol("lane"))]))
     elif kind == "resistor":
         branches.append(("IO LANE", [
-            ("33 Ω series R", "R_IO", None),
-            (conn["dest"], "lane row", catcol("lane"))]))
+            ("33 Ω Series R", "R_IO", None),
+            (conn["dest"], "Lane row", catcol("lane"))]))
     else:
         branches.append(("DIRECT", [
-            (conn["dest"], f"contact {conn['contact']}" if conn["contact"] else "hardwired", pcol)]))
+            (conn["dest"], f"Contact {conn['contact']}" if conn["contact"] else "Hardwired", pcol)]))
 
     # ── header block (left) ──
     s.append(f'<text x="{pad}" y="40" fill="{_TXT}" font-size="{_FS_TITLE}" font-weight="700">Pin {pos}</text>')
@@ -829,7 +829,7 @@ def detail_band_svg(a: dict, pos, width: int, height: int = 224) -> str:
         s.append(f'<text x="{pad}" y="{H-16:.0f}" fill="{_MUT}" font-size="{_FS_CAP}">'
                  f'Two wired paths;</text>')
         s.append(f'<text x="{pad}" y="{H-4:.0f}" fill="{_MUT}" font-size="{_FS_CAP}">'
-                 f'firmware picks one.</text>')
+                 f'Firmware picks one.</text>')
 
     # ── node + wire helpers (every node is the same fixed size) ──
     NH, NODE_W, GAP = 44, 178, 30
@@ -1206,7 +1206,7 @@ class ConnectionsList(QWidget):
     (ConnectionRow) and drive selection; a category filter and a sort control let you
     reorder any way you like without hiding data."""
     pinClicked = pyqtSignal(int)
-    _SORTS = ["Pin number", "Category", "Destination"]
+    _SORTS = ["Pin Number", "Category", "Destination"]
     _CAT_ORDER = {"power": 0, "analog": 1, "ground": 2, "core": 3, "service": 4, "lane": 5}
 
     def __init__(self, parent=None):
@@ -1340,7 +1340,7 @@ class Stm32PinsWidget(QWidget):
 
         bar.addWidget(QLabel("View:"))
         self.view_combo = QComboBox()
-        self.view_combo.addItems(["Overview", "Pin map", "Table", "Connections"])
+        self.view_combo.addItems(["Overview", "Pin Map", "Table", "Connections"])
         self.view_combo.currentIndexChanged.connect(lambda i: self.stack.setCurrentIndex(i))
         bar.addWidget(self.view_combo)
         root.addLayout(bar)
@@ -1362,12 +1362,12 @@ class Stm32PinsWidget(QWidget):
         strip.addLayout(idbox)
         self._stats = {}
         for key, label, accent in [
-                ("must", "Must-switch", _SWITCH_COLOR[sdb.SWITCH_MUST]),
+                ("must", "Must-Switch", _SWITCH_COLOR[sdb.SWITCH_MUST]),
                 ("osc", "Oscillator", _SWITCH_COLOR[sdb.SWITCH_OSC_OPTIONAL]),
                 ("fixed", "Fixed", _MUT),
                 ("breakout", "Breakout", _BREAKOUT_COLOR),
-                ("fivev", "5V-tolerant", "#24b196"),
-                ("io", "Per-pin I/O", _MUT),
+                ("fivev", "5V-Tolerant", "#24b196"),
+                ("io", "Per-Pin I/O", _MUT),
                 ("vdda", "VDDA (V)", _MUT)]:
             b = _MiniStat(label, accent)
             self._stats[key] = b
@@ -1454,7 +1454,7 @@ class Stm32PinsWidget(QWidget):
         frow.addWidget(self.filter_combo)
         frow.addWidget(QLabel("Peripheral:"))
         self.periph_combo = QComboBox()
-        self.periph_combo.addItem("Any peripheral")
+        self.periph_combo.addItem("Any Peripheral")
         self.periph_combo.currentTextChanged.connect(self._on_peripheral)
         frow.addWidget(self.periph_combo)
         frow.addWidget(QLabel("Search:"))
@@ -1594,13 +1594,13 @@ class Stm32PinsWidget(QWidget):
         fv = el.get("five_v_positions", {})
         vdda = el.get("vdda_range_v")
         self.sc_switch.set(f"{r['must_switch_count']}",
-                           f"Must-switch · {r['osc_optional_count']} oscillator · {r['fixed_count']} fixed")
+                           f"Must-switch · {r['osc_optional_count']} Oscillator · {r['fixed_count']} Fixed")
         self.sc_break.set(f"{ea.get('service_breakout_count', 0)} nets",
-                          f"{len(ea.get('debug_positions', []))} debug · "
-                          f"{len(ea.get('trace_positions', []))} trace")
+                          f"{len(ea.get('debug_positions', []))} Debug · "
+                          f"{len(ea.get('trace_positions', []))} Trace")
         self.sc_5v.set(f"{fv.get('tolerant_all_parts', 0)} 5V-Tolerant",
-                       f"{fv.get('family_dependent', 0)} part-dependent · "
-                       f"{fv.get('not_tolerant_any_part', 0)} never")
+                       f"{fv.get('family_dependent', 0)} Part-dependent · "
+                       f"{fv.get('not_tolerant_any_part', 0)} Never")
         self.sc_elec.set(f"±{el.get('max_io_current_ma', '?')} mA I/O",
                          f"VDDA {vdda[0]}–{vdda[1]} V · VCAP {el.get('vcap_required')}" if vdda else "")
 
@@ -1735,7 +1735,7 @@ class Stm32PinsWidget(QWidget):
         want = self.filter_combo.currentText()
         q = self.search.text().strip().lower()
         periph = self.periph_combo.currentText()
-        periph = None if periph in ("", "Any peripheral") else periph
+        periph = None if periph in ("", "Any Peripheral") else periph
         want_class = {
             "Must Switch": sdb.SWITCH_MUST,
             "Oscillator": sdb.SWITCH_OSC_OPTIONAL,
@@ -1772,7 +1772,7 @@ class Stm32PinsWidget(QWidget):
         if not self.authority:
             return
         name = self.periph_combo.currentText()
-        hi = set() if name in ("", "Any peripheral") else {
+        hi = set() if name in ("", "Any Peripheral") else {
             p["position"] for p in self.authority["positions"] if name in p.get("peripherals", [])}
         for m in self._maps():
             m.set_highlight(hi)
@@ -1782,7 +1782,7 @@ class Stm32PinsWidget(QWidget):
         combo = self.periph_combo
         combo.blockSignals(True)
         combo.clear()
-        combo.addItem("Any peripheral")
+        combo.addItem("Any Peripheral")
         combo.addItems(sorted({x for p in self.authority["positions"]
                                for x in p.get("peripherals", [])}))
         combo.blockSignals(False)
@@ -1809,7 +1809,7 @@ class Stm32PinsWidget(QWidget):
             return
         cats = sauth.category_lists(self.authority)
         lines = [f"{self.authority['package']} pin lists (socket #):"]
-        for key, lab in [("must_switch", "Must-switch"), ("osc_optional", "Osc-optional"),
+        for key, lab in [("must_switch", "Must-Switch"), ("osc_optional", "Osc-Optional"),
                          ("fixed", "Fixed"), ("breakout", "Breakout"),
                          ("five_v_all_parts", "5V all-parts"), ("five_v_never", "Never 5V")]:
             nums = cats[key]
