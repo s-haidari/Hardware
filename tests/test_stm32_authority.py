@@ -349,6 +349,18 @@ class AuthorityTests(unittest.TestCase):
         self.assertIn("SWITCH", svg)                                 # switched pins present
         self.assertIn("DIRECT", svg)                                 # direct-connect pins present
         self.assertNotIn("ADG714", svg)                              # part name not shown in the app
+        # Overview: the interactive connections list (one clickable row per pin,
+        # category filter, and re-sortable) drives selection across the thirds.
+        w.view_combo.setCurrentText("Overview")
+        self.assertEqual(len(w.conn_list._rows), 64)                 # every socket pin listed
+        w._select(1)
+        self.assertEqual(w.conn_list._sel, 1)                        # selection follows the map
+        w.conn_list.filter_combo.setCurrentText("Switched")
+        self.assertEqual(len(w.conn_list._rows), 11)                 # filter to switched pins only
+        w.conn_list.sort_combo.setCurrentText("Destination")
+        self.assertEqual(len(w.conn_list._rows), 11)                 # re-sort keeps the filtered set
+        w.conn_list.filter_combo.setCurrentText("All")
+        self.assertEqual(len(w.conn_list._rows), 64)
 
 
 if __name__ == "__main__":

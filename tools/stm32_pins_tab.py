@@ -957,6 +957,164 @@ class _StatCard(QFrame):
         self._s.setText(str(sub))
 
 
+class ConnectionRow(QFrame):
+    """One clickable connection: [pin number + name] -> [path component chip] ->
+    [destination net + connector contact], coloured by destination category. Clicking
+    emits the pin so the map and focus panel follow along."""
+    clicked = pyqtSignal(int)
+    _KIND = {"switch": "Switch", "resistor": "33 Ω", "direct": "Direct"}
+
+    def __init__(self, rec, parent=None):
+        super().__init__(parent)
+        self.pin = rec["pin"]
+        self._rec = rec
+        self._selected = False
+        self.setObjectName("connRow")
+        self.setCursor(Qt.PointingHandCursor)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(11, 6, 11, 6)
+        lay.setSpacing(9)
+        self._left = QLabel(); self._left.setTextFormat(Qt.RichText)
+        self._left.setMinimumWidth(88)
+        self._left.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        self._chip = QLabel(self._KIND.get(rec["kind"], rec["kind"]))
+        self._chip.setObjectName("connChip")
+        self._chip.setAlignment(Qt.AlignCenter)
+        self._chip.setFixedWidth(64)
+        self._right = QLabel(); self._right.setTextFormat(Qt.RichText)
+        self._right.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self._right.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        lay.addWidget(self._left)
+        lay.addWidget(self._chip)
+        lay.addWidget(self._right, 1)
+        self.restyle()
+
+    def restyle(self):
+        rec = self._rec
+        col = _CAT_COLOR.get(rec["category"], "#4c8df0")
+        border = col if self._selected else "transparent"
+        self.setStyleSheet(
+            f"#connRow{{background:{_CARD};border:1px solid {border};"
+            f"border-left:3px solid {col};border-radius:8px;}}"
+            f"#connRow:hover{{background:{_PANEL};}}"
+            f"#connChip{{color:{col};border:1px solid {col};border-radius:9px;"
+            f"padding:1px 2px;font-size:9px;font-weight:700;}}")
+        self._left.setText(
+            f"<span style='color:{col};font-family:JetBrains Mono;font-weight:700'>{self.pin}</span>"
+            f"&nbsp;&nbsp;&nbsp;<span style='color:{_TXT};font-weight:600'>{html.escape(rec['name'])}</span>")
+        self._right.setText(
+            f"<span style='color:{col};font-weight:700'>{html.escape(rec['dest'])}</span>"
+            f"&nbsp;&nbsp;<span style='color:{_MUT}'>{html.escape(rec['contact'])}</span>")
+
+    def set_selected(self, sel):
+        if sel != self._selected:
+            self._selected = sel
+            self.restyle()
+
+    def mousePressEvent(self, _ev):
+        self.clicked.emit(self.pin)
+
+
+class ConnectionsList(QWidget):
+    """Filterable, sortable list of every socket pin's connection. Rows are clickable
+    (ConnectionRow) and drive selection; a category filter and a sort control let you
+    reorder any way you like without hiding data."""
+    pinClicked = pyqtSignal(int)
+    _SORTS = ["Pin number", "Category", "Destination"]
+    _CAT_ORDER = {"power": 0, "analog": 1, "ground": 2, "core": 3, "service": 4, "lane": 5}
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._authority = None
+        self._rows = {}
+        self._sel = None
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(6)
+        bar = QHBoxLayout(); bar.setSpacing(6)
+        self.filter_combo = QComboBox()
+        self.filter_combo.addItems([lbl for lbl, _ in _CAT_LABEL])
+        self.filter_combo.currentTextChanged.connect(self._rebuild)
+        self.sort_combo = QComboBox()
+        self.sort_combo.addItems(self._SORTS)
+        self.sort_combo.currentTextChanged.connect(self._rebuild)
+        bar.addWidget(QLabel("Show:")); bar.addWidget(self.filter_combo)
+        bar.addWidget(QLabel("Sort:")); bar.addWidget(self.sort_combo)
+        bar.addStretch()
+        self.count = QLabel(""); self.count.setObjectName("connCount")
+        bar.addWidget(self.count)
+        root.addLayout(bar)
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._scroll.setObjectName("connScroll")
+        self._inner = QWidget(); self._inner.setObjectName("connInner")
+        self._vl = QVBoxLayout(self._inner)
+        self._vl.setContentsMargins(2, 2, 2, 2)
+        self._vl.setSpacing(5)
+        self._vl.addStretch()
+        self._scroll.setWidget(self._inner)
+        root.addWidget(self._scroll, 1)
+        self._style_scroll()
+
+    def set_authority(self, a):
+        self._authority = a
+        self._rebuild()
+
+    def _records(self):
+        if not self._authority:
+            return []
+        conns = sauth.socket_connections(self._authority)
+        cat = dict(_CAT_LABEL).get(self.filter_combo.currentText())
+        if cat == "switch":
+            conns = [c for c in conns if c["kind"] == "switch"]
+        elif cat:
+            conns = [c for c in conns if c["category"] == cat]
+        s = self.sort_combo.currentText()
+        if s == "Category":
+            conns.sort(key=lambda c: (self._CAT_ORDER.get(c["category"], 9), c["pin"]))
+        elif s == "Destination":
+            conns.sort(key=lambda c: (c["dest"], c["pin"]))
+        else:
+            conns.sort(key=lambda c: c["pin"])
+        return conns
+
+    def _clear(self):
+        while self._vl.count() > 1:                 # keep the trailing stretch
+            w = self._vl.takeAt(0).widget()
+            if w:
+                w.deleteLater()
+        self._rows = {}
+
+    def _rebuild(self, *_):
+        self._clear()
+        conns = self._records()
+        self.count.setText(f"{len(conns)} pins")
+        for rec in conns:
+            row = ConnectionRow(rec)
+            row.clicked.connect(self.pinClicked)
+            row.set_selected(rec["pin"] == self._sel)
+            self._vl.insertWidget(self._vl.count() - 1, row)
+            self._rows[rec["pin"]] = row
+
+    def set_selected(self, pos):
+        self._sel = pos
+        for pin, row in self._rows.items():
+            row.set_selected(pin == pos)
+        r = self._rows.get(pos)
+        if r:
+            self._scroll.ensureWidgetVisible(r, 0, 40)
+
+    def _style_scroll(self):
+        self._scroll.setStyleSheet(f"#connScroll{{border:none;background:{_PANEL};}}")
+        self._inner.setStyleSheet(f"#connInner{{background:{_PANEL};}}")
+        self.count.setStyleSheet(f"color:{_MUT};font-size:10px;font-weight:700;")
+
+    def restyle(self):
+        self._style_scroll()
+        self._rebuild()
+
+
 class Stm32PinsWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -996,7 +1154,7 @@ class Stm32PinsWidget(QWidget):
 
         bar.addWidget(QLabel("View:"))
         self.view_combo = QComboBox()
-        self.view_combo.addItems(["Pin map", "Table", "Connections"])
+        self.view_combo.addItems(["Overview", "Pin map", "Table", "Connections"])
         self.view_combo.currentIndexChanged.connect(lambda i: self.stack.setCurrentIndex(i))
         bar.addWidget(self.view_combo)
         root.addLayout(bar)
@@ -1012,6 +1170,7 @@ class Stm32PinsWidget(QWidget):
         # ── stacked views: Pin map (dashboard) | Table | Card BOM ──
         self._sel_pos = None
         self.stack = QStackedWidget()
+        self.stack.addWidget(self._build_overview_page())
         self.stack.addWidget(self._build_dashboard_page())
         self.stack.addWidget(self._build_table_page())
         self.stack.addWidget(self._build_bom_page())
@@ -1026,6 +1185,27 @@ class Stm32PinsWidget(QWidget):
         self._load_if_ready()
 
     # ── page builders ───────────────────────────────────────────────
+    def _build_overview_page(self):
+        """The unified screen: balanced thirds — the pin map, the interactive
+        connections list, and the focus panel, all driven by one selection."""
+        page = QWidget()
+        lay = QHBoxLayout(page)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+        self.ov_map = PinMapWidget()
+        self.ov_map.pinClicked.connect(self._select)
+        self.conn_list = ConnectionsList()
+        self.conn_list.pinClicked.connect(self._select)
+        self.ov_detail = QSvgWidget()
+        self._ov_area = QScrollArea()
+        self._ov_area.setWidgetResizable(False)
+        self._ov_area.setWidget(self.ov_detail)
+        self._ov_area.setStyleSheet("QScrollArea{border:none;background:%s;}" % _PANEL)
+        lay.addWidget(self.ov_map, 1)
+        lay.addWidget(self.conn_list, 1)
+        lay.addWidget(self._ov_area, 1)
+        return page
+
     def _build_dashboard_page(self):
         page = QWidget()
         lay = QHBoxLayout(page)
@@ -1154,11 +1334,13 @@ class Stm32PinsWidget(QWidget):
 
     # ── selection + dashboard ───────────────────────────────────────
     def _maps(self):
-        """Both pin visualizers (dashboard + table view) so selection/highlight
-        stay in sync across views."""
+        """Every pin visualizer (overview + dashboard + table view) so selection and
+        highlight stay in sync across views."""
         ms = [self.pin_map]
-        if getattr(self, "table_pin_map", None) is not None:
-            ms.append(self.table_pin_map)
+        for attr in ("table_pin_map", "ov_map"):
+            w = getattr(self, attr, None)
+            if w is not None:
+                ms.append(w)
         return ms
 
     def _select(self, pos):
@@ -1166,6 +1348,8 @@ class Stm32PinsWidget(QWidget):
         if pos is not None:
             for m in self._maps():
                 m.set_selected(pos)
+            if getattr(self, "conn_list", None) is not None:
+                self.conn_list.set_selected(pos)
         self._refresh_details()
 
     def _on_table_select(self):
@@ -1180,8 +1364,9 @@ class Stm32PinsWidget(QWidget):
         if not self.authority:
             return
         svg = detail_svg(self.authority, self._sel_pos)
-        self._load_svg(self.map_detail, svg)
-        self._load_svg(self.detail, svg)
+        for w in (self.map_detail, self.detail, getattr(self, "ov_detail", None)):
+            if w is not None:
+                self._load_svg(w, svg)
 
     @staticmethod
     def _load_svg(widget, svg):
@@ -1194,10 +1379,12 @@ class Stm32PinsWidget(QWidget):
         set_tab_theme(dark)
         for sc in (self.sc_switch, self.sc_break, self.sc_5v, self.sc_elec):
             sc.restyle()
-        for area in (self._mda, self.detail_area, self._bom_area):
+        for area in (self._mda, self.detail_area, self._bom_area, self._ov_area):
             area.setStyleSheet("QScrollArea{border:none;background:%s;}" % _PANEL)
         for m in self._maps():
             m.update()
+        if getattr(self, "conn_list", None) is not None:
+            self.conn_list.restyle()
         if self.authority:
             self._update_dashboard()
             self._refresh_details()
@@ -1275,6 +1462,8 @@ class Stm32PinsWidget(QWidget):
         self._populate()
         for m in self._maps():
             m.set_authority(self.authority)
+        if getattr(self, "conn_list", None) is not None:
+            self.conn_list.set_authority(self.authority)
         self._update_dashboard()
         self._refresh_details()
 
