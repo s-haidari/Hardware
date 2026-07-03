@@ -574,16 +574,56 @@ def detail_svg(a: dict, pos=None) -> str:
                     f'{a["manifest"]["part_count"]} parts, {r["positions_total"]} positions. '
                     f'{r["must_switch_count"]} pins switch.</text>')
         y += 26
-        namemap = {p["position"]: (next(iter(p["pin_names"]), "") or "") for p in a["positions"]}
-        # every switch/oscillator pill is the same size, with the number and the name
-        # each in their own aligned column (fixed gap, not a tspan dx which QtSvg
-        # under-renders). One shared width across both sections; a fixed grid.
-        _named = cats["must_switch"] + cats["osc_optional"]
-        _max_num = max((len(str(n)) for n in _named), default=2)
+        byp = {p["position"]: p for p in a["positions"]}
+        namemap = {pos: (next(iter(p["pin_names"]), "") or "") for pos, p in byp.items()}
+        rolemap = {pos: list(p["role_set"].keys()) for pos, p in byp.items()}
+        # Switch/oscillator pins get a full-width row showing the roles they multiplex
+        # between (as chips); breakout and 5V pins get a uniform name-pill grid so no
+        # pin's name is ever hidden. Pills share one width and align number vs name.
+        _switch_secs = [
+            ("SWITCH PINS", _SWITCH_COLOR[sdb.SWITCH_MUST], cats["must_switch"]),
+            ("OSCILLATOR PINS", _SWITCH_COLOR[sdb.SWITCH_OSC_OPTIONAL], cats["osc_optional"]),
+        ]
+        _pill_secs = [
+            ("BREAKOUT", _BREAKOUT_COLOR, cats["breakout"]),
+            ("5V-TOLERANT", "#24b196", cats["five_v_all_parts"]),
+            ("NEVER 5V", _MUT, cats["five_v_never"]),
+        ]
+        _named = [n for _, _, nums in _pill_secs for n in nums] or [1]
+        _max_num = max(len(str(n)) for n in _named)
         _max_nm = max((len(namemap.get(n, "")) for n in _named), default=4)
         name_off = 12 + _max_num * 6.9 + 11
         pill_w = min(W - 2 * pad, name_off + _max_nm * 6.2 + 12)
         pill_per = max(1, int((W - 2 * pad + 7) / (pill_w + 7)))
+
+        def _role_chips_from(rx, y0, roles, col):
+            """Lay small outlined role chips right-to-left ending at rx; return left x."""
+            for role in reversed(roles):
+                rw = 13 + len(role) * 6.1
+                rx -= rw
+                body.append(f'<rect x="{rx:.0f}" y="{y0-13}" width="{rw:.0f}" height="19" rx="9.5" '
+                            f'fill="{col}" fill-opacity="0.16" stroke="{col}" stroke-opacity="0.45"/>')
+                body.append(f'<text x="{rx+rw/2:.0f}" y="{y0+1}" fill="{col}" text-anchor="middle" '
+                            f'font-size="9.5" font-weight="600">{_esc(role)}</text>')
+                rx -= 5
+            return rx
+
+        def switch_rows(nums, col):
+            """One full-width row per pin: pin number + name on the left, the roles it
+            switches between as chips on the right."""
+            nonlocal y
+            for n in nums:
+                nm = namemap.get(n, "")
+                roles = rolemap.get(n, [])
+                body.append(f'<rect x="{pad}" y="{y-15}" width="{W-2*pad}" height="26" rx="8" '
+                            f'fill="{col}" fill-opacity="0.09"/>')
+                body.append(f'<rect x="{pad}" y="{y-15}" width="3" height="26" rx="1.5" fill="{col}"/>')
+                body.append(f'<text x="{pad+13}" y="{y+1}" fill="{col}" font-size="11" '
+                            f'font-family="{_SVG_MONO}" font-weight="700">{n}</text>')
+                body.append(f'<text x="{pad+13 + len(str(n))*7.2 + 8:.0f}" y="{y+1}" fill="{_TXT}" '
+                            f'font-size="11">{_esc(nm)}</text>')
+                _role_chips_from(W - pad - 8, y + 1, roles, col)
+                y += 31
 
         def named_pills(nums, col):
             """One uniform pill per pin: mono pin number, a clear gap, then the name."""
@@ -602,33 +642,14 @@ def detail_svg(a: dict, pos=None) -> str:
                             f'font-family="{_SVG_FONT}">{_esc(nm)}</text>')
             y += 31
 
-        def num_chips(nums, col):
-            """Compact one-square-per-pin chips for the large 5V categories."""
-            nonlocal y
-            cx = pad
-            for n in nums:
-                if cx + 30 > W - pad:
-                    cx = pad
-                    y += 26
-                body.append(f'<rect x="{cx}" y="{y-15}" width="26" height="20" rx="7" '
-                            f'fill="{col}" fill-opacity="0.16"/>'
-                            f'<text x="{cx+13}" y="{y}" fill="{col}" text-anchor="middle" '
-                            f'font-size="10.5" font-family="{_SVG_MONO}">{n}</text>')
-                cx += 30
-            y += 30
-
-        for label, col, nums, named in [
-                ("SWITCH PINS", _SWITCH_COLOR[sdb.SWITCH_MUST], cats["must_switch"], True),
-                ("OSCILLATOR PINS", _SWITCH_COLOR[sdb.SWITCH_OSC_OPTIONAL], cats["osc_optional"], True),
-                ("BREAKOUT", _BREAKOUT_COLOR, cats["breakout"], False),
-                ("5V-TOLERANT", "#24b196", cats["five_v_all_parts"], False),
-                ("NEVER 5V", _MUT, cats["five_v_never"], False)]:
-            section(f"{label} ({len(nums)})")
-            if not nums:
-                body.append(f'<text x="{pad}" y="{y}" fill="{_MUT}" font-size="11">None.</text>')
-                y += 24
-                continue
-            (named_pills if named else num_chips)(nums, col)
+        for render, secs in ((switch_rows, _switch_secs), (named_pills, _pill_secs)):
+            for label, col, nums in secs:
+                section(f"{label} ({len(nums)})")
+                if not nums:
+                    body.append(f'<text x="{pad}" y="{y}" fill="{_MUT}" font-size="11">None.</text>')
+                    y += 24
+                    continue
+                render(nums, col)
     else:
         p = next((x for x in a["positions"] if x["position"] == pos), None)
         if p is None:
