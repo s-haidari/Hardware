@@ -11,8 +11,8 @@ import html
 import os
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QFileSystemWatcher, pyqtSignal, QRectF, QByteArray
-from PyQt5.QtGui import QColor, QBrush, QPainter, QPen
+from PyQt5.QtCore import Qt, QFileSystemWatcher, pyqtSignal, QRectF, QByteArray, QPointF
+from PyQt5.QtGui import QColor, QBrush, QPainter, QPen, QFont, QFontMetricsF
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox, QLineEdit,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QSizePolicy,
@@ -574,27 +574,53 @@ def detail_svg(a: dict, pos=None) -> str:
                     f'{a["manifest"]["part_count"]} parts, {r["positions_total"]} positions. '
                     f'{r["must_switch_count"]} pins switch.</text>')
         y += 26
-        for label, col, nums in [("MUST-SWITCH", _SWITCH_COLOR[sdb.SWITCH_MUST], cats["must_switch"]),
-                                 ("OSCILLATOR", _SWITCH_COLOR[sdb.SWITCH_OSC_OPTIONAL], cats["osc_optional"]),
-                                 ("BREAKOUT", _BREAKOUT_COLOR, cats["breakout"]),
-                                 ("5V-TOLERANT", "#24b196", cats["five_v_all_parts"]),
-                                 ("NEVER 5V", _MUT, cats["five_v_never"])]:
-            section(f"{label} ({len(nums)})")
-            if not nums:
-                body.append(f'<text x="{pad}" y="{y}" fill="{_MUT}" font-size="11">None.</text>')
-                y += 24
-                continue
+        namemap = {p["position"]: (next(iter(p["pin_names"]), "") or "") for p in a["positions"]}
+
+        def named_pills(nums, col):
+            """One pill per pin: mono pin number + pin name, wrapping to fit."""
+            nonlocal y
+            cx = pad
+            for n in nums:
+                nm = namemap.get(n, "")
+                pw = 22 + len(str(n)) * 6.6 + max(1, len(nm)) * 6.0
+                if cx + pw > W - pad and cx > pad:
+                    cx = pad
+                    y += 27
+                body.append(f'<rect x="{cx:.0f}" y="{y-15}" width="{pw:.0f}" height="22" rx="11" '
+                            f'fill="{col}" fill-opacity="0.13" stroke="{col}" stroke-opacity="0.4"/>')
+                body.append(f'<text x="{cx+9:.0f}" y="{y}" font-size="10.5">'
+                            f'<tspan fill="{col}" font-family="{_SVG_MONO}" font-weight="700">{n}</tspan>'
+                            f'<tspan dx="5" fill="{col}" font-family="{_SVG_FONT}">{_esc(nm)}</tspan></text>')
+                cx += pw + 6
+            y += 31
+
+        def num_chips(nums, col):
+            """Compact one-square-per-pin chips for the large 5V categories."""
+            nonlocal y
             cx = pad
             for n in nums:
                 if cx + 30 > W - pad:
                     cx = pad
                     y += 26
-                body.append(f'<rect x="{cx}" y="{y-15}" width="26" height="20" rx="6" '
+                body.append(f'<rect x="{cx}" y="{y-15}" width="26" height="20" rx="7" '
                             f'fill="{col}" fill-opacity="0.16"/>'
                             f'<text x="{cx+13}" y="{y}" fill="{col}" text-anchor="middle" '
                             f'font-size="10.5" font-family="{_SVG_MONO}">{n}</text>')
                 cx += 30
             y += 30
+
+        for label, col, nums, named in [
+                ("SWITCH PINS", _SWITCH_COLOR[sdb.SWITCH_MUST], cats["must_switch"], True),
+                ("OSCILLATOR PINS", _SWITCH_COLOR[sdb.SWITCH_OSC_OPTIONAL], cats["osc_optional"], True),
+                ("BREAKOUT", _BREAKOUT_COLOR, cats["breakout"], False),
+                ("5V-TOLERANT", "#24b196", cats["five_v_all_parts"], False),
+                ("NEVER 5V", _MUT, cats["five_v_never"], False)]:
+            section(f"{label} ({len(nums)})")
+            if not nums:
+                body.append(f'<text x="{pad}" y="{y}" fill="{_MUT}" font-size="11">None.</text>')
+                y += 24
+                continue
+            (named_pills if named else num_chips)(nums, col)
     else:
         p = next((x for x in a["positions"] if x["position"] == pos), None)
         if p is None:
@@ -705,12 +731,16 @@ class PinMapWidget(QWidget):
         super().__init__(parent)
         self.authority = None
         self.selected = None
+        self.hover = None
+        self._hover_xy = None
         self.highlight = set()
         self.setMinimumSize(380, 380)
+        self.setMouseTracking(True)
 
     def set_authority(self, a):
         self.authority = a
         self.selected = None
+        self.hover = None
         self.highlight = set()
         self.update()
 
@@ -727,9 +757,20 @@ class PinMapWidget(QWidget):
             return None
         return pin_map_geometry(self.authority["positions"], self.width(), self.height())
 
+    def _pin_at(self, px, py, g=None):
+        g = g or self._geom()
+        if not g:
+            return None
+        for pin in g["pins"]:
+            x, y, pw, ph = pin["rect"]
+            if x - 3 <= px <= x + pw + 3 and y - 3 <= py <= y + ph + 3:
+                return pin
+        return None
+
     def paintEvent(self, _ev):
         qp = QPainter(self)
         qp.setRenderHint(QPainter.Antialiasing)
+        qp.setRenderHint(QPainter.TextAntialiasing)
         qp.fillRect(self.rect(), QColor(_PANEL))
         g = self._geom()
         if not g or not g["pins"]:
@@ -737,41 +778,126 @@ class PinMapWidget(QWidget):
             qp.drawText(self.rect(), Qt.AlignCenter, "Build the database to see the pin map")
             return
         bl, bt, bw, bh = g["body"]
+        # body: a QFP package with an inner bevel and a pin-1 corner dot
         qp.setPen(QPen(QColor(_LINE), 1.5))
         qp.setBrush(QColor(_BODY))
-        qp.drawRoundedRect(QRectF(bl, bt, bw, bh), 8, 8)
+        qp.drawRoundedRect(QRectF(bl, bt, bw, bh), 10, 10)
+        inset = 7
+        qp.setPen(QPen(QColor(_LINE), 1))
+        qp.setBrush(Qt.NoBrush)
+        qp.drawRoundedRect(QRectF(bl + inset, bt + inset, bw - 2 * inset, bh - 2 * inset), 7, 7)
+        qp.setPen(Qt.NoPen)
+        qp.setBrush(QColor(_MUT))
+        qp.drawEllipse(QPointF(bl + inset + 9, bt + inset + 9), 3.2, 3.2)
+        # package caption
+        pkg = self.authority["package"]
+        n = len(g["pins"])
+        qp.setPen(QColor(_TXT))
+        f = QFont(_SVG_FONT.split(",")[0])
+        f.setPointSizeF(11.5)
+        f.setWeight(QFont.DemiBold)
+        qp.setFont(f)
+        qp.drawText(QRectF(bl, bt + bh / 2 - 15, bw, 18), Qt.AlignCenter, pkg)
+        f.setPointSizeF(8.5)
+        f.setWeight(QFont.Normal)
+        qp.setFont(f)
         qp.setPen(QColor(_MUT))
-        qp.drawText(QRectF(bl, bt, bw, bh), Qt.AlignCenter, self.authority["package"])
+        qp.drawText(QRectF(bl, bt + bh / 2 + 2, bw, 14), Qt.AlignCenter, f"{n} pins")
+        # numbers: label every lead when they fit, else a ruler (pin 1 + multiples of 5)
+        per = max(1, n // 4)
+        pitch = bw / per if per else bw
+        dense = pitch < 13
+        numf = QFont(_SVG_MONO.split(",")[0].strip("'"))
+        numf.setPointSizeF(max(6.5, min(8.5, pitch * 0.5)))
         for pin in g["pins"]:
             x, y, pw, ph = pin["rect"]
+            pos = pin["pos"]
+            emph = pos in (self.selected, self.hover)
             qp.setPen(Qt.NoPen)
             qp.setBrush(QColor(_SWITCH_COLOR.get(pin["sw"], "#9aa1a9")))
-            qp.drawRect(QRectF(x, y, pw, ph))
+            qp.drawRoundedRect(QRectF(x, y, pw, ph), 1.6, 1.6)
             if pin["breakout"]:
                 qp.setBrush(Qt.NoBrush)
                 qp.setPen(QPen(QColor(_BREAKOUT_COLOR), 2))
-                qp.drawRect(QRectF(x - 1.5, y - 1.5, pw + 3, ph + 3))
-            if pin["pos"] in self.highlight:
+                qp.drawRoundedRect(QRectF(x - 1.5, y - 1.5, pw + 3, ph + 3), 2, 2)
+            if pos in self.highlight:
                 qp.setBrush(Qt.NoBrush)
                 qp.setPen(QPen(QColor("#24b196"), 2.5))
-                qp.drawRect(QRectF(x - 3.5, y - 3.5, pw + 7, ph + 7))
-            if pin["pos"] == self.selected:
+                qp.drawRoundedRect(QRectF(x - 3.5, y - 3.5, pw + 7, ph + 7), 3, 3)
+            if pos == self.selected:
                 qp.setBrush(Qt.NoBrush)
                 qp.setPen(QPen(QColor(_TXT), 2))
-                qp.drawRect(QRectF(x - 3, y - 3, pw + 6, ph + 6))
+                qp.drawRoundedRect(QRectF(x - 3, y - 3, pw + 6, ph + 6), 3, 3)
+            if dense and not (emph or pos % 5 == 0 or pos == 1):
+                continue
+            qp.setFont(numf)
+            qp.setPen(QColor(_TXT if emph else _MUT))
+            s = str(pos)
+            side = pin["side"]
+            if side == "L":
+                r = QRectF(x - 40, y + ph / 2 - 7, 36, 14); al = Qt.AlignRight | Qt.AlignVCenter
+            elif side == "R":
+                r = QRectF(x + pw + 4, y + ph / 2 - 7, 36, 14); al = Qt.AlignLeft | Qt.AlignVCenter
+            elif side == "T":
+                r = QRectF(x + pw / 2 - 18, y - 17, 36, 14); al = Qt.AlignHCenter | Qt.AlignBottom
+            else:
+                r = QRectF(x + pw / 2 - 18, y + ph + 3, 36, 14); al = Qt.AlignHCenter | Qt.AlignTop
+            qp.drawText(r, al, s)
+        # hover callout: pin number + name + switch role, anchored to the cursor
+        if self.hover is not None and self._hover_xy:
+            hp = next((p for p in g["pins"] if p["pos"] == self.hover), None)
+            if hp:
+                self._draw_callout(qp, hp)
+
+    def _draw_callout(self, qp, hp):
+        title = f"Pin {hp['pos']}"
+        name = hp["name"] or "—"
+        role = _SWITCH_LABEL.get(hp["sw"], "")
+        tf = QFont(_SVG_FONT.split(",")[0]); tf.setPointSizeF(10.5); tf.setWeight(QFont.DemiBold)
+        sf = QFont(_SVG_FONT.split(",")[0]); sf.setPointSizeF(9.0)
+        fm_t, fm_s = QFontMetricsF(tf), QFontMetricsF(sf)
+        wln = max(fm_t.horizontalAdvance(f"{title}   {name}"), fm_s.horizontalAdvance(role))
+        bw2 = wln + 24
+        bh2 = 44
+        px, py = self._hover_xy
+        bx = min(px + 14, self.width() - bw2 - 4)
+        by = min(py + 14, self.height() - bh2 - 4)
+        bx, by = max(4, bx), max(4, by)
+        qp.setPen(QPen(QColor(_LINE), 1))
+        qp.setBrush(QColor(_CARD))
+        qp.drawRoundedRect(QRectF(bx, by, bw2, bh2), 8, 8)
+        qp.setBrush(QColor(_SWITCH_COLOR.get(hp["sw"], "#9aa1a9")))
+        qp.setPen(Qt.NoPen)
+        qp.drawEllipse(QPointF(bx + 12, by + 16), 4, 4)
+        qp.setFont(tf)
+        qp.setPen(QColor(_TXT))
+        qp.drawText(QRectF(bx + 22, by + 8, bw2 - 26, 16), Qt.AlignLeft | Qt.AlignVCenter,
+                    f"{title}   {name}")
+        qp.setFont(sf)
+        qp.setPen(QColor(_MUT))
+        qp.drawText(QRectF(bx + 12, by + 25, bw2 - 16, 14), Qt.AlignLeft | Qt.AlignVCenter, role)
+
+    def mouseMoveEvent(self, ev):
+        pin = self._pin_at(ev.x(), ev.y())
+        pos = pin["pos"] if pin else None
+        self._hover_xy = (ev.x(), ev.y()) if pin else None
+        self.setCursor(Qt.PointingHandCursor if pin else Qt.ArrowCursor)
+        if pos != self.hover or pin:
+            self.hover = pos
+            self.update()
+
+    def leaveEvent(self, _ev):
+        if self.hover is not None:
+            self.hover = None
+            self._hover_xy = None
+            self.update()
 
     def mousePressEvent(self, ev):
-        g = self._geom()
-        if not g:
-            return
-        px, py = ev.x(), ev.y()
-        for pin in g["pins"]:
-            x, y, pw, ph = pin["rect"]
-            if x - 3 <= px <= x + pw + 3 and y - 3 <= py <= y + ph + 3:
-                self.selected = pin["pos"]
-                self.update()
-                self.pinClicked.emit(pin["pos"])
-                return
+        pin = self._pin_at(ev.x(), ev.y())
+        if pin:
+            self.selected = pin["pos"]
+            self.update()
+            self.pinClicked.emit(pin["pos"])
 
 
 class _StatCard(QFrame):
