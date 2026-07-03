@@ -575,23 +575,31 @@ def detail_svg(a: dict, pos=None) -> str:
                     f'{r["must_switch_count"]} pins switch.</text>')
         y += 26
         namemap = {p["position"]: (next(iter(p["pin_names"]), "") or "") for p in a["positions"]}
+        # every switch/oscillator pill is the same size, with the number and the name
+        # each in their own aligned column (fixed gap, not a tspan dx which QtSvg
+        # under-renders). One shared width across both sections; a fixed grid.
+        _named = cats["must_switch"] + cats["osc_optional"]
+        _max_num = max((len(str(n)) for n in _named), default=2)
+        _max_nm = max((len(namemap.get(n, "")) for n in _named), default=4)
+        name_off = 12 + _max_num * 6.9 + 11
+        pill_w = min(W - 2 * pad, name_off + _max_nm * 6.2 + 12)
+        pill_per = max(1, int((W - 2 * pad + 7) / (pill_w + 7)))
 
         def named_pills(nums, col):
-            """One pill per pin: mono pin number + pin name, wrapping to fit."""
+            """One uniform pill per pin: mono pin number, a clear gap, then the name."""
             nonlocal y
-            cx = pad
-            for n in nums:
-                nm = namemap.get(n, "")
-                pw = 22 + len(str(n)) * 6.6 + max(1, len(nm)) * 6.0
-                if cx + pw > W - pad and cx > pad:
-                    cx = pad
+            for i, n in enumerate(nums):
+                c = i % pill_per
+                if c == 0 and i:
                     y += 27
-                body.append(f'<rect x="{cx:.0f}" y="{y-15}" width="{pw:.0f}" height="22" rx="11" '
+                cx = pad + c * (pill_w + 7)
+                nm = namemap.get(n, "")
+                body.append(f'<rect x="{cx:.0f}" y="{y-15}" width="{pill_w:.0f}" height="22" rx="11" '
                             f'fill="{col}" fill-opacity="0.13" stroke="{col}" stroke-opacity="0.4"/>')
-                body.append(f'<text x="{cx+9:.0f}" y="{y}" font-size="10.5">'
-                            f'<tspan fill="{col}" font-family="{_SVG_MONO}" font-weight="700">{n}</tspan>'
-                            f'<tspan dx="5" fill="{col}" font-family="{_SVG_FONT}">{_esc(nm)}</tspan></text>')
-                cx += pw + 6
+                body.append(f'<text x="{cx+12:.0f}" y="{y}" fill="{col}" font-size="10.5" '
+                            f'font-family="{_SVG_MONO}" font-weight="700">{n}</text>')
+                body.append(f'<text x="{cx+name_off:.0f}" y="{y}" fill="{col}" font-size="10.5" '
+                            f'font-family="{_SVG_FONT}">{_esc(nm)}</text>')
             y += 31
 
         def num_chips(nums, col):
