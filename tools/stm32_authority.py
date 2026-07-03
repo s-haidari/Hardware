@@ -573,17 +573,19 @@ CONNECTOR = {"parent": "Samtec QSH-060-01-L-D-A", "card": "Samtec QTH-060-03-L-D
 ADG714_TERMINAL_PIN = {"S1": 5, "D1": 6, "S2": 7, "D2": 8, "S3": 9, "D3": 10, "S4": 11,
                        "D4": 12, "D5": 13, "S5": 14, "D6": 15, "S6": 16, "D7": 17, "S7": 18,
                        "D8": 19, "S8": 20}
-# Rail net -> QSH/QTH connector contact(s). [] = not a connector contact (GND plane / local cap).
+# Rail net -> QSH/QTH connector contact(s), as "<side>-<contact>" (LA = left connector,
+# RA = right). [] = not a connector contact (GND solid plane / local VCAP cap).
 RAIL_CONTACT = {
-    "VBAT_TGT": [33], "VDDA_TGT": [20], "VREF_TGT": [22], "VSSA_TGT": [24],
-    "VTARGET": [16, 18, 27, 29], "SERVICE_BOOT0": [14], "SERVICE_NRST": [7],
-    "SERVICE_OSC_IN": [10], "SERVICE_OSC_OUT": [12], "GND": [], "VCAP_NODE": [],
+    "VBAT_TGT": ["LA-33"], "VDDA_TGT": ["RA-20"], "VREF_TGT": ["RA-22"], "VSSA_TGT": ["RA-24"],
+    "VTARGET": ["LA-27", "LA-29", "RA-16", "RA-18"], "SERVICE_BOOT0": ["RA-14"],
+    "SERVICE_NRST": ["LA-7"], "SERVICE_OSC_IN": ["RA-10"], "SERVICE_OSC_OUT": ["RA-12"],
+    "GND": [], "VCAP_NODE": [],
 }
 # Shared control/power bus (frozen SPI2 harness): signal -> (ADG714 pin, connector contact, controller pin).
 ADG714_BUS = [
-    ("SCLK", 1, 9, "PB13"), ("DIN", 3, 11, "PB15"), ("DOUT", 22, 13, "PB14"),
-    ("SYNC_N", 24, 15, "PB12"), ("RESET_N", 23, 17, "PB9"),
-    ("VDD", 2, 31, "+3V3"), ("GND", 4, None, "plane"), ("VSS", 21, None, "plane"),
+    ("SCLK", 1, "LA-9", "PB13"), ("DIN", 3, "LA-11", "PB15"), ("DOUT", 22, "LA-13", "PB14"),
+    ("SYNC_N", 24, "LA-15", "PB12"), ("RESET_N", 23, "LA-17", "PB9"),
+    ("VDD", 2, "LA-31", "+3V3"), ("GND", 4, None, "plane"), ("VSS", 21, None, "plane"),
 ]
 
 
@@ -623,10 +625,10 @@ def card_wiring(authority: dict) -> dict:
                 "s_connects_to": f"socket pin {sw['position']} ({name}) via {zif}",
                 "d_connects_to": d_to,
             })
-    daisy = {"head_din_contact": 11, "tail_dout_contact": 13,
+    daisy = {"head_din_contact": "LA-11", "tail_dout_contact": "LA-13",
              "order": [c["cell"] for c in cells],
              "note": "DIN into cell 1; each cell DOUT into the next cell DIN; last cell DOUT "
-                     "back to the controller (contact 13). SCLK/SYNC_N/RESET_N broadcast to all cells."}
+                     "back to the controller (LA-13). SCLK/SYNC_N/RESET_N broadcast to all cells."}
     return {"package": pkg, "zif_socket": zif, "connector": CONNECTOR,
             "bus": [{"signal": s, "adg714_pin": p, "connector_contact": c, "controller": m}
                     for s, p, c, m in ADG714_BUS],

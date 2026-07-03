@@ -304,10 +304,10 @@ class AuthorityTests(unittest.TestCase):
                          (1, 1, 1, "VBAT_TGT"))
         self.assertEqual((c1["s_pin"], c1["s_pin_num"], c1["d_pin"], c1["d_pin_num"]),
                          ("S1", 5, "D1", 6))
-        self.assertEqual(c1["connector_contacts"], [33])         # QSH/QTH contact for VBAT_TGT
+        self.assertEqual(c1["connector_contacts"], ["LA-33"])     # left connector, contact 33
         self.assertEqual(c1["card_lane"], "CARD_LANE_001")
         self.assertEqual((w["daisy_chain"]["head_din_contact"],
-                          w["daisy_chain"]["tail_dout_contact"]), (11, 13))
+                          w["daisy_chain"]["tail_dout_contact"]), ("LA-11", "LA-13"))
         json.loads(auth.to_switchmap_json(a))                    # valid JSON
         self.assertIn("NETDECK_LQFP64_CHANNELS", auth.to_switchmap_c(a))
         self.assertIn("via Samtec QTH", auth.to_wiring_md(a))

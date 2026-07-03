@@ -314,81 +314,102 @@ def _rail_color(net):
     return _RAIL_COLOR.get(net, "#8a8f96")
 
 
+def _contact_str(rail):
+    cs = sauth.RAIL_CONTACT.get(rail, [])
+    if cs:
+        return cs[0] + (f" +{len(cs)-1}" if len(cs) > 1 else "")
+    return "GND plane" if rail == "GND" else "local cap"
+
+
 def fabric_svg(a: dict) -> str:
-    """The ADG714 switch fabric as a visual diagram: one chip per cell, eight
-    colour-coded channels each routing a socket pin to its target rail."""
+    """Signal-path diagram: for each channel, the socket pin (IC51 ZIF) on the left, the
+    switch cell (S/D) in the middle, and the header connector contact (QSH/QTH) on the
+    right, plus the shared control / daisy-chain bus. Wiring per the vault contract."""
     cells = sauth.adg714_cell_map(a)
     r = a["rollup"]
     pinname = {p["position"]: (list(p["pin_names"])[0] if p["pin_names"] else "")
                for p in a["positions"]}
+    zif = sauth.ZIF_SOCKET.get(a["package"], "IC51 ZIF socket")
     rails = [sw["destination"] for cell in cells for sw in cell["switches"]
              if not sw["spare"] and sw["destination"]]
-    pill_w = 14 + max((len(x) for x in rails), default=6) * 6.4   # uniform pill width
-    colw, gap, chh, top = 432, 20, 30, 50
+    pill_w = 14 + max((len(x) for x in rails), default=6) * 6.2
+    colw, gap, chh, top = 476, 22, 30, 62
     cellh = 8 * chh + top
     cols = 1 if len(cells) <= 1 else 2
     rows = -(-len(cells) // cols)
     W = 28 + cols * colw + (cols - 1) * gap + 28
     cm = a.get("card_materials", {})
     foot = cm.get("items", [])
-    H = 88 + rows * (cellh + gap) + (46 + len(foot) * 22 if foot else 0)
+    bus_h, cy0 = 100, 0
+    cy0 = 76 + bus_h + 18
+    H = cy0 + rows * (cellh + gap) + (46 + len(foot) * 22 if foot else 0)
     s = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" font-family="{_SVG_FONT}">',
          f'<rect width="{W}" height="{H}" fill="{_PANEL}"/>',
-         f'<text x="28" y="36" fill="{_TXT}" font-size="16" font-weight="700">'
-         f'{a["package"]} switch fabric</text>',
+         f'<text x="28" y="36" fill="{_TXT}" font-size="16" font-weight="700">{a["package"]} switch fabric</text>',
          f'<text x="28" y="58" fill="{_MUT}" font-size="12">'
-         f'{r["must_switch_count"]} must-switch pins use {r["channel_count"]} one-hot channels '
-         f'across {r["cells_min"]} cells. Each channel routes one socket pin to its target rail.</text>']
+         f'{r["must_switch_count"]} must-switch pins, {r["channel_count"]} channels, {r["cells_min"]} cells. '
+         f'Socket pin  →  switch cell  →  header connector.</text>']
+    # control / power bus card
+    s.append(f'<rect x="28" y="76" width="{W-56}" height="{bus_h}" rx="12" fill="{_CARD}"/>')
+    s.append(f'<text x="44" y="98" fill="{_TXT}" font-size="12" font-weight="700">Control &amp; power bus (shared)</text>')
+    s.append(f'<text x="{W-44}" y="98" fill="{_MUT}" font-size="10" text-anchor="end" '
+             f'font-family="{_SVG_MONO}">{_esc(zif)}  ·  Samtec QSH-060-01 / QTH-060-03</text>')
+    bus = " · ".join(f"{sig} {ct if ct else 'plane'}" for sig, pin, ct, mcu in sauth.ADG714_BUS)
+    s.append(f'<text x="44" y="120" fill="{_TXT}" font-size="10.5" font-family="{_SVG_MONO}">{_esc(bus)}</text>')
+    s.append(f'<text x="44" y="139" fill="{_MUT}" font-size="10.5">'
+             f'Daisy: DIN into cell 1, each DOUT into the next DIN, tail DOUT to LA-13; '
+             f'SCLK / SYNC / RESET broadcast to every cell.</text>')
+    s.append(f'<text x="44" y="157" fill="{_MUT}" font-size="10">'
+             f'S (source) faces the socket, D (drain) faces the rail. LA = left connector, RA = right.</text>')
     for i, cell in enumerate(cells):
         cx = 28 + (i % cols) * (colw + gap)
-        cy = 80 + (i // cols) * (cellh + gap)
+        cy = cy0 + (i // cols) * (cellh + gap)
         used = sum(1 for sw in cell["switches"] if not sw["spare"])
         s.append(f'<rect x="{cx}" y="{cy}" width="{colw}" height="{cellh}" rx="12" fill="{_CARD}"/>')
-        s.append(f'<text x="{cx+16}" y="{cy+27}" fill="{_TXT}" font-size="13" font-weight="700">'
-                 f'Switch cell {cell["cell"]}</text>')
-        s.append(f'<text x="{cx+colw-16}" y="{cy+27}" fill="{_MUT}" font-size="10.5" '
-                 f'text-anchor="end" font-family="{_SVG_MONO}">{cell["footprint"]} · {used}/8</text>')
-        y = cy + top - 4
+        s.append(f'<text x="{cx+16}" y="{cy+26}" fill="{_TXT}" font-size="13" font-weight="700">Switch cell {cell["cell"]}</text>')
+        s.append(f'<text x="{cx+colw-16}" y="{cy+26}" fill="{_MUT}" font-size="10" text-anchor="end" '
+                 f'font-family="{_SVG_MONO}">{cell["footprint"]} · {used}/8</text>')
+        # zone headers
+        for zx, zt in ((cx+18, "SOCKET (ZIF)"), (cx+186, "SWITCH"), (cx+296, "HEADER (QSH/QTH)")):
+            s.append(f'<text x="{zx}" y="{cy+46}" fill="{_MUT}" font-size="8.5" font-weight="700" '
+                     f'letter-spacing="0.4">{zt}</text>')
+        y = cy + top
         for sw in cell["switches"]:
             spare = sw["spare"]
-            dim = "#5c5c64"
-            s.append(f'<text x="{cx+16}" y="{y+19}" fill="{dim if spare else _MUT}" '
-                     f'font-size="10.5" font-family="{_SVG_MONO}">SW{sw["channel"]}</text>')
-            s.append(f'<rect x="{cx+48}" y="{y+3}" width="50" height="22" rx="6" fill="{_PANEL}" '
-                     f'stroke="{_LINE}"/>')
-            s.append(f'<text x="{cx+73}" y="{y+18}" fill="{dim if spare else _TXT}" font-size="10.5" '
-                     f'text-anchor="middle" font-family="{_SVG_MONO}">{sw["s_pin"]}/{sw["d_pin"]}</text>')
+            fg = _MUT if spare else _TXT
+            # switch zone (middle): SWk + S/D box
+            s.append(f'<text x="{cx+186}" y="{y+18}" fill="{_MUT}" font-size="10" '
+                     f'font-family="{_SVG_MONO}">SW{sw["channel"]}</text>')
+            s.append(f'<rect x="{cx+214}" y="{y+3}" width="46" height="21" rx="6" fill="{_PANEL}" stroke="{_LINE}"/>')
+            s.append(f'<text x="{cx+237}" y="{y+18}" fill="{fg}" font-size="10" text-anchor="middle" '
+                     f'font-family="{_SVG_MONO}">{sw["s_pin"]}/{sw["d_pin"]}</text>')
             if spare:
-                s.append(f'<line x1="{cx+108}" y1="{y+14}" x2="{cx+colw-18}" y2="{y+14}" '
-                         f'stroke="{_LINE}" stroke-dasharray="3 4"/>')
-                s.append(f'<text x="{cx+colw/2+30:.0f}" y="{y+18}" fill="{dim}" font-size="10.5" '
-                         f'text-anchor="middle">Spare</text>')
+                s.append(f'<text x="{cx+18}" y="{y+18}" fill="{_MUT}" font-size="10.5">spare channel</text>')
                 y += chh
                 continue
             c = _rail_color(sw["destination"])
-            s.append(f'<circle cx="{cx+116}" cy="{y+14}" r="4" fill="{c}"/>')
-            s.append(f'<text x="{cx+128}" y="{y+18}" fill="{_TXT}" font-size="11" '
-                     f'font-family="{_SVG_MONO}">Pin {sw["position"]} {_esc(pinname.get(sw["position"],""))}</text>')
-            pill = sw["destination"] or ""
-            pw = pill_w
-            px = cx + colw - 16 - pw
-            s.append(f'<line x1="{cx+232}" y1="{y+14}" x2="{px-6:.0f}" y2="{y+14}" stroke="{c}" '
-                     f'stroke-width="1.3" opacity="0.5"/>')
-            s.append(f'<rect x="{px:.0f}" y="{y+3}" width="{pw:.0f}" height="22" rx="11" fill="{c}" opacity="0.2"/>')
-            s.append(f'<text x="{px+pw/2:.0f}" y="{y+18}" fill="{c}" text-anchor="middle" '
-                     f'font-size="10.5" font-family="{_SVG_MONO}" font-weight="600">{_esc(pill)}</text>')
+            # socket zone (left)
+            s.append(f'<circle cx="{cx+22}" cy="{y+14}" r="4" fill="{c}"/>')
+            s.append(f'<text x="{cx+32}" y="{y+18}" fill="{_TXT}" font-size="10.5" '
+                     f'font-family="{_SVG_MONO}">pin {sw["position"]} {_esc(pinname.get(sw["position"],""))}</text>')
+            s.append(f'<text x="{cx+176}" y="{y+18}" fill="{_MUT}" font-size="11">→</text>')
+            # header zone (right): rail pill + connector contact
+            s.append(f'<text x="{cx+264}" y="{y+18}" fill="{_MUT}" font-size="11">→</text>')
+            px = cx + 284
+            s.append(f'<rect x="{px}" y="{y+3}" width="{pill_w:.0f}" height="21" rx="10.5" fill="{c}" opacity="0.2"/>')
+            s.append(f'<text x="{px+pill_w/2:.0f}" y="{y+18}" fill="{c}" text-anchor="middle" '
+                     f'font-size="10" font-family="{_SVG_MONO}" font-weight="600">{_esc(sw["destination"])}</text>')
+            s.append(f'<text x="{px+pill_w+8:.0f}" y="{y+18}" fill="{_MUT}" font-size="10" '
+                     f'font-family="{_SVG_MONO}">{_esc(_contact_str(sw["destination"]))}</text>')
             y += chh
     if foot:
-        fy = 80 + rows * (cellh + gap) + 10
-        s.append(f'<text x="28" y="{fy+14}" fill="{_TXT}" font-size="13" font-weight="700">'
-                 f'Passive materials</text>')
+        fy = cy0 + rows * (cellh + gap) + 10
+        s.append(f'<text x="28" y="{fy+14}" fill="{_TXT}" font-size="13" font-weight="700">Passive materials</text>')
         for j, it in enumerate(foot):
             iy = fy + 38 + j * 22
-            s.append(f'<text x="28" y="{iy}" fill="{_MUT}" font-size="11" '
-                     f'font-family="{_SVG_MONO}">{it["qty"]}x</text>')
+            s.append(f'<text x="28" y="{iy}" fill="{_MUT}" font-size="11" font-family="{_SVG_MONO}">{it["qty"]}x</text>')
             s.append(f'<text x="60" y="{iy}" fill="{_TXT}" font-size="11.5">{_esc(it["part"])}</text>')
-            s.append(f'<text x="{W-28}" y="{iy}" fill="{_MUT}" font-size="11" text-anchor="end">'
-                     f'{_esc(it["role"])}</text>')
+            s.append(f'<text x="{W-28}" y="{iy}" fill="{_MUT}" font-size="11" text-anchor="end">{_esc(it["role"])}</text>')
     s.append("</svg>")
     return "".join(s)
 
