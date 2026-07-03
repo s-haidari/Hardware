@@ -1089,6 +1089,33 @@ class _StatCard(QFrame):
         self._s.setText(str(sub))
 
 
+class _MiniStat(QFrame):
+    """A compact top-strip stat: a value over a small label with a coloured left
+    accent. Fixed width, so every stat is the same size whatever its value."""
+    def __init__(self, label, accent, parent=None):
+        super().__init__(parent)
+        self.setObjectName("miniStat")
+        self._accent = accent
+        self.setFixedWidth(106)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(11, 5, 10, 6)
+        lay.setSpacing(0)
+        self._v = QLabel("–")
+        self._l = QLabel(label)
+        lay.addWidget(self._v)
+        lay.addWidget(self._l)
+        self.restyle()
+
+    def restyle(self):
+        self.setStyleSheet(f"#miniStat{{background:{_CARD};border-radius:8px;"
+                           f"border-left:3px solid {self._accent};}}")
+        self._v.setStyleSheet(f"color:{_TXT};font-size:14px;font-weight:700;")
+        self._l.setStyleSheet(f"color:{_MUT};font-size:9px;font-weight:600;")
+
+    def set(self, value):
+        self._v.setText(str(value))
+
+
 class _BandSvg(QSvgWidget):
     """A QSvgWidget that regenerates its SVG at the current pixel width, so the text
     stays a fixed size instead of scaling with the widget. Fixed height, expands
@@ -1321,10 +1348,33 @@ class Stm32PinsWidget(QWidget):
         self.status = QLabel("")
         self.status.setObjectName("headerStatus")
         root.addWidget(self.status)
-        self.rollup = QLabel("")
-        self.rollup.setWordWrap(True)
-        self.rollup.setTextFormat(Qt.RichText)
-        root.addWidget(self.rollup)
+
+        # ── top strip: package identity + compact stat cards (no wall of text) ──
+        strip = QHBoxLayout()
+        strip.setSpacing(8)
+        self.pkg_name = QLabel("")
+        self.pkg_sub = QLabel("")
+        idbox = QVBoxLayout()
+        idbox.setContentsMargins(2, 3, 12, 3)
+        idbox.setSpacing(0)
+        idbox.addWidget(self.pkg_name)
+        idbox.addWidget(self.pkg_sub)
+        strip.addLayout(idbox)
+        self._stats = {}
+        for key, label, accent in [
+                ("must", "Must-switch", _SWITCH_COLOR[sdb.SWITCH_MUST]),
+                ("osc", "Oscillator", _SWITCH_COLOR[sdb.SWITCH_OSC_OPTIONAL]),
+                ("fixed", "Fixed", _MUT),
+                ("breakout", "Breakout", _BREAKOUT_COLOR),
+                ("fivev", "5V-tolerant", "#24b196"),
+                ("io", "Per-pin I/O", _MUT),
+                ("vdda", "VDDA (V)", _MUT)]:
+            b = _MiniStat(label, accent)
+            self._stats[key] = b
+            strip.addWidget(b)
+        strip.addStretch()
+        root.addLayout(strip)
+        self._restyle_strip()
 
         # ── stacked views: Pin map (dashboard) | Table | Card BOM ──
         self._sel_pos = None
@@ -1517,6 +1567,7 @@ class Stm32PinsWidget(QWidget):
         """Follow the app theme: swap the tab's surface colours and refresh the
         custom visuals (stat cards, scroll areas, pin maps, SVG panels)."""
         set_tab_theme(dark)
+        self._restyle_strip()
         for sc in (self.sc_switch, self.sc_break, self.sc_5v, self.sc_elec):
             sc.restyle()
         for area in (self._mda, self.detail_area):
@@ -1528,6 +1579,12 @@ class Stm32PinsWidget(QWidget):
         if self.authority:
             self._update_dashboard()
             self._refresh_details()
+
+    def _restyle_strip(self):
+        self.pkg_name.setStyleSheet(f"color:{_TXT};font-size:16px;font-weight:700;")
+        self.pkg_sub.setStyleSheet(f"color:{_MUT};font-size:10px;")
+        for b in self._stats.values():
+            b.restyle()
 
     def _update_dashboard(self):
         a = self.authority
@@ -1612,28 +1669,19 @@ class Stm32PinsWidget(QWidget):
         r = a["rollup"]
         ea = a.get("extraction_access", {})
         el = a.get("electrical", {})
-        io, inj = el.get("max_io_current_ma"), el.get("injection_current_ma")
+        io = el.get("max_io_current_ma")
         vdda = el.get("vdda_range_v") or el.get("vdd_range_v")
         fv = el.get("five_v_positions", {})
-        lab = f"color:{_MUT};font-weight:600"
-        line1 = (f"<b>{a['package']}</b> · {a['manifest']['part_count']} parts · "
-                 f"{r['positions_total']} positions")
-        line2 = (f"<span style='{lab}'>Switch</span> "
-                 f"must {r['must_switch_count']} · oscillator {r['osc_optional_count']} · "
-                 f"fixed {r['fixed_count']}")
-        line3 = (f"<span style='{lab}'>Breakout</span> {ea.get('service_breakout_count', 0)} "
-                 f"({len(ea.get('debug_positions', []))} debug · "
-                 f"{len(ea.get('trace_positions', []))} trace)")
-        parts = []
-        if io and vdda:
-            parts.append(f"I/O ±{io} mA · injection ±{inj} mA · VDDA {vdda[0]}–{vdda[1]} V")
-            if fv:
-                parts.append(f"5V-Tolerant {fv.get('tolerant_all_parts', 0)} all / "
-                             f"{fv.get('family_dependent', 0)} part-dependent / "
-                             f"{fv.get('not_tolerant_any_part', 0)} none")
-        line4 = (f"<span style='{lab}'>Power</span> " + " · ".join(parts)) if parts else ""
-        self.rollup.setText(line1 + "<br>" + line2 + "<br>" + line3
-                            + (("<br>" + line4) if line4 else ""))
+        # top strip: identity + one number per stat card
+        self.pkg_name.setText(a["package"])
+        self.pkg_sub.setText(f"{a['manifest']['part_count']} parts · {r['positions_total']} pins")
+        self._stats["must"].set(r["must_switch_count"])
+        self._stats["osc"].set(r["osc_optional_count"])
+        self._stats["fixed"].set(r["fixed_count"])
+        self._stats["breakout"].set(ea.get("service_breakout_count", 0))
+        self._stats["fivev"].set(fv.get("tolerant_all_parts", 0))
+        self._stats["io"].set(f"±{io} mA" if io else "—")
+        self._stats["vdda"].set(f"{vdda[0]}–{vdda[1]}" if vdda else "—")
 
         rows = a["positions"]
         self.table.setSortingEnabled(False)
