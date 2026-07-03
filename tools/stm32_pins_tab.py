@@ -11,13 +11,17 @@ import html
 import os
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QFileSystemWatcher
-from PyQt5.QtGui import QColor, QBrush
+from PyQt5.QtCore import Qt, QFileSystemWatcher, pyqtSignal, QRectF
+from PyQt5.QtGui import QColor, QBrush, QPainter, QPen
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox, QLineEdit,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QSizePolicy,
-    QFileDialog, QMessageBox, QApplication, QSplitter, QTextEdit,
+    QFileDialog, QMessageBox, QApplication, QSplitter, QTextEdit, QStackedWidget,
+    QFrame,
 )
+
+# palette (mirrors the app's dark theme)
+_PANEL, _CARD, _TXT, _MUT, _LINE = "#232833", "#2b3140", "#e9ecf2", "#9aa3b2", "#39414f"
 
 import stm32_db as sdb
 import stm32_authority as sauth
@@ -164,6 +168,169 @@ def _default_vault_authority_dir():
     return (brain / "Wiki" / "Datasets" / "STM32 Pinout Authority") if brain.is_dir() else None
 
 
+# ── QFP pin-map geometry (pure — shared by the Qt widget AND the SVG export, so
+#    the live widget and any preview render pixel-for-pixel identically) ──────
+def pin_map_geometry(positions: list, w: float, h: float, margin: float = 46) -> dict:
+    """Lay socket pins on a centered QFP body. Returns {body:(x,y,w,h),
+    pins:[{pos, side, rect:(x,y,w,h), sw, breakout, name}]}. Pin 1 starts top-left
+    and numbers counter-clockwise: left (top→bottom), bottom (L→R), right (bottom
+    →top), top (R→L) — the standard LQFP order."""
+    by = {p["position"]: p for p in positions}
+    nums = sorted(by)
+    n = len(nums)
+    if not n:
+        return {"body": (0, 0, 0, 0), "pins": []}
+    per = max(1, n // 4)
+    span = min(w, h) - 2 * margin
+    body = span * 0.62
+    plen = span * 0.10
+    cx, cy = w / 2, h / 2
+    bl, bt = cx - body / 2, cy - body / 2
+    br, bb = cx + body / 2, cy + body / 2
+    pitch = body / per
+    pw = pitch * 0.60
+    pins = []
+    for idx, pos in enumerate(nums):
+        p = by[pos]
+        if idx < per:                                    # left, top→bottom
+            y = bt + (idx) * pitch + (pitch - pw) / 2
+            rect, side = (bl - plen, y, plen, pw), "L"
+        elif idx < 2 * per:                              # bottom, left→right
+            x = bl + (idx - per) * pitch + (pitch - pw) / 2
+            rect, side = (x, bb, pw, plen), "B"
+        elif idx < 3 * per:                              # right, bottom→top
+            y = bb - (idx - 2 * per) * pitch - (pitch + pw) / 2
+            rect, side = (br, y, plen, pw), "R"
+        else:                                            # top, right→left
+            x = br - (idx - 3 * per) * pitch - (pitch + pw) / 2
+            rect, side = (x, bt - plen, pw, plen), "T"
+        bk = p.get("breakout", {})
+        pins.append({
+            "pos": pos, "side": side, "rect": tuple(round(v, 2) for v in rect),
+            "sw": p["switch_class"],
+            "breakout": bool(bk.get("service_nets") or bk.get("trace")),
+            "name": next(iter(p["pin_names"]), ""),
+        })
+    return {"body": tuple(round(v, 2) for v in (bl, bt, body, body)), "pins": pins}
+
+
+def pin_map_svg(authority: dict, w: int = 460, h: int = 460, selected=None) -> str:
+    """SVG render of the pin map (same geometry the widget paints) — for preview
+    and 'export pin map'."""
+    g = pin_map_geometry(authority["positions"], w, h)
+    bl, bt, bw, bh = g["body"]
+    s = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" '
+         f'font-family="Segoe UI,Arial,sans-serif"><rect width="{w}" height="{h}" fill="#232833"/>',
+         f'<rect x="{bl}" y="{bt}" width="{bw}" height="{bh}" rx="8" fill="#1a1e26" '
+         f'stroke="#39414f" stroke-width="1.5"/>',
+         f'<text x="{bl+bw/2}" y="{bt+bh/2}" fill="#9aa3b2" text-anchor="middle" '
+         f'font-size="12">{html.escape(authority["package"])}</text>']
+    for pin in g["pins"]:
+        x, y, pwd, ph = pin["rect"]
+        col = _SWITCH_COLOR.get(pin["sw"], "#5a6273")
+        s.append(f'<rect x="{x}" y="{y}" width="{pwd}" height="{ph}" rx="2" fill="{col}"/>')
+        if pin["breakout"]:
+            s.append(f'<rect x="{x-1.5}" y="{y-1.5}" width="{pwd+3}" height="{ph+3}" rx="3" '
+                     f'fill="none" stroke="#b57edc" stroke-width="2"/>')
+        if pin["pos"] == selected:
+            s.append(f'<rect x="{x-3}" y="{y-3}" width="{pwd+6}" height="{ph+6}" rx="4" '
+                     f'fill="none" stroke="#ffffff" stroke-width="2"/>')
+    s.append("</svg>")
+    return "".join(s)
+
+
+class PinMapWidget(QWidget):
+    """QFP pin-map: paints the socket with pins coloured by switch class (violet
+    ring = breakout) via the shared pin_map_geometry; click → pinClicked(pos)."""
+    pinClicked = pyqtSignal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.authority = None
+        self.selected = None
+        self.setMinimumSize(380, 380)
+
+    def set_authority(self, a):
+        self.authority = a
+        self.selected = None
+        self.update()
+
+    def set_selected(self, pos):
+        self.selected = pos
+        self.update()
+
+    def _geom(self):
+        if not self.authority:
+            return None
+        return pin_map_geometry(self.authority["positions"], self.width(), self.height())
+
+    def paintEvent(self, _ev):
+        qp = QPainter(self)
+        qp.setRenderHint(QPainter.Antialiasing)
+        qp.fillRect(self.rect(), QColor(_PANEL))
+        g = self._geom()
+        if not g or not g["pins"]:
+            qp.setPen(QColor(_MUT))
+            qp.drawText(self.rect(), Qt.AlignCenter, "Build the database to see the pin map")
+            return
+        bl, bt, bw, bh = g["body"]
+        qp.setPen(QPen(QColor(_LINE), 1.5))
+        qp.setBrush(QColor("#1a1e26"))
+        qp.drawRoundedRect(QRectF(bl, bt, bw, bh), 8, 8)
+        qp.setPen(QColor(_MUT))
+        qp.drawText(QRectF(bl, bt, bw, bh), Qt.AlignCenter, self.authority["package"])
+        for pin in g["pins"]:
+            x, y, pw, ph = pin["rect"]
+            qp.setPen(Qt.NoPen)
+            qp.setBrush(QColor(_SWITCH_COLOR.get(pin["sw"], "#5a6273")))
+            qp.drawRect(QRectF(x, y, pw, ph))
+            if pin["breakout"]:
+                qp.setBrush(Qt.NoBrush)
+                qp.setPen(QPen(QColor(_BREAKOUT_COLOR), 2))
+                qp.drawRect(QRectF(x - 1.5, y - 1.5, pw + 3, ph + 3))
+            if pin["pos"] == self.selected:
+                qp.setBrush(Qt.NoBrush)
+                qp.setPen(QPen(QColor("#ffffff"), 2))
+                qp.drawRect(QRectF(x - 3, y - 3, pw + 6, ph + 6))
+
+    def mousePressEvent(self, ev):
+        g = self._geom()
+        if not g:
+            return
+        px, py = ev.x(), ev.y()
+        for pin in g["pins"]:
+            x, y, pw, ph = pin["rect"]
+            if x - 3 <= px <= x + pw + 3 and y - 3 <= py <= y + ph + 3:
+                self.selected = pin["pos"]
+                self.update()
+                self.pinClicked.emit(pin["pos"])
+                return
+
+
+class _StatCard(QFrame):
+    """Compact dashboard stat card: title, big value, sub-line, coloured left bar."""
+    def __init__(self, title, accent, parent=None):
+        super().__init__(parent)
+        self.setObjectName("statCard")
+        self.setStyleSheet(f"#statCard{{background:{_CARD};border-radius:10px;"
+                           f"border-left:4px solid {accent};}}")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(14, 9, 14, 9)
+        lay.setSpacing(1)
+        self._t = QLabel(title)
+        self._t.setStyleSheet(f"color:{_MUT};font-size:10px;font-weight:700;")
+        self._b = QLabel("—")
+        self._b.setStyleSheet(f"color:{_TXT};font-size:19px;font-weight:700;")
+        self._s = QLabel("")
+        self._s.setStyleSheet(f"color:{_MUT};font-size:11px;")
+        for w in (self._t, self._b, self._s):
+            lay.addWidget(w)
+
+    def set(self, big, sub):
+        self._b.setText(str(big))
+        self._s.setText(str(sub))
+
+
 class Stm32PinsWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -201,31 +368,91 @@ class Stm32PinsWidget(QWidget):
         bar.addWidget(self.btn_vault)
         bar.addStretch()
 
-        bar.addWidget(QLabel("Show:"))
-        self.filter_combo = QComboBox()
-        self.filter_combo.addItems(["All", "Must switch", "Osc optional", "Fixed"])
-        self.filter_combo.currentTextChanged.connect(self._apply_filter)
-        bar.addWidget(self.filter_combo)
-        bar.addWidget(QLabel("Search:"))
-        self.search = QLineEdit()
-        self.search.setMaximumWidth(220)
-        self.search.textChanged.connect(self._apply_filter)
-        bar.addWidget(self.search)
+        bar.addWidget(QLabel("View:"))
+        self.view_combo = QComboBox()
+        self.view_combo.addItems(["Pin map", "Table", "Card BOM"])
+        self.view_combo.currentIndexChanged.connect(lambda i: self.stack.setCurrentIndex(i))
+        bar.addWidget(self.view_combo)
         root.addLayout(bar)
 
         self.status = QLabel("")
         self.status.setObjectName("headerStatus")
         root.addWidget(self.status)
         self.rollup = QLabel("")
+        self.rollup.setWordWrap(True)
         f = self.rollup.font()
         f.setBold(True)
         self.rollup.setFont(f)
         root.addWidget(self.rollup)
 
-        # ── matrix ─────────────────────────────────────────────────
+        # ── stacked views: Pin map (dashboard) | Table | Card BOM ──
+        self._sel_pos = None
+        self.stack = QStackedWidget()
+        self.stack.addWidget(self._build_dashboard_page())
+        self.stack.addWidget(self._build_table_page())
+        self.stack.addWidget(self._build_bom_page())
+        root.addWidget(self.stack, 1)
+
+        # ── live file-watch: reload when the DB is rebuilt on disk ──
+        self._watcher = QFileSystemWatcher(self)
+        self._watcher.fileChanged.connect(self._on_db_changed)
+        self._watcher.directoryChanged.connect(self._on_db_changed)
+        self._arm_watch()
+
+        self._load_if_ready()
+
+    # ── page builders ───────────────────────────────────────────────
+    def _build_dashboard_page(self):
+        page = QWidget()
+        lay = QHBoxLayout(page)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+        col = QWidget()
+        cl = QVBoxLayout(col)
+        cl.setContentsMargins(0, 0, 0, 0)
+        cl.setSpacing(8)
+        col.setMaximumWidth(240)
+        col.setMinimumWidth(206)
+        self.sc_switch = _StatCard("SWITCH FABRIC", _SWITCH_COLOR[sdb.SWITCH_MUST])
+        self.sc_break = _StatCard("BREAKOUT", _BREAKOUT_COLOR)
+        self.sc_5v = _StatCard("5V-TOLERANCE", "#5b9bd5")
+        self.sc_elec = _StatCard("ELECTRICAL", "#5aa469")
+        for c in (self.sc_switch, self.sc_break, self.sc_5v, self.sc_elec):
+            cl.addWidget(c)
+        cl.addStretch()
+        lay.addWidget(col)
+        self.pin_map = PinMapWidget()
+        self.pin_map.pinClicked.connect(self._select)
+        lay.addWidget(self.pin_map, 2)
+        self.map_detail = QTextEdit()
+        self.map_detail.setReadOnly(True)
+        self.map_detail.setMinimumWidth(280)
+        self.map_detail.setMaximumWidth(390)
+        lay.addWidget(self.map_detail, 1)
+        return page
+
+    def _build_table_page(self):
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+        frow = QHBoxLayout()
+        frow.addWidget(QLabel("Show:"))
+        self.filter_combo = QComboBox()
+        self.filter_combo.addItems(["All", "Must switch", "Osc optional", "Fixed"])
+        self.filter_combo.currentTextChanged.connect(self._apply_filter)
+        frow.addWidget(self.filter_combo)
+        frow.addWidget(QLabel("Search:"))
+        self.search = QLineEdit()
+        self.search.setMaximumWidth(240)
+        self.search.textChanged.connect(self._apply_filter)
+        frow.addWidget(self.search)
+        frow.addStretch()
+        lay.addLayout(frow)
         self.table = QTableWidget(0, len(_COLS))
         self.table.setHorizontalHeaderLabels(_COLS)
-        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
@@ -235,9 +462,7 @@ class Stm32PinsWidget(QWidget):
         hdr.setSectionResizeMode(2, QHeaderView.Interactive)
         hdr.setStretchLastSection(True)
         self.table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.table.itemSelectionChanged.connect(self._show_detail)
-
-        # ── detail panel (per-pin, or the package summary when nothing is selected) ──
+        self.table.itemSelectionChanged.connect(self._on_table_select)
         self.detail = QTextEdit()
         self.detail.setReadOnly(True)
         self.detail.setMinimumWidth(300)
@@ -246,15 +471,68 @@ class Stm32PinsWidget(QWidget):
         split.addWidget(self.detail)
         split.setStretchFactor(0, 3)
         split.setStretchFactor(1, 1)
-        root.addWidget(split, 1)
+        lay.addWidget(split, 1)
+        return page
 
-        # ── live file-watch: reload when the DB is rebuilt on disk ──
-        self._watcher = QFileSystemWatcher(self)
-        self._watcher.fileChanged.connect(self._on_db_changed)
-        self._watcher.directoryChanged.connect(self._on_db_changed)
-        self._arm_watch()
+    def _build_bom_page(self):
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 0, 0, 0)
+        self.bom_view = QTextEdit()
+        self.bom_view.setReadOnly(True)
+        lay.addWidget(self.bom_view)
+        return page
 
-        self._load_if_ready()
+    # ── selection + dashboard ───────────────────────────────────────
+    def _select(self, pos):
+        self._sel_pos = pos
+        if pos is not None:
+            self.pin_map.set_selected(pos)
+        self._refresh_details()
+
+    def _on_table_select(self):
+        items = self.table.selectedItems()
+        if items and self.authority:
+            self._select(self.authority["positions"][items[0].row()]["position"])
+
+    def _refresh_details(self):
+        if not self.authority:
+            return
+        if self._sel_pos is not None:
+            p = next((x for x in self.authority["positions"]
+                      if x["position"] == self._sel_pos), None)
+            html_ = _pin_detail_html(p) if p else _summary_html(self.authority)
+        else:
+            html_ = _summary_html(self.authority)
+        self.map_detail.setHtml(html_)
+        self.detail.setHtml(html_)
+
+    def _update_dashboard(self):
+        a = self.authority
+        if not a:
+            return
+        r, ea, el = a["rollup"], a["extraction_access"], a["electrical"]
+        fv = el.get("five_v_positions", {})
+        vdda = el.get("vdda_range_v")
+        self.sc_switch.set(f"{r['must_switch_count']} → {r['cells_min']} cells",
+                           f"{r['osc_optional_count']} osc · {r['fixed_count']} fixed")
+        self.sc_break.set(f"{ea.get('service_breakout_count', 0)} nets",
+                          f"{len(ea.get('debug_positions', []))} debug · "
+                          f"{len(ea.get('trace_positions', []))} trace")
+        self.sc_5v.set(f"{fv.get('tolerant_all_parts', 0)} 5V-safe",
+                       f"{fv.get('family_dependent', 0)} part-dep · "
+                       f"{fv.get('not_tolerant_any_part', 0)} never")
+        self.sc_elec.set(f"±{el.get('max_io_current_ma', '?')} mA I/O",
+                         f"VDDA {vdda[0]}–{vdda[1]} V · VCAP {el.get('vcap_required')}" if vdda else "")
+        cm = a.get("card_materials", {})
+        rows = "".join(
+            f"<tr><td style='text-align:right;padding-right:8px'>{i['qty']}×</td>"
+            f"<td>{_esc(i['part'])}</td>"
+            f"<td style='color:{_MUT};padding-left:10px'>{_esc(i['role'])}</td></tr>"
+            for i in cm.get("items", []))
+        self.bom_view.setHtml(
+            f"<h3>{a['package']} — plug-in card passive BOM</h3><table>{rows}</table>"
+            f"<p style='color:{_MUT}'>{_esc(cm.get('note', ''))}</p>")
 
     # ── data ───────────────────────────────────────────────────────
     def _load_if_ready(self):
@@ -304,7 +582,11 @@ class Stm32PinsWidget(QWidget):
             return
         finally:
             conn.close()
+        self._sel_pos = None
         self._populate()
+        self.pin_map.set_authority(self.authority)
+        self._update_dashboard()
+        self._refresh_details()
 
     def _populate(self):
         a = self.authority
@@ -367,7 +649,6 @@ class Stm32PinsWidget(QWidget):
                 self.table.setItem(i, c, it)
         self._apply_filter()
         self.table.clearSelection()
-        self._show_detail()   # no selection → package summary
 
     def _apply_filter(self):
         want = self.filter_combo.currentText()
@@ -414,15 +695,6 @@ class Stm32PinsWidget(QWidget):
             pass
 
     # ── detail panel ────────────────────────────────────────────────
-    def _show_detail(self):
-        if not self.authority:
-            self.detail.clear()
-            return
-        items = self.table.selectedItems()
-        if items:
-            self.detail.setHtml(_pin_detail_html(self.authority["positions"][items[0].row()]))
-        else:
-            self.detail.setHtml(_summary_html(self.authority))
 
     def generate_to_vault(self):
         if not self.db_path.exists():

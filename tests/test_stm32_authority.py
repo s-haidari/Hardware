@@ -192,6 +192,12 @@ class AuthorityTests(unittest.TestCase):
         self.assertIn("SWDIO_PARENT", tab._pin_detail_html(p46))
         pa0 = next(p for p in a["positions"] if "PA0" in p["pin_names"])
         self.assertIn("part-dependent", tab._pin_detail_html(pa0))
+        # pin-map geometry (shared by the Qt widget AND the SVG export)
+        g = tab.pin_map_geometry(a["positions"], 460, 460)
+        self.assertEqual(len(g["pins"]), 64)
+        self.assertEqual(len({p["side"] for p in g["pins"]}), 4)   # all 4 QFP sides used
+        self.assertTrue(all(len(p["rect"]) == 4 for p in g["pins"]))
+        self.assertEqual(tab.pin_map_svg(a, 400, 400).count("<rect") >= 64, True)
 
     def test_five_v_tolerance_per_family(self):
         """Per-pin 5V-tolerance from the datasheet I/O-structure column, incl. the
