@@ -349,9 +349,9 @@ class AuthorityTests(unittest.TestCase):
         self.assertIn("SWITCH", svg)                                 # switched pins present
         self.assertIn("DIRECT", svg)                                 # direct-connect pins present
         self.assertNotIn("ADG714", svg)                              # part name not shown in the app
-        # Overview: the interactive connections list (one clickable row per pin,
-        # category filter, and re-sortable) drives selection across the thirds.
-        w.view_combo.setCurrentText("Overview")
+        # Connections view: the interactive list (one clickable row per pin, category
+        # filter, and re-sortable) drives selection.
+        w.view_combo.setCurrentText("Connections")
         self.assertEqual(len(w.conn_list._rows), 64)                 # every socket pin listed
         w._select(1)
         self.assertEqual(w.conn_list._sel, 1)                        # selection follows the map
@@ -361,6 +361,12 @@ class AuthorityTests(unittest.TestCase):
         self.assertEqual(len(w.conn_list._rows), 11)                 # re-sort keeps the filtered set
         w.conn_list.filter_combo.setCurrentText("All")
         self.assertEqual(len(w.conn_list._rows), 64)
+        # Overview: selecting a pin fills the full-width detail band with its path.
+        w.view_combo.setCurrentText("Overview")
+        band = tab.detail_band_svg(w.authority, 1, 900)
+        self.assertIn("Pin 1", band)
+        self.assertIn("VBAT_TGT", band)                              # destination shown
+        self.assertIn("Switch", band)                                # component labelled
 
 
 if __name__ == "__main__":

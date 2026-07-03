@@ -242,8 +242,8 @@ def pin_map_geometry(positions: list, w: float, h: float, margin: float = 46) ->
         return {"body": (0, 0, 0, 0), "pins": []}
     per = max(1, n // 4)
     span = min(w, h) - 2 * margin
-    body = span * 0.62
-    plen = span * 0.10
+    body = span * 0.66
+    plen = span * 0.095
     cx, cy = w / 2, h / 2
     bl, bt = cx - body / 2, cy - body / 2
     br, bb = cx + body / 2, cy + body / 2
@@ -301,6 +301,32 @@ def pin_map_svg(authority: dict, w: int = 460, h: int = 460, selected=None) -> s
 
 _SVG_FONT = "Geist,Inter,'Segoe UI',system-ui,Arial"
 _SVG_MONO = "'JetBrains Mono',Consolas,monospace"
+
+# One small, consistent type scale used by every SVG panel, so nothing looks
+# oversized or off-key relative to the rest.
+_FS_TITLE = 13.5     # the largest text: a pin or package title
+_FS_CARD = 11.5      # a card's primary line (destination net, socket name)
+_FS_BODY = 10        # body copy
+_FS_CAP = 8.5        # uppercase section captions / small labels
+_FS_CHIP = 9.5       # chip / pill text
+_CHIP_H = 18         # one chip height everywhere
+
+
+def _pill(x, y, label, col, filled=False, mono=False, h=_CHIP_H):
+    """One canonical chip: rounded, consistent height and padding. Returns
+    (svg, width). y is the chip's top-left y."""
+    ff = _SVG_MONO if mono else _SVG_FONT
+    w = 13 + len(str(label)) * (6.3 if mono else 5.9)
+    if filled:
+        rect = f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{h}" rx="{h/2}" fill="{col}"/>'
+        tc = "#161618"
+    else:
+        rect = (f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{h}" rx="{h/2}" fill="{col}" '
+                f'fill-opacity="0.14" stroke="{col}" stroke-opacity="0.42"/>')
+        tc = col
+    txt = (f'<text x="{x+w/2:.1f}" y="{y+h*0.69:.1f}" fill="{tc}" text-anchor="middle" '
+           f'font-size="{_FS_CHIP}" font-family="{ff}" font-weight="600">{_esc(label)}</text>')
+    return rect + txt, w
 _RAIL_COLOR = {
     "VTARGET": "#e5534b", "VBAT_TGT": "#e5534b",                       # power rails, red
     "GND": "#9aa1a9", "VSSA_TGT": "#9aa1a9",                           # ground, grey
@@ -741,6 +767,86 @@ def detail_svg(a: dict, pos=None) -> str:
     return head + "".join(body) + "</svg>"
 
 
+def detail_band_svg(a: dict, pos, width: int, height: int = 188) -> str:
+    """A full-width horizontal detail band for the Overview: the selected pin's
+    socket -> component -> header path laid out left to right, with the roles it
+    switches between, 5V tolerance, and peripherals as chips below."""
+    W, H, pad = max(560, int(width)), height, 22
+    s = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" font-family="{_SVG_FONT}">',
+         f'<rect width="{W}" height="{H}" fill="{_PANEL}"/>']
+    if pos is None:
+        s.append(f'<text x="{W/2:.0f}" y="{H/2:.0f}" fill="{_MUT}" font-size="{_FS_CARD}" '
+                 f'text-anchor="middle">Select a pin on the map to trace its connection.</text></svg>')
+        return "".join(s)
+    p = next((x for x in a["positions"] if x["position"] == pos), None)
+    if p is None:
+        return detail_band_svg(a, None, width, height)
+    conn = next((c for c in sauth.socket_connections(a) if c["pin"] == pos), None)
+    kind = conn["kind"] if conn else "direct"
+    col = _CAT_COLOR.get(conn["category"], "#4c8df0") if conn else _MUT
+    kindlbl = {"switch": "Switched", "resistor": "GPIO Lane", "direct": "Direct"}[kind]
+    name = next(iter(p["pin_names"]), "") if p["pin_names"] else ""
+    dest = conn["dest"] if conn else ""
+    contact = conn["contact"] if conn else ""
+    # header block (left)
+    s.append(f'<text x="{pad}" y="42" fill="{_TXT}" font-size="{_FS_TITLE}" font-weight="700">Pin {pos}</text>')
+    s.append(f'<text x="{pad}" y="60" fill="{_MUT}" font-size="{_FS_BODY}">{_esc(name)} · '
+             f'{p.get("side", "").capitalize()}</text>')
+    bp, _bw = _pill(pad, 72, kindlbl, col, filled=True)
+    s.append(bp)
+
+    def card(x, w, y, ch, icon, primary, secondary, tag, pcol):
+        s.append(f'<rect x="{x:.0f}" y="{y}" width="{w:.0f}" height="{ch}" rx="10" fill="{_CARD}"/>'
+                 f'<rect x="{x:.0f}" y="{y}" width="3.5" height="{ch}" rx="2" fill="{col}"/>')
+        s.append(icon(x + 28, y + ch / 2, col))
+        s.append(f'<text x="{x+52:.0f}" y="{y+ch/2-3:.0f}" fill="{pcol}" font-size="{_FS_CARD}" '
+                 f'font-weight="700">{_esc(primary)}</text>')
+        s.append(f'<text x="{x+52:.0f}" y="{y+ch/2+15:.0f}" fill="{_MUT}" font-size="{_FS_CAP}">'
+                 f'{_esc(secondary)}</text>')
+        s.append(f'<text x="{x+w-12:.0f}" y="{y+16:.0f}" fill="#a2a2a8" font-size="8" font-weight="700" '
+                 f'text-anchor="end" letter-spacing="0.7">{tag}</text>')
+
+    cy, ch, csw = 52, 56, 232
+    px0 = pad + 150
+    card(px0, csw, cy, ch, _chip_icon2, name, f"ZIF socket contact {pos}", "SOCKET", _TXT)
+    wx0, hx = px0 + csw, px0 + csw + 150
+    midy = cy + ch / 2
+    s.append(f'<line x1="{wx0}" y1="{midy}" x2="{hx}" y2="{midy}" stroke="{col}" stroke-width="2.2"/>')
+    complbl = {"switch": "Switch", "resistor": "33 Ω", "direct": "Direct"}[kind]
+    cw = 18 + len(complbl) * 6.1
+    mx = (wx0 + hx) / 2
+    s.append(f'<rect x="{mx-cw/2:.0f}" y="{midy-11:.0f}" width="{cw:.0f}" height="22" rx="11" '
+             f'fill="{_PANEL}" stroke="{col}"/>')
+    s.append(f'<text x="{mx:.0f}" y="{midy+4:.0f}" fill="{col}" text-anchor="middle" '
+             f'font-size="{_FS_CHIP}" font-weight="600">{complbl}</text>')
+    hcw = min(280, W - pad - hx)
+    card(hx, hcw, cy, ch, _conn_icon2, dest, contact, "HEADER", col)
+
+    # attribute chips (roles it switches between, 5V, peripherals), wrapping
+    ax, ay = pad, cy + ch + 26
+    fv = p.get("five_v")
+    chips = []
+    if kind == "switch":
+        chips += [(r, col, False, False) for r in p["role_set"].keys()]
+    if fv is not None:
+        if fv["tolerant"]:
+            chips.append(("5V-Tolerant", "#24b196", True, False))
+        elif any(fv["by_family"].values()):
+            chips.append(("5V part-dependent", "#24b196", False, False))
+        else:
+            chips.append(("3.3V only", _MUT, False, False))
+    chips += [(pp, _MUT, False, False) for pp in p.get("peripherals", [])]
+    for label, c, filled, mono in chips:
+        cp, w = _pill(ax, ay, label, c, filled=filled, mono=mono)
+        if ax + w > W - pad and ax > pad:
+            ax, ay = pad, ay + 22
+            cp, w = _pill(ax, ay, label, c, filled=filled, mono=mono)
+        s.append(cp)
+        ax += w + 6
+    s.append("</svg>")
+    return "".join(s)
+
+
 class _NumItem(QTableWidgetItem):
     """Table item that sorts by its numeric UserRole, so the Pin column orders
     1, 2, ... 10, ... 64 rather than lexicographically (1, 10, 11, ... 2, ...)."""
@@ -955,6 +1061,34 @@ class _StatCard(QFrame):
     def set(self, big, sub):
         self._b.setText(str(big))
         self._s.setText(str(sub))
+
+
+class _BandSvg(QSvgWidget):
+    """A QSvgWidget that regenerates its SVG at the current pixel width, so the text
+    stays a fixed size instead of scaling with the widget. Fixed height, expands
+    horizontally — used for the Overview's full-width detail band."""
+    def __init__(self, height=188, parent=None):
+        super().__init__(parent)
+        self._a = None
+        self._pos = None
+        self._h = height
+        self.setFixedHeight(height)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+    def set_data(self, a, pos):
+        self._a = a
+        self._pos = pos
+        self._render()
+
+    def _render(self):
+        if not self._a:
+            return
+        svg = detail_band_svg(self._a, self._pos, max(560, self.width()), self._h)
+        self.load(QByteArray(svg.encode("utf-8")))
+
+    def resizeEvent(self, ev):
+        self._render()
+        super().resizeEvent(ev)
 
 
 class ConnectionRow(QFrame):
@@ -1186,24 +1320,17 @@ class Stm32PinsWidget(QWidget):
 
     # ── page builders ───────────────────────────────────────────────
     def _build_overview_page(self):
-        """The unified screen: balanced thirds — the pin map, the interactive
-        connections list, and the focus panel, all driven by one selection."""
+        """The unified screen: the pin map as a large hero on top, and the selected
+        pin's full connection path spread out full-width in a band below it."""
         page = QWidget()
-        lay = QHBoxLayout(page)
+        lay = QVBoxLayout(page)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(8)
         self.ov_map = PinMapWidget()
         self.ov_map.pinClicked.connect(self._select)
-        self.conn_list = ConnectionsList()
-        self.conn_list.pinClicked.connect(self._select)
-        self.ov_detail = QSvgWidget()
-        self._ov_area = QScrollArea()
-        self._ov_area.setWidgetResizable(False)
-        self._ov_area.setWidget(self.ov_detail)
-        self._ov_area.setStyleSheet("QScrollArea{border:none;background:%s;}" % _PANEL)
+        self.ov_band = _BandSvg(188)
         lay.addWidget(self.ov_map, 1)
-        lay.addWidget(self.conn_list, 1)
-        lay.addWidget(self._ov_area, 1)
+        lay.addWidget(self.ov_band)
         return page
 
     def _build_dashboard_page(self):
@@ -1307,30 +1434,16 @@ class Stm32PinsWidget(QWidget):
         return page
 
     def _build_bom_page(self):
+        """The Connections view: the interactive, filterable, sortable list of every
+        socket pin's connection (clicking a row selects the pin everywhere)."""
         page = QWidget()
         lay = QVBoxLayout(page)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(6)
-        frow = QHBoxLayout()
-        frow.addWidget(QLabel("Show:"))
-        self.conn_combo = QComboBox()
-        self.conn_combo.addItems([lbl for lbl, _ in _CAT_LABEL])
-        self.conn_combo.currentTextChanged.connect(self._on_conn_filter)
-        frow.addWidget(self.conn_combo)
-        frow.addStretch()
-        lay.addLayout(frow)
-        self.bom_svg = QSvgWidget()
-        self._bom_area = QScrollArea()
-        self._bom_area.setWidgetResizable(False)
-        self._bom_area.setWidget(self.bom_svg)
-        self._bom_area.setStyleSheet("QScrollArea{border:none;background:%s;}" % _PANEL)
-        lay.addWidget(self._bom_area)
+        self.conn_list = ConnectionsList()
+        self.conn_list.pinClicked.connect(self._select)
+        lay.addWidget(self.conn_list)
         return page
-
-    def _on_conn_filter(self, _t=None):
-        if self.authority:
-            cat = dict(_CAT_LABEL).get(self.conn_combo.currentText())
-            self._load_svg(self.bom_svg, connections_svg(self.authority, cat))
 
     # ── selection + dashboard ───────────────────────────────────────
     def _maps(self):
@@ -1364,9 +1477,11 @@ class Stm32PinsWidget(QWidget):
         if not self.authority:
             return
         svg = detail_svg(self.authority, self._sel_pos)
-        for w in (self.map_detail, self.detail, getattr(self, "ov_detail", None)):
+        for w in (self.map_detail, self.detail):
             if w is not None:
                 self._load_svg(w, svg)
+        if getattr(self, "ov_band", None) is not None:
+            self.ov_band.set_data(self.authority, self._sel_pos)
 
     @staticmethod
     def _load_svg(widget, svg):
@@ -1379,7 +1494,7 @@ class Stm32PinsWidget(QWidget):
         set_tab_theme(dark)
         for sc in (self.sc_switch, self.sc_break, self.sc_5v, self.sc_elec):
             sc.restyle()
-        for area in (self._mda, self.detail_area, self._bom_area, self._ov_area):
+        for area in (self._mda, self.detail_area):
             area.setStyleSheet("QScrollArea{border:none;background:%s;}" % _PANEL)
         for m in self._maps():
             m.update()
@@ -1406,8 +1521,6 @@ class Stm32PinsWidget(QWidget):
                        f"{fv.get('not_tolerant_any_part', 0)} never")
         self.sc_elec.set(f"±{el.get('max_io_current_ma', '?')} mA I/O",
                          f"VDDA {vdda[0]}–{vdda[1]} V · VCAP {el.get('vcap_required')}" if vdda else "")
-        cat = dict(_CAT_LABEL).get(self.conn_combo.currentText()) if hasattr(self, "conn_combo") else None
-        self._load_svg(self.bom_svg, connections_svg(a, cat))
 
     # ── data ───────────────────────────────────────────────────────
     def _load_if_ready(self):
