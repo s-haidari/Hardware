@@ -58,7 +58,7 @@ class AuthorityTests(unittest.TestCase):
     def test_emit_yaml_json_tsv(self):
         out = Path(tempfile.mkdtemp())
         summ = auth.write_authority(self.conn, "LQFP64", out)
-        self.assertEqual(len(summ["files"]), 6)   # yaml + json + tsv + kicad_sym + csv + md
+        self.assertEqual(len(summ["files"]), 9)   # + switchmap json/h + wiring md
         j = json.loads((out / "pinout_authority_LQFP64.json").read_text(encoding="utf-8"))
         self.assertEqual(len(j["positions"]), 64)
         y = (out / "pinout_authority_LQFP64.yaml").read_text(encoding="utf-8")
@@ -291,6 +291,26 @@ class AuthorityTests(unittest.TestCase):
         self.assertIn(f"Must-switch ({a['rollup']['must_switch_count']})", md)
         self.assertIn("| SW1 | S1/D1 |", md)                      # cell-map table
         self.assertIn("VBAT_TGT", md)
+
+    def test_card_wiring_switchmap(self):
+        """Ultra-specific terminal wiring + firmware switch-map, mapped onto the vault's
+        Connector Contract (IC51 ZIF socket, QSH/QTH contacts, ADG714 S/D pins)."""
+        a = auth.build(self.conn, "LQFP64")
+        w = auth.card_wiring(a)
+        self.assertEqual(len(w["channels"]), 11)                 # matches the vault card
+        self.assertEqual(w["zif_socket"], "Yamaichi IC51-0644-807")
+        c1 = w["channels"][0]                                    # cell 1 ch 1 = VBAT
+        self.assertEqual((c1["cell"], c1["channel"], c1["socket_pin"], c1["rail"]),
+                         (1, 1, 1, "VBAT_TGT"))
+        self.assertEqual((c1["s_pin"], c1["s_pin_num"], c1["d_pin"], c1["d_pin_num"]),
+                         ("S1", 5, "D1", 6))
+        self.assertEqual(c1["connector_contacts"], [33])         # QSH/QTH contact for VBAT_TGT
+        self.assertEqual(c1["card_lane"], "CARD_LANE_001")
+        self.assertEqual((w["daisy_chain"]["head_din_contact"],
+                          w["daisy_chain"]["tail_dout_contact"]), (11, 13))
+        json.loads(auth.to_switchmap_json(a))                    # valid JSON
+        self.assertIn("NETDECK_LQFP64_CHANNELS", auth.to_switchmap_c(a))
+        self.assertIn("via Samtec QTH", auth.to_wiring_md(a))
 
     def test_tab_widget_offscreen(self):
         """Headless Qt widget (offscreen platform): 13 columns, numeric Pin sort +

@@ -563,6 +563,129 @@ ADG714_FOOTPRINT = "RU_24_ADI"           # TSSOP-24
 # D7/S7 17/18, D8/S8 19/20). Control/power: SCLK VDD DIN GND VSS DOUT RESET* SYNC*.
 ADG714_SWITCH_PINS = {n: (f"S{n}", f"D{n}") for n in range(1, 9)}
 
+# ── Card wiring facts, verbatim from the vault (Connector Contract Rev B; Cards 7A/
+#    7B/7C; component pages). The switch analysis is derived from CubeMX; these map it
+#    onto the real hardware, terminal by terminal. Source faces the socket, drain the rail.
+ZIF_SOCKET = {"LQFP64": "Yamaichi IC51-0644-807", "LQFP100": "Yamaichi IC51-1004-809"}
+CONNECTOR = {"parent": "Samtec QSH-060-01-L-D-A", "card": "Samtec QTH-060-03-L-D-A",
+             "contacts": 240, "pitch_mm": 0.5, "stack_mm": 11.03, "amp_per_contact": 2}
+# ADG714 physical pin number for each S/D terminal (S = source, faces socket; D = drain, faces rail).
+ADG714_TERMINAL_PIN = {"S1": 5, "D1": 6, "S2": 7, "D2": 8, "S3": 9, "D3": 10, "S4": 11,
+                       "D4": 12, "D5": 13, "S5": 14, "D6": 15, "S6": 16, "D7": 17, "S7": 18,
+                       "D8": 19, "S8": 20}
+# Rail net -> QSH/QTH connector contact(s). [] = not a connector contact (GND plane / local cap).
+RAIL_CONTACT = {
+    "VBAT_TGT": [33], "VDDA_TGT": [20], "VREF_TGT": [22], "VSSA_TGT": [24],
+    "VTARGET": [16, 18, 27, 29], "SERVICE_BOOT0": [14], "SERVICE_NRST": [7],
+    "SERVICE_OSC_IN": [10], "SERVICE_OSC_OUT": [12], "GND": [], "VCAP_NODE": [],
+}
+# Shared control/power bus (frozen SPI2 harness): signal -> (ADG714 pin, connector contact, controller pin).
+ADG714_BUS = [
+    ("SCLK", 1, 9, "PB13"), ("DIN", 3, 11, "PB15"), ("DOUT", 22, 13, "PB14"),
+    ("SYNC_N", 24, 15, "PB12"), ("RESET_N", 23, 17, "PB9"),
+    ("VDD", 2, 31, "+3V3"), ("GND", 4, None, "plane"), ("VSS", 21, None, "plane"),
+]
+
+
+def card_wiring(authority: dict) -> dict:
+    """The switch fabric wired terminal by terminal, mapping the tool's derived channels
+    onto the vault's Connector Contract. Per channel: the ADG714 S/D terminal pins, the
+    socket pin its Source connects to (via the IC51 ZIF socket), and the rail its Drain
+    connects to (via the QSH/QTH connector contact). Daisy chain: DIN into cell 1, each
+    cell's DOUT into the next cell's DIN, last cell's DOUT back to the controller."""
+    pkg = authority["package"]
+    zif = ZIF_SOCKET.get(pkg, "IC51 ZIF socket")
+    pinname = {p["position"]: (list(p["pin_names"])[0] if p["pin_names"] else "")
+               for p in authority["positions"]}
+    channels, lane = [], 0
+    cells = adg714_cell_map(authority)
+    for cell in cells:
+        for sw in cell["switches"]:
+            if sw["spare"]:
+                continue
+            lane += 1
+            rail = sw["destination"]
+            contacts = RAIL_CONTACT.get(rail, [])
+            name = pinname.get(sw["position"], "")
+            if contacts:
+                d_to = f"{rail} via {CONNECTOR['card']} contact {'/'.join(map(str, contacts))}"
+            elif rail == "GND":
+                d_to = "GND (solid ground plane)"
+            else:
+                d_to = f"{rail} (local 2.2uF cap at the socket)"
+            channels.append({
+                "cell": cell["cell"], "channel": sw["channel"],
+                "s_pin": sw["s_pin"], "s_pin_num": ADG714_TERMINAL_PIN.get(sw["s_pin"]),
+                "d_pin": sw["d_pin"], "d_pin_num": ADG714_TERMINAL_PIN.get(sw["d_pin"]),
+                "socket_pin": sw["position"], "socket_name": name,
+                "rail": rail, "connector_contacts": contacts,
+                "card_lane": f"CARD_LANE_{lane:03d}",
+                "s_connects_to": f"socket pin {sw['position']} ({name}) via {zif}",
+                "d_connects_to": d_to,
+            })
+    daisy = {"head_din_contact": 11, "tail_dout_contact": 13,
+             "order": [c["cell"] for c in cells],
+             "note": "DIN into cell 1; each cell DOUT into the next cell DIN; last cell DOUT "
+                     "back to the controller (contact 13). SCLK/SYNC_N/RESET_N broadcast to all cells."}
+    return {"package": pkg, "zif_socket": zif, "connector": CONNECTOR,
+            "bus": [{"signal": s, "adg714_pin": p, "connector_contact": c, "controller": m}
+                    for s, p, c, m in ADG714_BUS],
+            "cells": len(cells), "channels": channels, "daisy_chain": daisy}
+
+
+def to_switchmap_json(authority: dict) -> str:
+    """Machine-readable switch map + full terminal wiring, for firmware/tooling."""
+    return json.dumps(card_wiring(authority), indent=2)
+
+
+def to_switchmap_c(authority: dict) -> str:
+    """A C header the firmware can include: per-channel {cell, channel, socket_pin,
+    rail} plus the daisy-chain cell order. Rails become an enum."""
+    w = card_wiring(authority)
+    pkg = w["package"]
+    rails = sorted({c["rail"] for c in w["channels"]})
+    L = [f"/* NETDECK switch map for {pkg}. Generated from the pinout data; wiring per the",
+         " * vault Connector Contract (Cards 7A/7B/7C). Do not edit by hand. */",
+         f"#ifndef NETDECK_SWITCHMAP_{pkg}_H", f"#define NETDECK_SWITCHMAP_{pkg}_H", "",
+         "typedef enum {"]
+    L += [f"    RAIL_{r}," for r in rails]
+    L += ["} netdeck_rail_t;", "",
+          "typedef struct { unsigned char cell, channel, socket_pin; netdeck_rail_t rail; } netdeck_channel_t;",
+          "",
+          f"static const netdeck_channel_t NETDECK_{pkg}_CHANNELS[] = {{"]
+    for c in w["channels"]:
+        L.append(f"    {{ {c['cell']}, {c['channel']}, {c['socket_pin']}, RAIL_{c['rail']} }},"
+                 f"  /* {c['s_pin']}<-pin{c['socket_pin']} {c['socket_name']}, {c['d_pin']}->{c['rail']} */")
+    L.append("};")
+    L.append(f"static const unsigned char NETDECK_{pkg}_CELL_ORDER[] = "
+             f"{{ {', '.join(str(n) for n in w['daisy_chain']['order'])} }};")
+    L += ["", f"#endif /* NETDECK_SWITCHMAP_{pkg}_H */", ""]
+    return "\n".join(L)
+
+
+def to_wiring_md(authority: dict) -> str:
+    """Human wiring table: every channel's Source/Drain endpoints and connector contact,
+    the way the vault documents it."""
+    w = card_wiring(authority)
+    L = [f"# {w['package']} switch-cell wiring", "",
+         f"Socket: {w['zif_socket']}. Connector: {w['connector']['card']} into "
+         f"{w['connector']['parent']} ({w['connector']['contacts']} contacts).", "",
+         "## Control bus (shared / daisy-chained)", "",
+         "| Signal | ADG714 pin | Connector contact | Controller |",
+         "|--------|-----------|-------------------|-----------|"]
+    for b in w["bus"]:
+        L.append(f"| {b['signal']} | {b['adg714_pin']} | "
+                 f"{b['connector_contact'] if b['connector_contact'] is not None else '(plane)'} | {b['controller']} |")
+    L += ["", f"Daisy chain: {w['daisy_chain']['note']}", "",
+          "## Per-channel terminal wiring", "",
+          "| Cell | Ch | S pin | Source connects to | D pin | Drain connects to | Lane |",
+          "|------|----|-------|--------------------|-------|-------------------|------|"]
+    for c in w["channels"]:
+        L.append(f"| {c['cell']} | {c['channel']} | {c['s_pin']} (pin {c['s_pin_num']}) | "
+                 f"{c['s_connects_to']} | {c['d_pin']} (pin {c['d_pin_num']}) | "
+                 f"{c['d_connects_to']} | {c['card_lane']} |")
+    return "\n".join(L) + "\n"
+
 
 def category_lists(authority: dict) -> dict:
     """Explicit socket-pin-number lists per category, so the analysis reads without
@@ -1053,10 +1176,17 @@ def write_authority(conn: sqlite3.Connection, package: str, out_dir: Path) -> di
         to_csv(data), encoding="utf-8", newline="\n")
     (out_dir / f"authority_{package}.md").write_text(
         to_markdown(data), encoding="utf-8", newline="\n")
+    (out_dir / f"switchmap_{package}.json").write_text(
+        to_switchmap_json(data), encoding="utf-8", newline="\n")
+    (out_dir / f"switchmap_{package}.h").write_text(
+        to_switchmap_c(data), encoding="utf-8", newline="\n")
+    (out_dir / f"wiring_{package}.md").write_text(
+        to_wiring_md(data), encoding="utf-8", newline="\n")
     return {
         "package": package, "out_dir": str(out_dir),
         "files": [f"pinout_authority_{package}.yaml", f"pinout_authority_{package}.json",
                   f"pins_{package}.tsv", f"{package}_socket.kicad_sym",
-                  f"pins_{package}.csv", f"authority_{package}.md"],
+                  f"pins_{package}.csv", f"authority_{package}.md",
+                  f"switchmap_{package}.json", f"switchmap_{package}.h", f"wiring_{package}.md"],
         "rollup": data["rollup"],
     }
