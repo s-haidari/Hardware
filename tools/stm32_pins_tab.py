@@ -40,7 +40,7 @@ except Exception:  # pragma: no cover
         return QIcon()
 
 
-_COLS = ["Pin", "Side", "Pin Name(s)", "Role Set", "Switch", "Why", "ADG714",
+_COLS = ["Pin", "Side", "Pin Name(s)", "Role Set", "Switch", "Why", "Switch cell",
          "Destination", "Peripherals", "Breakout", "Tags", "Bootloader", "VDD (V)"]
 
 _BREAKOUT_COLOR = "#8f9fd4"   # extraction-access / debug-service breakout (periwinkle)
@@ -64,7 +64,7 @@ def _counts(d: dict) -> str:
 def _names(d: dict) -> str:
     """Table-cell value: the distinct names/roles spelled out, most-common first (no
     ×count clutter, no cryptic +N). The full part-by-part counts stay in the detail."""
-    return ", ".join(d.keys()) if d else "—"
+    return ", ".join(d.keys()) if d else ""
 
 
 def _numlist(nums, per: int = 6) -> str:
@@ -73,7 +73,7 @@ def _numlist(nums, per: int = 6) -> str:
     are joined by a BREAKABLE space (+ nbsp for the gap) so Qt wraps between groups
     rather than force-breaking a number in half in the narrow panel."""
     if not nums:
-        return "—"
+        return ""
     groups = [", ".join(str(n) for n in nums[i:i + per]) for i in range(0, len(nums), per)]
     return " &nbsp;&nbsp;".join(f"<span style='white-space:nowrap'>{g}</span>" for g in groups)
 
@@ -111,7 +111,7 @@ def _esc(v) -> str:
 
 
 def _fmt_rng(r, unit="V") -> str:
-    return f"{r[0]}–{r[1]} {unit}" if r else "—"
+    return f"{r[0]}–{r[1]} {unit}" if r else ""
 
 
 def _pin_detail_html(p: dict) -> str:
@@ -124,17 +124,17 @@ def _pin_detail_html(p: dict) -> str:
     elif any(fv["by_family"].values()):
         fam = ", ".join(f"{k.replace('STM32', '')}={'5V' if v else '3V3'}"
                         for k, v in fv["by_family"].items())
-        fvt = f"part-dependent — {fam}"
+        fvt = f"part-dependent ({fam})"
     else:
         fvt = "3.3V-only"
     bk = p.get("breakout", {})
-    bnets = ", ".join(bk.get("service_nets", [])) or "—"
+    bnets = ", ".join(bk.get("service_nets", [])) or ""
     adg = p["assignment"].get("adg714")
     adg_t = None
     if adg:
         s_pin, d_pin = sauth.ADG714_SWITCH_PINS[adg["channel"]]
         adg_t = f"cell {adg['cell']} · SW{adg['channel']} ({s_pin}/{d_pin})"
-    dest = p["assignment"].get("destination") or p["assignment"].get("net") or "—"
+    dest = p["assignment"].get("destination") or p["assignment"].get("net") or ""
     el = p.get("electrical", {}) or {}
     why = sauth.switch_rationale(p)
     rows = [
@@ -149,11 +149,11 @@ def _pin_detail_html(p: dict) -> str:
     rows.append(("Destination", dest))
     rows += [
         ("Breakout", bnets + (" · TRACE" if bk.get("trace") else "")),
-        ("Via", bk.get("via", "—")),
-        ("Tags", _tag_summary(p["tags"]) or "—"),
+        ("Via", bk.get("via", "")),
+        ("Tags", _tag_summary(p["tags"]) or ""),
         ("5V", fvt),
-        ("Bootloader", ", ".join(p["tags"].get("bootloader_periph", [])) or "—"),
-        ("Peripherals", ", ".join(p.get("peripherals", [])) or "—"),
+        ("Bootloader", ", ".join(p["tags"].get("bootloader_periph", [])) or ""),
+        ("Peripherals", ", ".join(p.get("peripherals", [])) or ""),
         ("VDD", _fmt_rng(el.get("vdd_range_v"))),
     ]
     body = "".join(
@@ -191,7 +191,7 @@ def _summary_html(a: dict) -> str:
         f"<td style='color:{_MUT};padding-left:8px'>{_esc(i['role'])}</td></tr>"
         for i in cm.get("items", []))
     return (
-        f"<h3 style='margin:2px 0'>{a['package']} — {a['manifest']['part_count']} parts</h3>"
+        f"<h3 style='margin:2px 0'>{a['package']}: {a['manifest']['part_count']} parts</h3>"
         f"<p><b>Switch:</b> {r['must_switch_count']} must-switch; "
         f"{r['osc_optional_count']} oscillator-optional; {r['fixed_count']} fixed</p>"
         f"<p><b>Breakout:</b> {ea.get('service_breakout_count', 0)} service · "
@@ -326,7 +326,7 @@ def fabric_svg(a: dict) -> str:
         used = sum(1 for sw in cell["switches"] if not sw["spare"])
         s.append(f'<rect x="{cx}" y="{cy}" width="{colw}" height="{cellh}" rx="12" fill="{_CARD}"/>')
         s.append(f'<text x="{cx+16}" y="{cy+27}" fill="{_TXT}" font-size="13" font-weight="700">'
-                 f'ADG714 #{cell["cell"]}</text>')
+                 f'Switch cell {cell["cell"]}</text>')
         s.append(f'<text x="{cx+colw-16}" y="{cy+27}" fill="{_MUT}" font-size="10.5" '
                  f'text-anchor="end" font-family="{_SVG_MONO}">{cell["footprint"]} · {used}/8</text>')
         y = cy + top - 4
@@ -349,7 +349,7 @@ def fabric_svg(a: dict) -> str:
             c = _rail_color(sw["destination"])
             s.append(f'<circle cx="{cx+116}" cy="{y+14}" r="4" fill="{c}"/>')
             s.append(f'<text x="{cx+128}" y="{y+18}" fill="{_TXT}" font-size="11" '
-                     f'font-family="{_SVG_MONO}">pin {sw["position"]} {_esc(pinname.get(sw["position"],""))}</text>')
+                     f'font-family="{_SVG_MONO}">Pin {sw["position"]} {_esc(pinname.get(sw["position"],""))}</text>')
             pill = sw["destination"] or ""
             pw = 14 + len(pill) * 6.4
             px = cx + colw - 16 - pw
@@ -372,6 +372,191 @@ def fabric_svg(a: dict) -> str:
                      f'{_esc(it["role"])}</text>')
     s.append("</svg>")
     return "".join(s)
+
+
+_ROLE_COLOR = {"VBAT": "#d78a6b", "VDD": "#d78a6b", "VSS": "#6b7076", "VDDA": "#cf9f57",
+               "VREF": "#cf9f57", "VCAP": "#8f9fd4", "BOOT": "#5fadad", "OSC": "#5fadad",
+               "NRST": "#5fadad", "IO": "#8fb0c8"}
+
+
+def _role_color(role):
+    return _ROLE_COLOR.get(str(role), "#8fb0c8")
+
+
+def _svg_chip(x, y, label, color, filled=False, mono=False, h=22):
+    """A rounded chip. Returns (svg, width)."""
+    ff = _SVG_MONO if mono else _SVG_FONT
+    w = 14 + len(str(label)) * (6.9 if mono else 6.4)
+    if filled:
+        rect = f'<rect x="{x:.0f}" y="{y}" width="{w:.0f}" height="{h}" rx="{h/2}" fill="{color}"/>'
+        tc = "#161618"
+    else:
+        rect = (f'<rect x="{x:.0f}" y="{y}" width="{w:.0f}" height="{h}" rx="{h/2}" fill="{color}" '
+                f'fill-opacity="0.15" stroke="{color}" stroke-opacity="0.45"/>')
+        tc = color
+    txt = (f'<text x="{x+w/2:.0f}" y="{y+h*0.68:.0f}" fill="{tc}" text-anchor="middle" '
+           f'font-size="11" font-family="{ff}" font-weight="600">{_esc(label)}</text>')
+    return rect + txt, w
+
+
+def detail_svg(a: dict, pos=None) -> str:
+    """Visual detail panel: a package summary with pin-number chips when no pin is
+    selected, or one pin's identities, switch channels, rationale, breakout, 5V, and
+    peripherals as chips."""
+    W, pad = 372, 18
+    body, y = [], 30
+
+    def section(label):
+        nonlocal y
+        body.append(f'<text x="{pad}" y="{y}" fill="{_MUT}" font-size="10" font-weight="700" '
+                    f'letter-spacing="0.5">{label}</text>')
+        y += 20
+
+    def chips(items):
+        """Uniform-width chips laid out in a grid (every bubble the same length)."""
+        nonlocal y
+        if not items:
+            return
+        cw = min(max(16 + len(str(lab)) * 6.4 for lab, _, _ in items), W - 2 * pad)
+        per = max(1, int((W - 2 * pad + 7) / (cw + 7)))
+        for i, (lab, col, fill) in enumerate(items):
+            c = i % per
+            if c == 0 and i:
+                y += 28
+            cx = pad + c * (cw + 7)
+            if fill:
+                body.append(f'<rect x="{cx:.0f}" y="{y-15}" width="{cw:.0f}" height="22" rx="11" fill="{col}"/>')
+                tc = "#161618"
+            else:
+                body.append(f'<rect x="{cx:.0f}" y="{y-15}" width="{cw:.0f}" height="22" rx="11" '
+                            f'fill="{col}" fill-opacity="0.15" stroke="{col}" stroke-opacity="0.45"/>')
+                tc = col
+            body.append(f'<text x="{cx+cw/2:.0f}" y="{y}" fill="{tc}" text-anchor="middle" '
+                        f'font-size="11" font-family="{_SVG_FONT}" font-weight="600">{_esc(lab)}</text>')
+        y += 30
+
+    if pos is None:
+        r = a["rollup"]
+        cats = sauth.category_lists(a)
+        body.append(f'<text x="{pad}" y="{y}" fill="{_TXT}" font-size="16" font-weight="700">'
+                    f'{a["package"]}</text>')
+        y += 21
+        body.append(f'<text x="{pad}" y="{y}" fill="{_MUT}" font-size="11.5">'
+                    f'{a["manifest"]["part_count"]} parts, {r["positions_total"]} positions. '
+                    f'{r["must_switch_count"]} pins switch.</text>')
+        y += 26
+        for label, col, nums in [("MUST-SWITCH", _SWITCH_COLOR[sdb.SWITCH_MUST], cats["must_switch"]),
+                                 ("OSCILLATOR", _SWITCH_COLOR[sdb.SWITCH_OSC_OPTIONAL], cats["osc_optional"]),
+                                 ("BREAKOUT", _BREAKOUT_COLOR, cats["breakout"]),
+                                 ("5V-TOLERANT", "#5fadad", cats["five_v_all_parts"]),
+                                 ("NEVER 5V", _MUT, cats["five_v_never"])]:
+            section(f"{label} ({len(nums)})")
+            if not nums:
+                body.append(f'<text x="{pad}" y="{y}" fill="{_MUT}" font-size="11">None.</text>')
+                y += 24
+                continue
+            cx = pad
+            for n in nums:
+                if cx + 30 > W - pad:
+                    cx = pad
+                    y += 26
+                body.append(f'<rect x="{cx}" y="{y-15}" width="26" height="20" rx="6" '
+                            f'fill="{col}" fill-opacity="0.16"/>'
+                            f'<text x="{cx+13}" y="{y}" fill="{col}" text-anchor="middle" '
+                            f'font-size="10.5" font-family="{_SVG_MONO}">{n}</text>')
+                cx += 30
+            y += 30
+    else:
+        p = next((x for x in a["positions"] if x["position"] == pos), None)
+        if p is None:
+            return detail_svg(a, None)
+        sc = p["switch_class"]
+        tagc = {sdb.SWITCH_MUST: _SWITCH_COLOR[sdb.SWITCH_MUST],
+                sdb.SWITCH_OSC_OPTIONAL: _SWITCH_COLOR[sdb.SWITCH_OSC_OPTIONAL],
+                sdb.SWITCH_NONE: _MUT}[sc]
+        tag = {sdb.SWITCH_MUST: "Must-switch", sdb.SWITCH_OSC_OPTIONAL: "Oscillator",
+               sdb.SWITCH_NONE: "Fixed"}[sc]
+        body.append(f'<text x="{pad}" y="{y}" fill="{_TXT}" font-size="19" font-weight="700">Pin {pos}</text>')
+        body.append(f'<text x="{pad + 44 + len(str(pos)) * 12}" y="{y}" fill="{_MUT}" '
+                    f'font-size="11.5">{p.get("side", "").capitalize()}</text>')
+        tw = 14 + len(tag) * 6.4
+        ch, _w = _svg_chip(W - pad - tw, y - 16, tag, tagc, filled=True)
+        body.append(ch)
+        y += 26
+        section("IDENTITIES")
+        chips([(k, _role_color(k), False) for k in p["role_set"].keys()])
+        section("SWITCH")
+        chans = p["assignment"].get("channels", [])
+        if chans:
+            for cdef in chans:
+                c = _rail_color(cdef["destination"])
+                pill = cdef["destination"]
+                pw = 14 + len(pill) * 6.2
+                body.append(f'<text x="{pad}" y="{y}" fill="{_MUT}" font-size="10" '
+                            f'font-family="{_SVG_MONO}">SW{cdef["channel"]}</text>')
+                body.append(f'<circle cx="{pad+42}" cy="{y-4}" r="4" fill="{c}"/>')
+                body.append(f'<line x1="{pad+50}" y1="{y-4}" x2="{W-pad-pw-6:.0f}" y2="{y-4}" '
+                            f'stroke="{c}" stroke-width="1.3" opacity="0.5"/>')
+                body.append(f'<rect x="{W-pad-pw:.0f}" y="{y-15}" width="{pw:.0f}" height="20" rx="10" '
+                            f'fill="{c}" fill-opacity="0.2"/>'
+                            f'<text x="{W-pad-pw/2:.0f}" y="{y}" fill="{c}" text-anchor="middle" '
+                            f'font-size="10" font-family="{_SVG_MONO}" font-weight="600">{_esc(pill)}</text>')
+                y += 26
+            y += 4
+        else:
+            dest = p["assignment"].get("net") or p["assignment"].get("destination") or "the application net"
+            body.append(f'<text x="{pad}" y="{y}" fill="{_TXT}" font-size="11.5">'
+                        f'Direct connection to {_esc(dest)}. No switch.</text>')
+            y += 28
+        why = sauth.switch_rationale(p)
+        if why:
+            lines, line = [], ""
+            for wd in why.split():
+                if len(line) + len(wd) > 44:
+                    lines.append(line)
+                    line = wd
+                else:
+                    line = (line + " " + wd).strip()
+            lines.append(line)
+            bh = 24 + len(lines) * 15
+            body.append(f'<rect x="{pad}" y="{y-6}" width="{W-2*pad}" height="{bh}" rx="8" '
+                        f'fill="{_CARD}" stroke="{_LINE}"/>')
+            body.append(f'<text x="{pad+10}" y="{y+9}" fill="{_MUT}" font-size="9.5" '
+                        f'font-weight="700">WHY IT SWITCHES</text>')
+            for i, ln in enumerate(lines):
+                body.append(f'<text x="{pad+10}" y="{y+26+i*15}" fill="{_TXT}" font-size="11">{_esc(ln)}</text>')
+            y += bh + 12
+        bk = p.get("breakout", {})
+        bnets = list(bk.get("service_nets", []))
+        if bnets or bk.get("trace"):
+            section("BREAKOUT")
+            items = [(n, _BREAKOUT_COLOR, False) for n in bnets]
+            if bk.get("trace"):
+                items.append(("Parallel trace", _BREAKOUT_COLOR, False))
+            chips(items)
+        fv = p.get("five_v")
+        if fv is not None:
+            section("5V TOLERANCE")
+            if fv["tolerant"]:
+                chips([("5V-tolerant", "#5fadad", True)])
+            elif any(fv["by_family"].values()):
+                chips([("Part-dependent", "#5fadad", False)])
+            else:
+                chips([("3.3V only", _MUT, False)])
+        if p.get("peripherals"):
+            section("PERIPHERALS")
+            chips([(pp, _MUT, False) for pp in p["peripherals"]])
+        el = p.get("electrical") or {}
+        if el.get("vdd_range_v"):
+            section("ELECTRICAL")
+            vd = el["vdd_range_v"]
+            body.append(f'<text x="{pad}" y="{y}" fill="{_TXT}" font-size="11.5">'
+                        f'VDD {vd[0]}–{vd[1]} V. Per-pin I/O up to {el.get("max_io_current_ma", "?")} mA.</text>')
+            y += 24
+    H = y + 14
+    head = (f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H:.0f}" '
+            f'font-family="{_SVG_FONT}"><rect width="{W}" height="{H:.0f}" fill="{_PANEL}"/>')
+    return head + "".join(body) + "</svg>"
 
 
 class _NumItem(QTableWidgetItem):
@@ -474,7 +659,7 @@ class _StatCard(QFrame):
         lay.setSpacing(1)
         self._t = QLabel(title)
         self._t.setStyleSheet(f"color:{_MUT};font-size:10px;font-weight:700;")
-        self._b = QLabel("—")
+        self._b = QLabel("")
         self._b.setStyleSheet(f"color:{_TXT};font-size:19px;font-weight:700;")
         self._s = QLabel("")
         self._s.setStyleSheet(f"color:{_MUT};font-size:11px;")
@@ -577,11 +762,14 @@ class Stm32PinsWidget(QWidget):
         self.pin_map = PinMapWidget()
         self.pin_map.pinClicked.connect(self._select)
         lay.addWidget(self.pin_map, 2)
-        self.map_detail = QTextEdit()
-        self.map_detail.setReadOnly(True)
-        self.map_detail.setMinimumWidth(280)
-        self.map_detail.setMaximumWidth(390)
-        lay.addWidget(self.map_detail, 1)
+        self.map_detail = QSvgWidget()
+        mda = QScrollArea()
+        mda.setWidgetResizable(False)
+        mda.setWidget(self.map_detail)
+        mda.setMinimumWidth(300)
+        mda.setMaximumWidth(410)
+        mda.setStyleSheet("QScrollArea{border:none;background:%s;}" % _PANEL)
+        lay.addWidget(mda, 1)
         return page
 
     def _build_table_page(self):
@@ -598,7 +786,7 @@ class Stm32PinsWidget(QWidget):
         frow.addWidget(self.filter_combo)
         frow.addWidget(QLabel("Peripheral:"))
         self.periph_combo = QComboBox()
-        self.periph_combo.addItem("— any —")
+        self.periph_combo.addItem("Any peripheral")
         self.periph_combo.currentTextChanged.connect(self._on_peripheral)
         frow.addWidget(self.periph_combo)
         frow.addWidget(QLabel("Search:"))
@@ -629,15 +817,18 @@ class Stm32PinsWidget(QWidget):
         hdr.setStretchLastSection(True)
         self.table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.table.itemSelectionChanged.connect(self._on_table_select)
-        self.detail = QTextEdit()
-        self.detail.setReadOnly(True)
+        self.detail = QSvgWidget()
+        self.detail_area = QScrollArea()
+        self.detail_area.setWidgetResizable(False)
+        self.detail_area.setWidget(self.detail)
+        self.detail_area.setStyleSheet("QScrollArea{border:none;background:%s;}" % _PANEL)
         # a pin visualizer beside the table: selecting a row lights up its pin here
         self.table_pin_map = PinMapWidget()
         self.table_pin_map.pinClicked.connect(self._select)
         self.table_pin_map.setMinimumHeight(220)
         rightcol = QSplitter(Qt.Vertical)
         rightcol.addWidget(self.table_pin_map)
-        rightcol.addWidget(self.detail)
+        rightcol.addWidget(self.detail_area)
         rightcol.setStretchFactor(0, 2)
         rightcol.setStretchFactor(1, 3)
         rightcol.setMinimumWidth(300)
@@ -688,14 +879,9 @@ class Stm32PinsWidget(QWidget):
     def _refresh_details(self):
         if not self.authority:
             return
-        if self._sel_pos is not None:
-            p = next((x for x in self.authority["positions"]
-                      if x["position"] == self._sel_pos), None)
-            html_ = _pin_detail_html(p) if p else _summary_html(self.authority)
-        else:
-            html_ = _summary_html(self.authority)
-        self.map_detail.setHtml(html_)
-        self.detail.setHtml(html_)
+        svg = detail_svg(self.authority, self._sel_pos)
+        self._load_svg(self.map_detail, svg)
+        self._load_svg(self.detail, svg)
 
     @staticmethod
     def _load_svg(widget, svg):
@@ -710,7 +896,7 @@ class Stm32PinsWidget(QWidget):
         fv = el.get("five_v_positions", {})
         vdda = el.get("vdda_range_v")
         self.sc_switch.set(f"{r['must_switch_count']}",
-                           f"must-switch · {r['osc_optional_count']} oscillator · {r['fixed_count']} fixed")
+                           f"Must-switch · {r['osc_optional_count']} oscillator · {r['fixed_count']} fixed")
         self.sc_break.set(f"{ea.get('service_breakout_count', 0)} nets",
                           f"{len(ea.get('debug_positions', []))} debug · "
                           f"{len(ea.get('trace_positions', []))} trace")
@@ -755,7 +941,7 @@ class Stm32PinsWidget(QWidget):
         self.source = src
         lq = ", ".join(f"{k}={v}" for k, v in sorted(res.packages.items()) if k.startswith("LQFP"))
         self.status.setText(f"Built {res.mcus} STM32F MCUs, {res.pins} pins, {res.roles} roles "
-                            f"from {src}  —  {lq}")
+                            f"from {src}: {lq}")
         self.load(self.pkg_combo.currentText())
 
     def load(self, package: str):
@@ -817,8 +1003,8 @@ class Stm32PinsWidget(QWidget):
                 s_pin, d_pin = sauth.ADG714_SWITCH_PINS[adg["channel"]]
                 adg_txt = f"cell {adg['cell']} · SW{adg['channel']} ({s_pin}/{d_pin})"
             else:
-                adg_txt = "—"
-            dest = (p["assignment"].get("destination") or p["assignment"].get("net") or "—")
+                adg_txt = ""
+            dest = (p["assignment"].get("destination") or p["assignment"].get("net") or "")
             bk = p.get("breakout", {})
             bnets = bk.get("service_nets", [])
             btxt = ", ".join(bnets)
@@ -830,11 +1016,11 @@ class Stm32PinsWidget(QWidget):
                 _names(p["pin_names"]),                                # 2 Name(s)
                 _names(p["role_set"]),                                 # 3 Role Set
                 _SWITCH_LABEL.get(sc, sc),                             # 4 Switch
-                sauth.switch_rationale(p) or "—",                      # 5 Why
+                sauth.switch_rationale(p) or "",                      # 5 Why
                 adg_txt,                                               # 6 ADG714
                 dest,                                                  # 7 Destination
-                ", ".join(p.get("peripherals", [])) or "—",           # 8 Peripherals
-                btxt or "—",                                           # 9 Breakout
+                ", ".join(p.get("peripherals", [])) or "",           # 8 Peripherals
+                btxt or "",                                           # 9 Breakout
                 _tag_summary(p["tags"]) + _5v_suffix(p.get("five_v")),  # 10 Tags
                 ", ".join(p["tags"].get("bootloader_periph", [])),     # 11 Bootloader
                 (lambda e: f"{e['vdd_range_v'][0]}–{e['vdd_range_v'][1]}"
@@ -859,7 +1045,7 @@ class Stm32PinsWidget(QWidget):
         want = self.filter_combo.currentText()
         q = self.search.text().strip().lower()
         periph = self.periph_combo.currentText()
-        periph = None if periph in ("", "— any —") else periph
+        periph = None if periph in ("", "Any peripheral") else periph
         want_class = {
             "Must switch": sdb.SWITCH_MUST,
             "Oscillator": sdb.SWITCH_OSC_OPTIONAL,
@@ -896,7 +1082,7 @@ class Stm32PinsWidget(QWidget):
         if not self.authority:
             return
         name = self.periph_combo.currentText()
-        hi = set() if name in ("", "— any —") else {
+        hi = set() if name in ("", "Any peripheral") else {
             p["position"] for p in self.authority["positions"] if name in p.get("peripherals", [])}
         for m in self._maps():
             m.set_highlight(hi)
@@ -906,7 +1092,7 @@ class Stm32PinsWidget(QWidget):
         combo = self.periph_combo
         combo.blockSignals(True)
         combo.clear()
-        combo.addItem("— any —")
+        combo.addItem("Any peripheral")
         combo.addItems(sorted({x for p in self.authority["positions"]
                                for x in p.get("peripherals", [])}))
         combo.blockSignals(False)
@@ -937,7 +1123,7 @@ class Stm32PinsWidget(QWidget):
                          ("fixed", "Fixed"), ("breakout", "Breakout"),
                          ("five_v_all_parts", "5V all-parts"), ("five_v_never", "Never 5V")]:
             nums = cats[key]
-            lines.append(f"{lab} ({len(nums)}): " + (", ".join(map(str, nums)) or "—"))
+            lines.append(f"{lab} ({len(nums)}): " + (", ".join(map(str, nums)) or ""))
         QApplication.clipboard().setText("\n".join(lines))
         self.status.setText("Copied pin lists to clipboard")
 
@@ -972,7 +1158,7 @@ class Stm32PinsWidget(QWidget):
             return
         vdir = _default_vault_authority_dir()
         if vdir is None:
-            out = QFileDialog.getExistingDirectory(self, "Brain vault not found — choose an output folder")
+            out = QFileDialog.getExistingDirectory(self, "Brain vault not found, choose an output folder")
             if not out:
                 return
             vdir = Path(out)

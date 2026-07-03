@@ -175,7 +175,7 @@ class AuthorityTests(unittest.TestCase):
         cm = a["card_materials"]
         self.assertEqual(cm["adg714_cells"], 2)                # 11 must-switch -> 2 cells
         self.assertEqual(cm["vcap_required_families"], ["STM32F2", "STM32F4", "STM32F7"])
-        self.assertTrue(any("ADG714" in i["part"] for i in cm["items"]))
+        self.assertTrue(any("SPST" in i["part"] for i in cm["items"]))   # app does not name the part
         self.assertTrue(any("2.2uF" in i["part"] for i in cm["items"]))    # VCAP caps
         # drift gate: a correct card passes; the classic SWCLK/cell drift fails
         good = auth.lint_card(a, {"must_switch_count": 11, "adg714_cells": 2, "swclk_pos": 49})
@@ -327,8 +327,8 @@ class AuthorityTests(unittest.TestCase):
         w.view_combo.setCurrentText("Card BOM")
         svg = tab.fabric_svg(w.authority)                            # switch-fabric diagram
         self.assertIn("S1/D1", svg)
-        self.assertIn("ADG714 #1", svg)
-        self.assertIn("RU_24_ADI", svg)
+        self.assertIn("Switch cell 1", svg)
+        self.assertNotIn("ADG714", svg)                              # part name not shown in the app
 
 
 if __name__ == "__main__":

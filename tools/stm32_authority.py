@@ -490,7 +490,7 @@ def card_materials(authority: dict) -> dict:
     vcap_fams = sorted(f for f, p in power.items() if p.get("vcap"))
     n_vdd = max((p.get("n_vdd") or 0) for p in power.values()) if power else 0
     items = [{
-        "ref": "U_SW_*", "part": "ADG714 (octal SPST, 8 channels)", "qty": r["cells_as_built"],
+        "ref": "U_SW_*", "part": "Octal SPST switch (8 channels)", "qty": r["cells_as_built"],
         "role": "Switch fabric",
         "note": f"{r['channel_count']} one-hot channels from {r['must_switch_count']} "
                 f"must-switch pins pack into {r['cells_min']} cells. Current-budget "
@@ -499,7 +499,7 @@ def card_materials(authority: dict) -> dict:
     if vcap_fams:
         items.append({
             "ref": "C_VCAP_1/2", "part": "2.2uF ceramic X7R (ESR<2ohm)", "qty": 2,
-            "role": "regulator VCAP",
+            "role": "Regulator VCAP",
             "note": f"required for {', '.join(vcap_fams)} sockets (VCAP_1/VCAP_2); "
                     f"F0/F1/F3 have no VCAP pin (DNP/harmless)",
         })
@@ -508,8 +508,8 @@ def card_materials(authority: dict) -> dict:
             "ref": "C_DEC_*", "part": "100nF ceramic X7R", "qty": n_vdd,
             "role": "VDD decoupling", "note": f"one per VDD/VSS pair (worst-case {n_vdd} on LQFP100)",
         })
-    items.append({"ref": "C_BULK", "part": "4.7uF ceramic", "qty": 1, "role": "bulk",
-                  "note": "one bulk cap per package"})
+    items.append({"ref": "C_BULK", "part": "4.7uF ceramic", "qty": 1, "role": "Bulk",
+                  "note": "One bulk cap per package."})
     items.append({"ref": "C_VDDA/VREF", "part": "1uF + 10-100nF ceramic", "qty": 4,
                   "role": "VDDA / VREF+ decoupling",
                   "note": "1uF // 10nF on VDDA; + VREF+ pair where VREF+ is a separate pin"})
@@ -602,12 +602,14 @@ def switch_rationale(position: dict) -> str:
     if sc == db.SWITCH_NONE:
         return ""
     if sc == db.SWITCH_OSC_OPTIONAL:
-        return "HSE oscillator vs GPIO — switch only if an external crystal is fitted"
-    roles = "/".join(str(k) for k in position.get("role_set", {}).keys())
+        return ("This position is the HSE oscillator on some parts and a GPIO on others. "
+                "Switch it only if an external crystal is fitted.")
+    roles = ", ".join(str(k) for k in position.get("role_set", {}).keys())
     conflicts = [c for c in (position.get("conflict_nets") or []) if c]
     if conflicts:
-        return f"{roles} across parts — switch routes to {' or '.join(conflicts)}"
-    return f"{roles} — must switch to isolate"
+        return (f"This position takes the roles {roles} across the supported parts, so the "
+                f"switch routes it to {' or '.join(conflicts)} depending on the part.")
+    return f"This position takes the roles {roles}, so it must switch to stay isolated."
 
 
 def adg714_cell_map(authority: dict) -> list:
