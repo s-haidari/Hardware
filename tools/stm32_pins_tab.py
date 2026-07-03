@@ -40,7 +40,7 @@ except Exception:  # pragma: no cover
 
 
 _COLS = ["Pin", "Side", "Pin Name(s)", "Role Set", "Switch", "Why", "ADG714",
-         "Destination", "Peripherals", "Breakout", "Tags", "Bootloader", "V(dd)"]
+         "Destination", "Peripherals", "Breakout", "Tags", "Bootloader", "VDD (V)"]
 
 _BREAKOUT_COLOR = "#8f9fd4"   # extraction-access / debug-service breakout (periwinkle)
 
@@ -51,7 +51,7 @@ _SWITCH_COLOR = {
 }
 _SWITCH_LABEL = {
     sdb.SWITCH_MUST: "must switch",
-    sdb.SWITCH_OSC_OPTIONAL: "osc optional",
+    sdb.SWITCH_OSC_OPTIONAL: "oscillator (optional)",
     sdb.SWITCH_NONE: "fixed",
 }
 
@@ -60,13 +60,10 @@ def _counts(d: dict) -> str:
     return ", ".join(f"{k}×{v}" for k, v in d.items())
 
 
-def _primary(d: dict) -> str:
-    """Compact table-cell value: the leading (most common) name/role plus a +N badge
-    for the remaining variants. The full ×count breakdown stays in the detail panel."""
-    keys = list(d.keys())
-    if not keys:
-        return "—"
-    return keys[0] if len(keys) == 1 else f"{keys[0]}  +{len(keys) - 1}"
+def _names(d: dict) -> str:
+    """Table-cell value: the distinct names/roles spelled out, most-common first (no
+    ×count clutter, no cryptic +N). The full part-by-part counts stay in the detail."""
+    return ", ".join(d.keys()) if d else "—"
 
 
 def _numlist(nums, per: int = 6) -> str:
@@ -85,10 +82,10 @@ def _5v_suffix(five_v) -> str:
     if not five_v:
         return ""
     if five_v["tolerant"]:
-        return " · 5V" + ("(!osc)" if five_v.get("caveat") == "osc-mode" else "")
+        return " · 5V-tolerant" + (" (not as oscillator)" if five_v.get("caveat") == "osc-mode" else "")
     if any(five_v["by_family"].values()):
-        return " · 5V*part-dep"
-    return " · 3V3-only"
+        return " · 5V (part-dependent)"
+    return " · 3.3V only"
 
 
 def _tag_summary(tags: dict) -> str:
@@ -98,7 +95,7 @@ def _tag_summary(tags: dict) -> str:
     if tags.get("is_boot"):
         out.append("BOOT")
     if tags.get("is_clock"):
-        out.append("CLK")
+        out.append("clock")
     if tags.get("is_core_power"):
         out.append("VCAP")
     if tags.get("is_analog_supply"):
@@ -182,7 +179,7 @@ def _summary_html(a: dict) -> str:
     lists_html = (
         "<p><b>Pin lists (socket #):</b></p><table cellspacing='0'>"
         + _row("Must-switch", _SWITCH_COLOR[sdb.SWITCH_MUST], cats["must_switch"])
-        + _row("Osc-optional", _SWITCH_COLOR[sdb.SWITCH_OSC_OPTIONAL], cats["osc_optional"])
+        + _row("Oscillator (optional)", _SWITCH_COLOR[sdb.SWITCH_OSC_OPTIONAL], cats["osc_optional"])
         + _row("Breakout", _BREAKOUT_COLOR, cats["breakout"])
         + _row("5V all-parts", _MUT, cats["five_v_all_parts"])
         + _row("Never 5V", _MUT, cats["five_v_never"])
@@ -195,12 +192,12 @@ def _summary_html(a: dict) -> str:
     return (
         f"<h3 style='margin:2px 0'>{a['package']} — {a['manifest']['part_count']} parts</h3>"
         f"<p><b>Switch:</b> {r['must_switch_count']} must-switch; "
-        f"{r['osc_optional_count']} osc-optional; {r['fixed_count']} fixed</p>"
+        f"{r['osc_optional_count']} oscillator-optional; {r['fixed_count']} fixed</p>"
         f"<p><b>Breakout:</b> {ea.get('service_breakout_count', 0)} service · "
         f"{len(ea.get('debug_positions', []))} debug · {len(ea.get('trace_positions', []))} trace</p>"
         + lists_html +
         f"<p><b>Electrical:</b> I/O ±{el.get('max_io_current_ma', '?')} mA · "
-        f"inj ±{el.get('injection_current_ma', '?')} mA<br>"
+        f"injection ±{el.get('injection_current_ma', '?')} mA<br>"
         f"VDD {_fmt_rng(el.get('vdd_range_v'))} · VDDA {_fmt_rng(el.get('vdda_range_v'))} · "
         f"VBAT {_fmt_rng(el.get('vbat_range_v'))} · VREF+ {_fmt_rng(el.get('vref_range_v'))}<br>"
         f"VCAP required: <b>{el.get('vcap_required')}</b></p>"
@@ -503,7 +500,7 @@ class Stm32PinsWidget(QWidget):
         frow = QHBoxLayout()
         frow.addWidget(QLabel("Show:"))
         self.filter_combo = QComboBox()
-        self.filter_combo.addItems(["All", "Must switch", "Osc optional", "Fixed",
+        self.filter_combo.addItems(["All", "Must switch", "Oscillator", "Fixed",
                                     "Breakout", "5V-tolerant", "Never 5V"])
         self.filter_combo.currentTextChanged.connect(self._apply_filter)
         frow.addWidget(self.filter_combo)
@@ -542,12 +539,21 @@ class Stm32PinsWidget(QWidget):
         self.table.itemSelectionChanged.connect(self._on_table_select)
         self.detail = QTextEdit()
         self.detail.setReadOnly(True)
-        self.detail.setMinimumWidth(300)
+        # a pin visualizer beside the table: selecting a row lights up its pin here
+        self.table_pin_map = PinMapWidget()
+        self.table_pin_map.pinClicked.connect(self._select)
+        self.table_pin_map.setMinimumHeight(220)
+        rightcol = QSplitter(Qt.Vertical)
+        rightcol.addWidget(self.table_pin_map)
+        rightcol.addWidget(self.detail)
+        rightcol.setStretchFactor(0, 2)
+        rightcol.setStretchFactor(1, 3)
+        rightcol.setMinimumWidth(300)
         split = QSplitter(Qt.Horizontal)
         split.addWidget(self.table)
-        split.addWidget(self.detail)
+        split.addWidget(rightcol)
         split.setStretchFactor(0, 3)
-        split.setStretchFactor(1, 1)
+        split.setStretchFactor(1, 2)
         lay.addWidget(split, 1)
         return page
 
@@ -561,10 +567,19 @@ class Stm32PinsWidget(QWidget):
         return page
 
     # ── selection + dashboard ───────────────────────────────────────
+    def _maps(self):
+        """Both pin visualizers (dashboard + table view) so selection/highlight
+        stay in sync across views."""
+        ms = [self.pin_map]
+        if getattr(self, "table_pin_map", None) is not None:
+            ms.append(self.table_pin_map)
+        return ms
+
     def _select(self, pos):
         self._sel_pos = pos
         if pos is not None:
-            self.pin_map.set_selected(pos)
+            for m in self._maps():
+                m.set_selected(pos)
         self._refresh_details()
 
     def _on_table_select(self):
@@ -595,12 +610,12 @@ class Stm32PinsWidget(QWidget):
         fv = el.get("five_v_positions", {})
         vdda = el.get("vdda_range_v")
         self.sc_switch.set(f"{r['must_switch_count']}",
-                           f"must-switch · {r['osc_optional_count']} osc-opt · {r['fixed_count']} fixed")
+                           f"must-switch · {r['osc_optional_count']} oscillator · {r['fixed_count']} fixed")
         self.sc_break.set(f"{ea.get('service_breakout_count', 0)} nets",
                           f"{len(ea.get('debug_positions', []))} debug · "
                           f"{len(ea.get('trace_positions', []))} trace")
-        self.sc_5v.set(f"{fv.get('tolerant_all_parts', 0)} 5V-safe",
-                       f"{fv.get('family_dependent', 0)} part-dep · "
+        self.sc_5v.set(f"{fv.get('tolerant_all_parts', 0)} 5V-tolerant",
+                       f"{fv.get('family_dependent', 0)} part-dependent · "
                        f"{fv.get('not_tolerant_any_part', 0)} never")
         self.sc_elec.set(f"±{el.get('max_io_current_ma', '?')} mA I/O",
                          f"VDDA {vdda[0]}–{vdda[1]} V · VCAP {el.get('vcap_required')}" if vdda else "")
@@ -682,7 +697,8 @@ class Stm32PinsWidget(QWidget):
         self._sel_pos = None
         self._populate_peripherals()
         self._populate()
-        self.pin_map.set_authority(self.authority)
+        for m in self._maps():
+            m.set_authority(self.authority)
         self._update_dashboard()
         self._refresh_details()
 
@@ -700,17 +716,17 @@ class Stm32PinsWidget(QWidget):
         line1 = (f"<b>{a['package']}</b> · {a['manifest']['part_count']} parts · "
                  f"{r['positions_total']} positions")
         line2 = (f"<span style='{lab}'>Switch</span> "
-                 f"must {r['must_switch_count']} · osc {r['osc_optional_count']} · "
+                 f"must {r['must_switch_count']} · oscillator {r['osc_optional_count']} · "
                  f"fixed {r['fixed_count']}")
         line3 = (f"<span style='{lab}'>Breakout</span> {ea.get('service_breakout_count', 0)} "
                  f"({len(ea.get('debug_positions', []))} debug · "
                  f"{len(ea.get('trace_positions', []))} trace)")
         parts = []
         if io and vdda:
-            parts.append(f"I/O ±{io} mA · inj ±{inj} mA · VDDA {vdda[0]}–{vdda[1]} V")
+            parts.append(f"I/O ±{io} mA · injection ±{inj} mA · VDDA {vdda[0]}–{vdda[1]} V")
             if fv:
-                parts.append(f"5V-tol {fv.get('tolerant_all_parts', 0)} all / "
-                             f"{fv.get('family_dependent', 0)} part-dep / "
+                parts.append(f"5V-tolerant {fv.get('tolerant_all_parts', 0)} all / "
+                             f"{fv.get('family_dependent', 0)} part-dependent / "
                              f"{fv.get('not_tolerant_any_part', 0)} none")
         line4 = (f"<span style='{lab}'>Power</span> " + " · ".join(parts)) if parts else ""
         self.rollup.setText(line1 + "<br>" + line2 + "<br>" + line3
@@ -736,8 +752,8 @@ class Stm32PinsWidget(QWidget):
             cells = [
                 str(p["position"]),                                    # 0 Pin
                 p.get("side", ""),                                     # 1 Side
-                _primary(p["pin_names"]),                              # 2 Name(s)
-                _primary(p["role_set"]),                               # 3 Role Set
+                _names(p["pin_names"]),                                # 2 Name(s)
+                _names(p["role_set"]),                                 # 3 Role Set
                 _SWITCH_LABEL.get(sc, sc),                             # 4 Switch
                 sauth.switch_rationale(p) or "—",                      # 5 Why
                 adg_txt,                                               # 6 ADG714
@@ -771,7 +787,7 @@ class Stm32PinsWidget(QWidget):
         periph = None if periph in ("", "— any —") else periph
         want_class = {
             "Must switch": sdb.SWITCH_MUST,
-            "Osc optional": sdb.SWITCH_OSC_OPTIONAL,
+            "Oscillator": sdb.SWITCH_OSC_OPTIONAL,
             "Fixed": sdb.SWITCH_NONE,
         }.get(want)
         by_pos = {p["position"]: p for p in self.authority["positions"]}
@@ -805,11 +821,10 @@ class Stm32PinsWidget(QWidget):
         if not self.authority:
             return
         name = self.periph_combo.currentText()
-        if name in ("", "— any —"):
-            self.pin_map.set_highlight(set())
-        else:
-            self.pin_map.set_highlight({p["position"] for p in self.authority["positions"]
-                                        if name in p.get("peripherals", [])})
+        hi = set() if name in ("", "— any —") else {
+            p["position"] for p in self.authority["positions"] if name in p.get("peripherals", [])}
+        for m in self._maps():
+            m.set_highlight(hi)
         self._apply_filter()
 
     def _populate_peripherals(self):
