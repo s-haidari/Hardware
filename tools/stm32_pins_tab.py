@@ -39,8 +39,8 @@ except Exception:  # pragma: no cover
         return QIcon()
 
 
-_COLS = ["Pin", "Side", "Pin Name(s)", "Role Set", "Switch", "ADG714",
-         "Destination", "Breakout", "Tags", "Bootloader", "V(dd)"]
+_COLS = ["Pin", "Side", "Pin Name(s)", "Role Set", "Switch", "Why", "ADG714",
+         "Destination", "Peripherals", "Breakout", "Tags", "Bootloader", "V(dd)"]
 
 _BREAKOUT_COLOR = "#8f9fd4"   # extraction-access / debug-service breakout (periwinkle)
 
@@ -112,13 +112,22 @@ def _pin_detail_html(p: dict) -> str:
     bk = p.get("breakout", {})
     bnets = ", ".join(bk.get("service_nets", [])) or "—"
     adg = p["assignment"].get("adg714")
-    adg_t = f"ADG714 cell {adg['cell']} ch {adg['channel']}" if adg else "direct"
+    if adg:
+        s_pin, d_pin = sauth.ADG714_SWITCH_PINS[adg["channel"]]
+        adg_t = f"ADG714 cell {adg['cell']} · SW{adg['channel']} ({s_pin}/{d_pin})"
+    else:
+        adg_t = "direct"
     dest = p["assignment"].get("destination") or p["assignment"].get("net") or "—"
     el = p.get("electrical", {}) or {}
+    why = sauth.switch_rationale(p)
     rows = [
         ("Name(s)", _counts(p["pin_names"])),
         ("Roles", _counts(p["role_set"])),
         ("Switch", f"{_SWITCH_LABEL.get(p['switch_class'], p['switch_class'])} · {adg_t} → {dest}"),
+    ]
+    if why:
+        rows.append(("Why", why))
+    rows += [
         ("Breakout", bnets + (" · TRACE" if bk.get("trace") else "")),
         ("Via", bk.get("via", "—")),
         ("Tags", _tag_summary(p["tags"]) or "—"),
@@ -141,6 +150,21 @@ def _summary_html(a: dict) -> str:
     ea = a.get("extraction_access", {})
     el = a.get("electrical", {})
     cm = a.get("card_materials", {})
+    cats = sauth.category_lists(a)
+
+    def _lst(nums):
+        return ", ".join(str(n) for n in nums) if nums else "—"
+
+    lists_html = (
+        f"<p><b>Pin lists (socket #):</b><br>"
+        f"<span style='color:{_SWITCH_COLOR[sdb.SWITCH_MUST]}'>Must-switch "
+        f"({len(cats['must_switch'])}):</span> {_lst(cats['must_switch'])}<br>"
+        f"<span style='color:{_SWITCH_COLOR[sdb.SWITCH_OSC_OPTIONAL]}'>Osc-optional "
+        f"({len(cats['osc_optional'])}):</span> {_lst(cats['osc_optional'])}<br>"
+        f"<span style='color:{_BREAKOUT_COLOR}'>Breakout "
+        f"({len(cats['breakout'])}):</span> {_lst(cats['breakout'])}<br>"
+        f"5V all-parts ({len(cats['five_v_all_parts'])}): {_lst(cats['five_v_all_parts'])}<br>"
+        f"Never 5V ({len(cats['five_v_never'])}): {_lst(cats['five_v_never'])}</p>")
     items = "".join(
         f"<tr><td style='text-align:right;padding-right:6px'>{i['qty']}×</td>"
         f"<td>{_esc(i['part'])}</td>"
@@ -152,6 +176,7 @@ def _summary_html(a: dict) -> str:
         f"{r['osc_optional_count']} osc-optional; {r['fixed_count']} fixed</p>"
         f"<p><b>Breakout:</b> {ea.get('service_breakout_count', 0)} service · "
         f"{len(ea.get('debug_positions', []))} debug · {len(ea.get('trace_positions', []))} trace</p>"
+        + lists_html +
         f"<p><b>Electrical:</b> I/O ±{el.get('max_io_current_ma', '?')} mA · "
         f"inj ±{el.get('injection_current_ma', '?')} mA<br>"
         f"VDD {_fmt_rng(el.get('vdd_range_v'))} · VDDA {_fmt_rng(el.get('vdda_range_v'))} · "
@@ -238,6 +263,16 @@ def pin_map_svg(authority: dict, w: int = 460, h: int = 460, selected=None) -> s
     return "".join(s)
 
 
+class _NumItem(QTableWidgetItem):
+    """Table item that sorts by its numeric UserRole, so the Pin column orders
+    1, 2, … 10, … 64 rather than lexicographically (1, 10, 11, … 2, …)."""
+    def __lt__(self, other):
+        try:
+            return int(self.data(Qt.UserRole)) < int(other.data(Qt.UserRole))
+        except (TypeError, ValueError):
+            return super().__lt__(other)
+
+
 class PinMapWidget(QWidget):
     """QFP pin-map: paints the socket with pins coloured by switch class (violet
     ring = breakout) via the shared pin_map_geometry; click → pinClicked(pos)."""
@@ -247,15 +282,21 @@ class PinMapWidget(QWidget):
         super().__init__(parent)
         self.authority = None
         self.selected = None
+        self.highlight = set()
         self.setMinimumSize(380, 380)
 
     def set_authority(self, a):
         self.authority = a
         self.selected = None
+        self.highlight = set()
         self.update()
 
     def set_selected(self, pos):
         self.selected = pos
+        self.update()
+
+    def set_highlight(self, positions):
+        self.highlight = set(positions or [])
         self.update()
 
     def _geom(self):
@@ -287,6 +328,10 @@ class PinMapWidget(QWidget):
                 qp.setBrush(Qt.NoBrush)
                 qp.setPen(QPen(QColor(_BREAKOUT_COLOR), 2))
                 qp.drawRect(QRectF(x - 1.5, y - 1.5, pw + 3, ph + 3))
+            if pin["pos"] in self.highlight:
+                qp.setBrush(Qt.NoBrush)
+                qp.setPen(QPen(QColor("#5fadad"), 2.5))
+                qp.drawRect(QRectF(x - 3.5, y - 3.5, pw + 7, ph + 7))
             if pin["pos"] == self.selected:
                 qp.setBrush(Qt.NoBrush)
                 qp.setPen(QPen(QColor("#ffffff"), 2))
@@ -438,15 +483,27 @@ class Stm32PinsWidget(QWidget):
         frow = QHBoxLayout()
         frow.addWidget(QLabel("Show:"))
         self.filter_combo = QComboBox()
-        self.filter_combo.addItems(["All", "Must switch", "Osc optional", "Fixed"])
+        self.filter_combo.addItems(["All", "Must switch", "Osc optional", "Fixed",
+                                    "Breakout", "5V-tolerant", "Never 5V"])
         self.filter_combo.currentTextChanged.connect(self._apply_filter)
         frow.addWidget(self.filter_combo)
+        frow.addWidget(QLabel("Peripheral:"))
+        self.periph_combo = QComboBox()
+        self.periph_combo.addItem("— any —")
+        self.periph_combo.currentTextChanged.connect(self._on_peripheral)
+        frow.addWidget(self.periph_combo)
         frow.addWidget(QLabel("Search:"))
         self.search = QLineEdit()
-        self.search.setMaximumWidth(240)
+        self.search.setMaximumWidth(200)
         self.search.textChanged.connect(self._apply_filter)
         frow.addWidget(self.search)
         frow.addStretch()
+        for _label, _slot in [("Export CSV", self._export_csv),
+                              ("Export MD", self._export_md),
+                              ("Copy lists", self._copy_lists)]:
+            _b = QPushButton(_label)
+            _b.clicked.connect(_slot)
+            frow.addWidget(_b)
         lay.addLayout(frow)
         self.table = QTableWidget(0, len(_COLS))
         self.table.setHorizontalHeaderLabels(_COLS)
@@ -454,6 +511,7 @@ class Stm32PinsWidget(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
+        self.table.setSortingEnabled(True)
         self.table.verticalHeader().setVisible(False)
         hdr = self.table.horizontalHeader()
         for i in range(len(_COLS)):
@@ -492,7 +550,10 @@ class Stm32PinsWidget(QWidget):
     def _on_table_select(self):
         items = self.table.selectedItems()
         if items and self.authority:
-            self._select(self.authority["positions"][items[0].row()]["position"])
+            it0 = self.table.item(items[0].row(), 0)
+            pos = it0.data(Qt.UserRole) if it0 else None
+            if pos is not None:
+                self._select(int(pos))
 
     def _refresh_details(self):
         if not self.authority:
@@ -529,8 +590,25 @@ class Stm32PinsWidget(QWidget):
             f"<td>{_esc(i['part'])}</td>"
             f"<td style='color:{_MUT};padding-left:10px'>{_esc(i['role'])}</td></tr>"
             for i in cm.get("items", []))
+        map_html = []
+        for cell in sauth.adg714_cell_map(a):
+            body = "".join(
+                f"<tr><td style='color:{_MUT};padding-right:10px'>SW{sw['channel']}</td>"
+                f"<td style='padding-right:10px'>{sw['s_pin']}/{sw['d_pin']}</td>"
+                f"<td style='padding-right:10px'>"
+                f"{'—' if sw['spare'] else 'pin ' + str(sw['position'])}</td>"
+                f"<td style='padding-right:10px'>{_esc(sw['pin_name'])}</td>"
+                f"<td style='color:{_BREAKOUT_COLOR}'>"
+                f"{_esc('(spare)' if sw['spare'] else (sw['destination'] or '—'))}</td></tr>"
+                for sw in cell["switches"])
+            map_html.append(
+                f"<p style='margin:8px 0 2px'><b>Cell {cell['cell']}</b> "
+                f"<span style='color:{_MUT}'>{cell['symbol']} · {cell['footprint']}</span></p>"
+                f"<table>{body}</table>")
         self.bom_view.setHtml(
-            f"<h3>{a['package']} — plug-in card passive BOM</h3><table>{rows}</table>"
+            f"<h3>{a['package']} — switch-fabric map (ADG714 cell → socket pin)</h3>"
+            + "".join(map_html)
+            + f"<h3 style='margin-top:14px'>Plug-in card passive BOM</h3><table>{rows}</table>"
             f"<p style='color:{_MUT}'>{_esc(cm.get('note', ''))}</p>")
 
     # ── data ───────────────────────────────────────────────────────
@@ -582,6 +660,7 @@ class Stm32PinsWidget(QWidget):
         finally:
             conn.close()
         self._sel_pos = None
+        self._populate_peripherals()
         self._populate()
         self.pin_map.set_authority(self.authority)
         self._update_dashboard()
@@ -613,11 +692,16 @@ class Stm32PinsWidget(QWidget):
             f"{elec}")
 
         rows = a["positions"]
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(len(rows))
         for i, p in enumerate(rows):
             sc = p["switch_class"]
             adg = p["assignment"].get("adg714")
-            adg_txt = f"cell {adg['cell']} · ch {adg['channel']}" if adg else "—"
+            if adg:
+                s_pin, d_pin = sauth.ADG714_SWITCH_PINS[adg["channel"]]
+                adg_txt = f"cell {adg['cell']} · SW{adg['channel']} ({s_pin}/{d_pin})"
+            else:
+                adg_txt = "—"
             dest = (p["assignment"].get("destination") or p["assignment"].get("net") or "—")
             bk = p.get("breakout", {})
             bnets = bk.get("service_nets", [])
@@ -625,49 +709,122 @@ class Stm32PinsWidget(QWidget):
             if bk.get("trace"):
                 btxt = (btxt + " · TRACE") if btxt else "TRACE"
             cells = [
-                str(p["position"]),
-                p.get("side", ""),
-                _counts(p["pin_names"]),
-                _counts(p["role_set"]),
-                _SWITCH_LABEL.get(sc, sc),
-                adg_txt,
-                dest,
-                btxt or "—",
-                _tag_summary(p["tags"]) + _5v_suffix(p.get("five_v")),
-                ", ".join(p["tags"].get("bootloader_periph", [])),
+                str(p["position"]),                                    # 0 Pin
+                p.get("side", ""),                                     # 1 Side
+                _counts(p["pin_names"]),                               # 2 Name(s)
+                _counts(p["role_set"]),                                # 3 Role Set
+                _SWITCH_LABEL.get(sc, sc),                             # 4 Switch
+                sauth.switch_rationale(p) or "—",                      # 5 Why
+                adg_txt,                                               # 6 ADG714
+                dest,                                                  # 7 Destination
+                ", ".join(p.get("peripherals", [])) or "—",           # 8 Peripherals
+                btxt or "—",                                           # 9 Breakout
+                _tag_summary(p["tags"]) + _5v_suffix(p.get("five_v")),  # 10 Tags
+                ", ".join(p["tags"].get("bootloader_periph", [])),     # 11 Bootloader
                 (lambda e: f"{e['vdd_range_v'][0]}–{e['vdd_range_v'][1]}"
-                 if e and e.get("vdd_range_v") else "")(p.get("electrical")),
+                 if e and e.get("vdd_range_v") else "")(p.get("electrical")),  # 12 V(dd)
             ]
             for c, text in enumerate(cells):
-                it = QTableWidgetItem(text)
-                if c == 4:  # switch class — colour it
+                it = _NumItem(text) if c == 0 else QTableWidgetItem(text)
+                if c == 0:
+                    it.setData(Qt.UserRole, p["position"])      # numeric sort + row->pin key
+                elif c == 4:  # switch class — colour it
                     it.setForeground(QBrush(QColor(_SWITCH_COLOR.get(sc, "#5c646b"))))
-                elif c == 7 and (bnets or bk.get("trace")):  # breakout — violet
+                elif c == 9 and (bnets or bk.get("trace")):  # breakout — violet
                     it.setForeground(QBrush(QColor(_BREAKOUT_COLOR)))
                 self.table.setItem(i, c, it)
+        self.table.setSortingEnabled(True)
         self._apply_filter()
         self.table.clearSelection()
 
     def _apply_filter(self):
+        if not self.authority:
+            return
         want = self.filter_combo.currentText()
         q = self.search.text().strip().lower()
+        periph = self.periph_combo.currentText()
+        periph = None if periph in ("", "— any —") else periph
         want_class = {
             "Must switch": sdb.SWITCH_MUST,
             "Osc optional": sdb.SWITCH_OSC_OPTIONAL,
             "Fixed": sdb.SWITCH_NONE,
         }.get(want)
-        rows = self.authority["positions"] if self.authority else []
-        for i, p in enumerate(rows):
+        by_pos = {p["position"]: p for p in self.authority["positions"]}
+        for row in range(self.table.rowCount()):
+            it0 = self.table.item(row, 0)
+            p = by_pos.get(it0.data(Qt.UserRole)) if it0 else None
+            if p is None:
+                continue
+            fv = p.get("five_v")
             hide = False
-            if want_class and p["switch_class"] != want_class:
+            if want_class is not None and p["switch_class"] != want_class:
+                hide = True
+            elif want == "Breakout" and not p.get("breakout", {}).get("service_nets"):
+                hide = True
+            elif want == "5V-tolerant" and not (fv and fv["tolerant"]):
+                hide = True
+            elif want == "Never 5V" and not (fv and not any(fv["by_family"].values())):
+                hide = True
+            if periph and periph not in p.get("peripherals", []):
                 hide = True
             if q and q not in " ".join(str(v) for v in (
                     p["position"], p["pin_names"], p["role_set"],
                     p["tags"].get("bootloader_periph", []), _tag_summary(p["tags"]),
+                    sauth.switch_rationale(p),
                     p.get("breakout", {}).get("service_nets", []),
                     p.get("peripherals", []))).lower():
                 hide = True
-            self.table.setRowHidden(i, hide)
+            self.table.setRowHidden(row, hide)
+
+    def _on_peripheral(self, _name=None):
+        if not self.authority:
+            return
+        name = self.periph_combo.currentText()
+        if name in ("", "— any —"):
+            self.pin_map.set_highlight(set())
+        else:
+            self.pin_map.set_highlight({p["position"] for p in self.authority["positions"]
+                                        if name in p.get("peripherals", [])})
+        self._apply_filter()
+
+    def _populate_peripherals(self):
+        combo = self.periph_combo
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("— any —")
+        combo.addItems(sorted({x for p in self.authority["positions"]
+                               for x in p.get("peripherals", [])}))
+        combo.blockSignals(False)
+
+    def _export_csv(self):
+        self._export("csv", sauth.to_csv, "pins")
+
+    def _export_md(self):
+        self._export("md", sauth.to_markdown, "authority")
+
+    def _export(self, ext, fn, stem):
+        if not self.authority:
+            return
+        pkg = self.authority["package"]
+        path, _sel = QFileDialog.getSaveFileName(
+            self, f"Export {ext.upper()}", f"{stem}_{pkg}.{ext}", f"*.{ext}")
+        if not path:
+            return
+        Path(path).write_text(fn(self.authority), encoding="utf-8", newline="\n")
+        self.status.setText(f"Exported {Path(path).name}")
+
+    def _copy_lists(self):
+        if not self.authority:
+            return
+        cats = sauth.category_lists(self.authority)
+        lines = [f"{self.authority['package']} pin lists (socket #):"]
+        for key, lab in [("must_switch", "Must-switch"), ("osc_optional", "Osc-optional"),
+                         ("fixed", "Fixed"), ("breakout", "Breakout"),
+                         ("five_v_all_parts", "5V all-parts"), ("five_v_never", "Never 5V")]:
+            nums = cats[key]
+            lines.append(f"{lab} ({len(nums)}): " + (", ".join(map(str, nums)) or "—"))
+        QApplication.clipboard().setText("\n".join(lines))
+        self.status.setText("Copied pin lists to clipboard")
 
     def generate(self):
         if not self.db_path.exists():

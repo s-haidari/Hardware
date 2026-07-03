@@ -546,6 +546,226 @@ def lint_card(authority: dict, claims: dict) -> list:
     return findings
 
 
+# ── self-contained reporting (analysis only; the physical ADG714 build is the
+#    vault's authority — this layer just makes the tool legible without it) ──────
+
+ADG714_SYMBOL = "ADG714BRUZ-REEL"        # libs/MySymbols.kicad_sym
+ADG714_FOOTPRINT = "RU_24_ADI"           # TSSOP-24
+# Switch n of an ADG714 uses terminal pair Sn / Dn (verbatim from the symbol:
+# S1/D1 pins 5/6, S2/D2 7/8, S3/D3 9/10, S4/D4 11/12, D5/S5 13/14, D6/S6 15/16,
+# D7/S7 17/18, D8/S8 19/20). Control/power: SCLK VDD DIN GND VSS DOUT RESET* SYNC*.
+ADG714_SWITCH_PINS = {n: (f"S{n}", f"D{n}") for n in range(1, 9)}
+
+
+def category_lists(authority: dict) -> dict:
+    """Explicit socket-pin-number lists per category, so the analysis reads without
+    cross-referencing the vault. Every list is sorted ascending by position."""
+    pos = authority["positions"]
+
+    def nums(pred):
+        return sorted(p["position"] for p in pos if pred(p))
+
+    def fv(p):
+        return p.get("five_v")
+
+    return {
+        "must_switch": nums(lambda p: p["switch_class"] == db.SWITCH_MUST),
+        "osc_optional": nums(lambda p: p["switch_class"] == db.SWITCH_OSC_OPTIONAL),
+        "fixed": nums(lambda p: p["switch_class"] == db.SWITCH_NONE),
+        "breakout": nums(lambda p: p.get("breakout", {}).get("service_nets")),
+        "trace": nums(lambda p: p.get("breakout", {}).get("trace")),
+        "debug": nums(lambda p: p["tags"].get("is_debug")),
+        "boot": nums(lambda p: p["tags"].get("is_boot")),
+        "five_v_all_parts": nums(lambda p: fv(p) and fv(p)["tolerant"]),
+        "five_v_never": nums(lambda p: fv(p) and not any(fv(p)["by_family"].values())),
+    }
+
+
+def switch_rationale(position: dict) -> str:
+    """One-line reason a position must switch ('' for fixed pins). Human-readable,
+    derived from the debug/boot tags and the competing nets it would otherwise tie
+    together (conflict_nets) — auditable without the vault."""
+    sc = position["switch_class"]
+    if sc == db.SWITCH_NONE:
+        return ""
+    if sc == db.SWITCH_OSC_OPTIONAL:
+        return "HSE oscillator vs GPIO — switch only if an external crystal is fitted"
+    roles = "/".join(str(k) for k in position.get("role_set", {}).keys())
+    conflicts = [c for c in (position.get("conflict_nets") or []) if c]
+    if conflicts:
+        return f"{roles} across parts — switch routes to {' or '.join(conflicts)}"
+    return f"{roles} — must switch to isolate"
+
+
+def adg714_cell_map(authority: dict) -> list:
+    """The must-switch fabric as ADG714 instances, using the real symbol pin names.
+    One entry per cell (chip), each carrying all 8 switches; unused channels are
+    marked spare. Which S/D terminal takes the MCU pin vs. the destination net is
+    the vault's wiring — this reports the switch a socket position lands on."""
+    cells: dict = defaultdict(dict)
+    for p in authority["positions"]:
+        adg = p["assignment"].get("adg714")
+        if adg:
+            cells[adg["cell"]][adg["channel"]] = p
+    out = []
+    for cell in sorted(cells):
+        chans = cells[cell]
+        switches = []
+        for ch in range(1, 9):
+            s_pin, d_pin = ADG714_SWITCH_PINS[ch]
+            p = chans.get(ch)
+            if p is None:
+                switches.append({"channel": ch, "s_pin": s_pin, "d_pin": d_pin,
+                                 "position": None, "pin_name": "", "destination": None,
+                                 "spare": True})
+                continue
+            names = list(p["pin_names"].keys())
+            adg = p["assignment"]["adg714"]
+            switches.append({
+                "channel": ch, "s_pin": s_pin, "d_pin": d_pin,
+                "position": p["position"], "pin_name": names[0] if names else "",
+                "destination": adg.get("destination") or p["assignment"].get("destination"),
+                "spare": False,
+            })
+        out.append({"cell": cell, "symbol": ADG714_SYMBOL, "footprint": ADG714_FOOTPRINT,
+                    "switches": switches})
+    return out
+
+
+_CSV_COLUMNS = ["position", "side", "pin_names", "roles", "switch_class", "why",
+                "adg714_cell", "adg714_switch", "adg714_s", "adg714_d", "destination",
+                "peripherals", "breakout_nets", "trace", "five_v", "bootloader",
+                "vdd_min_v", "vdd_max_v"]
+
+
+def to_csv(authority: dict) -> str:
+    """One row per socket pin, every self-contained column. Opens in any spreadsheet;
+    no vault required."""
+    buf = io.StringIO()
+    w = csv.writer(buf, lineterminator="\n")
+    w.writerow(_CSV_COLUMNS)
+    vdd = (authority.get("electrical") or {}).get("vdd_range_v") or [None, None]
+    for p in sorted(authority["positions"], key=lambda p: p["position"]):
+        a = p["assignment"]
+        adg = a.get("adg714") or {}
+        ch = adg.get("channel")
+        s_pin, d_pin = ADG714_SWITCH_PINS.get(ch, ("", "")) if ch else ("", "")
+        fv = p.get("five_v")
+        w.writerow([
+            p["position"], p.get("side", ""),
+            " / ".join(p["pin_names"].keys()),
+            " ".join(str(k) for k in p["role_set"].keys()),
+            p["switch_class"], switch_rationale(p),
+            adg.get("cell", ""), ch or "", s_pin, d_pin,
+            a.get("destination") or a.get("net") or "",
+            " ".join(p.get("peripherals", [])),
+            " ".join(p.get("breakout", {}).get("service_nets", [])),
+            "yes" if p.get("breakout", {}).get("trace") else "",
+            ("yes" if fv["tolerant"] else "no") if fv else "",
+            " ".join(p["tags"].get("bootloader_periph", [])),
+            vdd[0] if vdd else "", vdd[1] if vdd else "",
+        ])
+    return buf.getvalue()
+
+
+def _md_cell(v) -> str:
+    return str(v).replace("|", r"\|")
+
+
+def to_markdown(authority: dict) -> str:
+    """A standalone, self-contained Markdown report for someone with neither the
+    app nor the vault: summary, explicit pin-number lists, the ADG714 switch-fabric
+    map (real symbol pin names), electrical block, and a full per-pin table."""
+    a = authority
+    r = a["rollup"]
+    man = a["manifest"]
+    el = a.get("electrical") or {}
+    ea = a.get("extraction_access", {})
+    cats = category_lists(a)
+    fvp = el.get("five_v_positions", {})
+
+    def joln(nums):
+        return ", ".join(str(n) for n in nums) if nums else "—"
+
+    L = [f"# STM32 {a['package']} — Pinout Authority", ""]
+    L.append(f"{man['part_count']} parts · families {', '.join(man['supported_families'])} · "
+             f"source: {man['source']}")
+    L += ["", "## Summary", ""]
+    L.append(f"- Positions: **{r['positions_total']}**")
+    L.append(f"- Must-switch: **{r['must_switch_count']}** · Osc-optional: "
+             f"**{r['osc_optional_count']}** · Fixed: **{r['fixed_count']}**")
+    L.append(f"- Breakout (service nets): **{ea.get('service_breakout_count', 0)}** "
+             f"(debug {len(ea.get('debug_positions', []))}, trace {len(ea.get('trace_positions', []))})")
+    if fvp:
+        L.append(f"- 5V-tolerant: {fvp.get('tolerant_all_parts', 0)} all-parts / "
+                 f"{fvp.get('family_dependent', 0)} part-dependent / "
+                 f"{fvp.get('not_tolerant_any_part', 0)} never")
+
+    L += ["", "## Pin lists (by socket number)", ""]
+    L.append(f"- **Must-switch ({len(cats['must_switch'])}):** {joln(cats['must_switch'])}")
+    L.append(f"- **Osc-optional ({len(cats['osc_optional'])}):** {joln(cats['osc_optional'])}")
+    L.append(f"- **Breakout ({len(cats['breakout'])}):** {joln(cats['breakout'])}")
+    L.append(f"- **Debug ({len(cats['debug'])}):** {joln(cats['debug'])}")
+    L.append(f"- **5V-tolerant, all parts ({len(cats['five_v_all_parts'])}):** {joln(cats['five_v_all_parts'])}")
+    L.append(f"- **Never 5V-tolerant ({len(cats['five_v_never'])}):** {joln(cats['five_v_never'])}")
+
+    L += ["", f"## Switch fabric — ADG714 ({ADG714_SYMBOL} / {ADG714_FOOTPRINT})", ""]
+    for cell in adg714_cell_map(a):
+        L += [f"### Cell {cell['cell']}", "",
+              "| Sw | Terminals | Pin | Name | Destination |",
+              "|----|-----------|-----|------|-------------|"]
+        for sw in cell["switches"]:
+            if sw["spare"]:
+                L.append(f"| SW{sw['channel']} | {sw['s_pin']}/{sw['d_pin']} | — | — | *(spare)* |")
+            else:
+                L.append(f"| SW{sw['channel']} | {sw['s_pin']}/{sw['d_pin']} | {sw['position']} "
+                         f"| {_md_cell(sw['pin_name'])} | {_md_cell(sw['destination'] or '—')} |")
+        L.append("")
+
+    io_ma = el.get("max_io_current_ma")
+    inj = el.get("injection_current_ma")
+    vdd = el.get("vdd_range_v")
+    vdda = el.get("vdda_range_v")
+    L += ["## Electrical", ""]
+    if vdd:
+        L.append(f"- VDD: {vdd[0]}–{vdd[1]} V" + (f" · VDDA: {vdda[0]}–{vdda[1]} V" if vdda else ""))
+    if io_ma:
+        L.append(f"- Per-pin I/O: ±{io_ma} mA (injection ±{inj} mA)")
+    if el.get("vcap_required") is not None:
+        L.append(f"- VCAP external caps required: {'yes' if el['vcap_required'] else 'no'}")
+
+    L += ["", "## Pins", "",
+          "| Pin | Side | Name(s) | Roles | Switch | Why | ADG714 | Destination | "
+          "Peripherals | Breakout | 5V | Bootloader | VDD |",
+          "|-----|------|---------|-------|--------|-----|--------|-------------|"
+          "-------------|----------|----|-----------|-----|"]
+    for p in sorted(a["positions"], key=lambda p: p["position"]):
+        asg = p["assignment"]
+        adg = asg.get("adg714")
+        adg_t = f"cell {adg['cell']} · SW{adg['channel']} ({ADG714_SWITCH_PINS[adg['channel']][0]}/"\
+                f"{ADG714_SWITCH_PINS[adg['channel']][1]})" if adg else "—"
+        fv = p.get("five_v")
+        five = ("Y" if fv["tolerant"] else "n") if fv else ""
+        bk = p.get("breakout", {})
+        bnets = ", ".join(bk.get("service_nets", [])) + (" ·TRACE" if bk.get("trace") else "")
+        L.append("| " + " | ".join(_md_cell(x) for x in [
+            p["position"], p.get("side", ""),
+            " / ".join(p["pin_names"].keys()),
+            " ".join(str(k) for k in p["role_set"].keys()),
+            _SWITCH_MD.get(p["switch_class"], p["switch_class"]),
+            switch_rationale(p) or "—", adg_t,
+            asg.get("destination") or asg.get("net") or "—",
+            " ".join(p.get("peripherals", [])) or "—",
+            bnets or "—", five,
+            " ".join(p["tags"].get("bootloader_periph", [])) or "—",
+            f"{vdd[0]}–{vdd[1]}" if vdd else "—",
+        ]) + " |")
+    return "\n".join(L) + "\n"
+
+
+_SWITCH_MD = {db.SWITCH_MUST: "must", db.SWITCH_OSC_OPTIONAL: "osc", db.SWITCH_NONE: "fixed"}
+
+
 def build(conn: sqlite3.Connection, package: str) -> dict:
     rep = db.package_report(conn, package)
     fam_names = _families_at(conn, package)
@@ -817,9 +1037,14 @@ def write_authority(conn: sqlite3.Connection, package: str, out_dir: Path) -> di
         raw_tsv(conn, package), encoding="utf-8", newline="\n")
     (out_dir / f"{package}_socket.kicad_sym").write_text(
         to_kicad_symbol(data), encoding="utf-8", newline="\n")
+    (out_dir / f"pins_{package}.csv").write_text(
+        to_csv(data), encoding="utf-8", newline="\n")
+    (out_dir / f"authority_{package}.md").write_text(
+        to_markdown(data), encoding="utf-8", newline="\n")
     return {
         "package": package, "out_dir": str(out_dir),
         "files": [f"pinout_authority_{package}.yaml", f"pinout_authority_{package}.json",
-                  f"pins_{package}.tsv", f"{package}_socket.kicad_sym"],
+                  f"pins_{package}.tsv", f"{package}_socket.kicad_sym",
+                  f"pins_{package}.csv", f"authority_{package}.md"],
         "rollup": data["rollup"],
     }

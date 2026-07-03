@@ -55,7 +55,7 @@ class AuthorityTests(unittest.TestCase):
     def test_emit_yaml_json_tsv(self):
         out = Path(tempfile.mkdtemp())
         summ = auth.write_authority(self.conn, "LQFP64", out)
-        self.assertEqual(len(summ["files"]), 4)   # yaml + json + tsv + kicad_sym
+        self.assertEqual(len(summ["files"]), 6)   # yaml + json + tsv + kicad_sym + csv + md
         j = json.loads((out / "pinout_authority_LQFP64.json").read_text(encoding="utf-8"))
         self.assertEqual(len(j["positions"]), 64)
         y = (out / "pinout_authority_LQFP64.yaml").read_text(encoding="utf-8")
@@ -63,6 +63,9 @@ class AuthorityTests(unittest.TestCase):
         tsv = (out / "pins_LQFP64.tsv").read_text(encoding="utf-8")
         self.assertGreater(len(tsv.splitlines()), 53)  # header + 53 parts x pins
         self.assertTrue((out / "LQFP64_socket.kicad_sym").exists())
+        csv_lines = (out / "pins_LQFP64.csv").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(csv_lines) - 1, 64)       # one self-contained row per pin
+        self.assertIn("ADG714BRUZ-REEL", (out / "authority_LQFP64.md").read_text(encoding="utf-8"))
 
     def test_kicad_symbol(self):
         """Phase D: the generated KiCad socket symbol is well-formed (structural —
@@ -232,6 +235,92 @@ class AuthorityTests(unittest.TestCase):
         # Analog ground routes to its own rail net, not GND (Card 7B: VSSA = 12).
         a12 = self._pos(d, 12)["assignment"]
         self.assertEqual(a12.get("net", a12.get("destination")), "VSSA_TGT")
+
+    # ── self-contained reporting layer (legible without the vault) ─────────
+    def test_category_lists_match_rollup(self):
+        a = auth.build(self.conn, "LQFP64")
+        cats = auth.category_lists(a)
+        r = a["rollup"]
+        self.assertEqual(len(cats["must_switch"]), r["must_switch_count"])
+        self.assertEqual(len(cats["osc_optional"]), r["osc_optional_count"])
+        self.assertEqual(len(cats["fixed"]), r["fixed_count"])
+        # power/analog/boot rails switch; the SWD sockets break out (not switched)
+        self.assertIn(1, cats["must_switch"])          # VBAT/VDD
+        self.assertIn(60, cats["must_switch"])         # BOOT0
+        self.assertNotIn(46, cats["must_switch"])      # SWDIO -> breakout, not switched
+        self.assertIn(46, cats["breakout"])
+        self.assertEqual(cats["five_v_never"], [20, 21])   # PA4, PA5
+
+    def test_switch_rationale(self):
+        a = auth.build(self.conn, "LQFP64")
+        self.assertIn("VBAT_TGT", auth.switch_rationale(self._pos(a, 1)))
+        self.assertIn("SERVICE_BOOT0", auth.switch_rationale(self._pos(a, 60)))
+        self.assertIn("crystal", auth.switch_rationale(self._pos(a, 5)))   # osc-optional
+        fixed = next(p for p in a["positions"] if p["switch_class"] == db.SWITCH_NONE)
+        self.assertEqual(auth.switch_rationale(fixed), "")                  # fixed = no why
+
+    def test_adg714_cell_map_symbol_names(self):
+        a = auth.build(self.conn, "LQFP64")
+        cm = auth.adg714_cell_map(a)
+        self.assertEqual(len(cm), a["rollup"]["cells_min"])   # 11 must-switch -> 2 cells
+        self.assertEqual((cm[0]["symbol"], cm[0]["footprint"]), ("ADG714BRUZ-REEL", "RU_24_ADI"))
+        for cell in cm:                                       # exact Sn/Dn terminal names
+            self.assertEqual(len(cell["switches"]), 8)
+            for i, sw in enumerate(cell["switches"], start=1):
+                self.assertEqual((sw["s_pin"], sw["d_pin"]), (f"S{i}", f"D{i}"))
+        sw1 = cm[0]["switches"][0]                            # cell1/ch1 = VBAT (pin 1)
+        self.assertEqual((sw1["position"], sw1["destination"]), (1, "VBAT_TGT"))
+        spares = [sw for cell in cm for sw in cell["switches"] if sw["spare"]]
+        self.assertEqual(len(spares), 2 * 8 - a["rollup"]["must_switch_count"])   # 5 spare
+        self.assertEqual(len(auth.adg714_cell_map(auth.build(self.conn, "LQFP100"))), 6)
+
+    def test_csv_and_markdown_export(self):
+        a = auth.build(self.conn, "LQFP64")
+        lines = auth.to_csv(a).splitlines()
+        self.assertEqual(lines[0].split(",")[0], "position")
+        self.assertIn("why", lines[0])
+        self.assertEqual(len(lines) - 1, len(a["positions"]))     # one row per pin
+        self.assertTrue(any(",S1,D1," in ln for ln in lines))     # real ADG714 terminals
+        md = auth.to_markdown(a)
+        self.assertIn("ADG714BRUZ-REEL", md)
+        self.assertIn(f"Must-switch ({a['rollup']['must_switch_count']})", md)
+        self.assertIn("| SW1 | S1/D1 |", md)                      # cell-map table
+        self.assertIn("VBAT_TGT", md)
+
+    def test_tab_widget_offscreen(self):
+        """Headless Qt widget (offscreen platform): 13 columns, numeric Pin sort +
+        sort-safe row->pin selection, category filters, peripheral highlight, and the
+        switch-fabric map in the BOM view. Guards the widget wiring (esp. numeric
+        sort) that the pure-function tests can't reach."""
+        import os
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        try:
+            from PyQt5.QtWidgets import QApplication
+            from PyQt5.QtCore import Qt
+            import stm32_pins_tab as tab
+        except Exception as e:  # pragma: no cover
+            raise unittest.SkipTest(f"PyQt5 unavailable: {e}")
+        _app = QApplication.instance() or QApplication([])
+        w = tab.Stm32PinsWidget()
+        w.db_path = self.dbp                         # use the test's temp database
+        w.load("LQFP64")
+        self.assertEqual((w.table.columnCount(), w.table.rowCount()), (13, 64))
+        w.table.sortItems(0, Qt.DescendingOrder)
+        self.assertEqual(w.table.item(0, 0).data(Qt.UserRole), 64)    # numeric, not "9"
+        w.table.selectRow(0)
+        self.assertEqual(w._sel_pos, 64)                              # selection follows sort
+        w.filter_combo.setCurrentText("Must switch")
+        vis = sum(not w.table.isRowHidden(r) for r in range(w.table.rowCount()))
+        self.assertEqual(vis, 11)
+        w.filter_combo.setCurrentText("All")
+        spi = next((w.periph_combo.itemText(i) for i in range(w.periph_combo.count())
+                    if w.periph_combo.itemText(i).startswith("SPI")), None)
+        if spi:
+            w.periph_combo.setCurrentText(spi)
+            self.assertTrue(w.pin_map.highlight)                      # peripheral -> highlight
+        w.view_combo.setCurrentText("Card BOM")
+        self.assertIn("S1/D1", w.bom_view.toPlainText())             # switch-fabric map
+        self.assertIn("ADG714BRUZ-REEL", w.bom_view.toPlainText())
 
 
 if __name__ == "__main__":
