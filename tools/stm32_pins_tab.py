@@ -21,7 +21,7 @@ from PyQt5.QtWidgets import (
 )
 
 # palette (mirrors the app's dark theme)
-_PANEL, _CARD, _TXT, _MUT, _LINE = "#232833", "#2b3140", "#e9ecf2", "#9aa3b2", "#39414f"
+_PANEL, _CARD, _TXT, _MUT, _LINE = "#212124", "#26262b", "#ededf0", "#90909a", "#33333a"
 
 import stm32_db as sdb
 import stm32_authority as sauth
@@ -42,12 +42,12 @@ except Exception:  # pragma: no cover
 _COLS = ["Pin", "Side", "Pin Name(s)", "Role Set", "Switch", "ADG714",
          "Destination", "Breakout", "Tags", "Bootloader", "V(dd)"]
 
-_BREAKOUT_COLOR = "#b57edc"   # extraction-access / debug-service breakout (violet)
+_BREAKOUT_COLOR = "#8f9fd4"   # extraction-access / debug-service breakout (periwinkle)
 
 _SWITCH_COLOR = {
-    sdb.SWITCH_MUST: "#cc5b5b",
-    sdb.SWITCH_OSC_OPTIONAL: "#c99a2e",
-    sdb.SWITCH_NONE: "#8a93a3",
+    sdb.SWITCH_MUST: "#d76b6b",
+    sdb.SWITCH_OSC_OPTIONAL: "#cf9f57",
+    sdb.SWITCH_NONE: "#5c646b",
 }
 _SWITCH_LABEL = {
     sdb.SWITCH_MUST: "must switch",
@@ -128,10 +128,10 @@ def _pin_detail_html(p: dict) -> str:
         ("VDD", _fmt_rng(el.get("vdd_range_v"))),
     ]
     body = "".join(
-        f"<tr><td style='color:#8a93a3;padding-right:8px;vertical-align:top'>{k}</td>"
+        f"<tr><td style='color:{_MUT};padding-right:8px;vertical-align:top'>{k}</td>"
         f"<td>{_esc(v)}</td></tr>" for k, v in rows)
     return (f"<h3 style='margin:2px 0'>Pin {p['position']} "
-            f"<span style='color:#8a93a3'>({p.get('side', '')})</span></h3>"
+            f"<span style='color:{_MUT}'>({p.get('side', '')})</span></h3>"
             f"<table>{body}</table>")
 
 
@@ -144,7 +144,7 @@ def _summary_html(a: dict) -> str:
     items = "".join(
         f"<tr><td style='text-align:right;padding-right:6px'>{i['qty']}×</td>"
         f"<td>{_esc(i['part'])}</td>"
-        f"<td style='color:#8a93a3;padding-left:8px'>{_esc(i['role'])}</td></tr>"
+        f"<td style='color:{_MUT};padding-left:8px'>{_esc(i['role'])}</td></tr>"
         for i in cm.get("items", []))
     return (
         f"<h3 style='margin:2px 0'>{a['package']} — {a['manifest']['part_count']} parts</h3>"
@@ -159,7 +159,7 @@ def _summary_html(a: dict) -> str:
         f"VBAT {_fmt_rng(el.get('vbat_range_v'))} · VREF+ {_fmt_rng(el.get('vref_range_v'))}<br>"
         f"VCAP required: <b>{el.get('vcap_required')}</b></p>"
         f"<p><b>Card materials (passive BOM):</b></p><table>{items}</table>"
-        f"<p style='color:#8a93a3'>{_esc(cm.get('note', ''))}</p>")
+        f"<p style='color:{_MUT}'>{_esc(cm.get('note', ''))}</p>")
 
 
 def _default_vault_authority_dir():
@@ -220,18 +220,18 @@ def pin_map_svg(authority: dict, w: int = 460, h: int = 460, selected=None) -> s
     g = pin_map_geometry(authority["positions"], w, h)
     bl, bt, bw, bh = g["body"]
     s = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" '
-         f'font-family="Segoe UI,Arial,sans-serif"><rect width="{w}" height="{h}" fill="#232833"/>',
-         f'<rect x="{bl}" y="{bt}" width="{bw}" height="{bh}" rx="8" fill="#1a1e26" '
-         f'stroke="#39414f" stroke-width="1.5"/>',
-         f'<text x="{bl+bw/2}" y="{bt+bh/2}" fill="#9aa3b2" text-anchor="middle" '
+         f'font-family="Inter,Segoe UI,Arial,sans-serif"><rect width="{w}" height="{h}" fill="{_PANEL}"/>',
+         f'<rect x="{bl}" y="{bt}" width="{bw}" height="{bh}" rx="8" fill="#1c1c1f" '
+         f'stroke="{_LINE}" stroke-width="1.5"/>',
+         f'<text x="{bl+bw/2}" y="{bt+bh/2}" fill="{_MUT}" text-anchor="middle" '
          f'font-size="12">{html.escape(authority["package"])}</text>']
     for pin in g["pins"]:
         x, y, pwd, ph = pin["rect"]
-        col = _SWITCH_COLOR.get(pin["sw"], "#5a6273")
+        col = _SWITCH_COLOR.get(pin["sw"], "#5c646b")
         s.append(f'<rect x="{x}" y="{y}" width="{pwd}" height="{ph}" rx="2" fill="{col}"/>')
         if pin["breakout"]:
             s.append(f'<rect x="{x-1.5}" y="{y-1.5}" width="{pwd+3}" height="{ph+3}" rx="3" '
-                     f'fill="none" stroke="#b57edc" stroke-width="2"/>')
+                     f'fill="none" stroke="{_BREAKOUT_COLOR}" stroke-width="2"/>')
         if pin["pos"] == selected:
             s.append(f'<rect x="{x-3}" y="{y-3}" width="{pwd+6}" height="{ph+6}" rx="4" '
                      f'fill="none" stroke="#ffffff" stroke-width="2"/>')
@@ -275,14 +275,14 @@ class PinMapWidget(QWidget):
             return
         bl, bt, bw, bh = g["body"]
         qp.setPen(QPen(QColor(_LINE), 1.5))
-        qp.setBrush(QColor("#1a1e26"))
+        qp.setBrush(QColor("#1c1c1f"))
         qp.drawRoundedRect(QRectF(bl, bt, bw, bh), 8, 8)
         qp.setPen(QColor(_MUT))
         qp.drawText(QRectF(bl, bt, bw, bh), Qt.AlignCenter, self.authority["package"])
         for pin in g["pins"]:
             x, y, pw, ph = pin["rect"]
             qp.setPen(Qt.NoPen)
-            qp.setBrush(QColor(_SWITCH_COLOR.get(pin["sw"], "#5a6273")))
+            qp.setBrush(QColor(_SWITCH_COLOR.get(pin["sw"], "#5c646b")))
             qp.drawRect(QRectF(x, y, pw, ph))
             if pin["breakout"]:
                 qp.setBrush(Qt.NoBrush)
@@ -415,8 +415,8 @@ class Stm32PinsWidget(QWidget):
         col.setMinimumWidth(206)
         self.sc_switch = _StatCard("SWITCH FABRIC", _SWITCH_COLOR[sdb.SWITCH_MUST])
         self.sc_break = _StatCard("BREAKOUT", _BREAKOUT_COLOR)
-        self.sc_5v = _StatCard("5V-TOLERANCE", "#5b9bd5")
-        self.sc_elec = _StatCard("ELECTRICAL", "#5aa469")
+        self.sc_5v = _StatCard("5V-TOLERANCE", "#5fadad")
+        self.sc_elec = _StatCard("ELECTRICAL", "#cf9f57")
         for c in (self.sc_switch, self.sc_break, self.sc_5v, self.sc_elec):
             cl.addWidget(c)
         cl.addStretch()
@@ -643,7 +643,7 @@ class Stm32PinsWidget(QWidget):
             for c, text in enumerate(cells):
                 it = QTableWidgetItem(text)
                 if c == 4:  # switch class — colour it
-                    it.setForeground(QBrush(QColor(_SWITCH_COLOR.get(sc, "#8a93a3"))))
+                    it.setForeground(QBrush(QColor(_SWITCH_COLOR.get(sc, "#5c646b"))))
                 elif c == 7 and (bnets or bk.get("trace")):  # breakout — violet
                     it.setForeground(QBrush(QColor(_BREAKOUT_COLOR)))
                 self.table.setItem(i, c, it)

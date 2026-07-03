@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-KiCad Library Manager - PyQt UI
+KiCad Manager - PyQt UI
 
 Workflow:
 0. Pull (rebase + autostash) to ensure local repo is up to date.
@@ -158,11 +158,11 @@ def gray_icon(style, sp, size: int = 16) -> QIcon:
 # colour: pull = blue, push = green, delete/clean = red, repair = amber, rest
 # neutral slate. Falls back to a desaturated Qt icon if QtSvg is unavailable.
 # ---------------------------------------------------------------------------
-LUCIDE_NEUTRAL = "#9aa3b2"
-LUCIDE_BLUE = "#5b9bd5"
-LUCIDE_GREEN = "#5aa469"
-LUCIDE_RED = "#cc5b5b"
-LUCIDE_AMBER = "#c99a2e"
+LUCIDE_NEUTRAL = "#90909a"
+LUCIDE_BLUE = "#7d9bc0"
+LUCIDE_GREEN = "#74ab8f"
+LUCIDE_RED = "#d76b6b"
+LUCIDE_AMBER = "#cf9f57"
 
 _LUCIDE_CACHE: Dict[tuple, QIcon] = {}
 
@@ -1300,7 +1300,7 @@ def export_catalog(cfg: Dict[str, str], log: UILog, progress_cb=None) -> Optiona
     syms = sorted([r for r in rows if r["type"] == "Symbol"], key=lambda r: str(r["name"]).lower())
 
     out: List[str] = []
-    out.append("# KiCad Library Catalog\n")
+    out.append("# KiCad Manager Catalog\n")
     out.append(f"Generated {time.strftime('%Y-%m-%d %H:%M')} — "
                f"{summary['footprints']} footprints, {summary['models']} 3D models, "
                f"{summary['symbols']} symbols.\n")
@@ -2928,36 +2928,37 @@ class LibraryManagerWindow(QMainWindow):
     # ------------------------------------------------------------------
     # Theming: one token-based stylesheet drives both dark and light.
     # ------------------------------------------------------------------
-    # Modern neutral palette (cool grays + a restrained slate accent), inspired
-    # by editor themes like One Dark / GitHub. Token @@KEY@@ = background hex,
-    # @KEY@ = text/border hex.
+    # Minimal, muted, neutral palette (no blue tint) with a monochrome "Ink"
+    # accent — near-white on dark, near-black on light. Colour is reserved for
+    # the data (the STM32 switch/breakout markers). Token @@KEY@@ = background
+    # hex, @KEY@ = text/border hex.
     _DARK_COLORS = {
-        "WIN_BG": "#16181d", "MAIN_BG": "#121317", "FG": "#e7eaf0", "FG_DIM": "#9197a3",
-        "TITLE_FG": "#f6f8fb", "CARD_BG": "#1e2127", "BORDER": "#2c303a",
-        "HDR1": "#1e2127", "HDR2": "#16181d", "CHIP_BG": "#262a33", "IN_BG": "#191c22",
-        "BTN_BG": "#262a33", "BTN_HOVER": "#2f3440", "BTN_BORDER": "#363b47",
-        "ACCENT": "#7f8aa0", "TREE_BG": "#191c22", "TREE_ALT": "#1d2026",
-        "SEL_BG": "#33405c", "SEL_FG": "#f6f8fb", "HOVER_BG": "#242832",
-        "SEC_BG": "#22262f", "SEC_FG": "#c2c8d4", "LOG_BG": "#121419", "LOG_FG": "#c2c8d4",
-        "SCROLL": "#363b47", "SCROLL_HOVER": "#4a5160", "ST_BG": "#121419", "ST_FG": "#9197a3",
-        "PROG_BG": "#191c22", "PROG1": "#566074", "PROG2": "#7f8aa0",
-        "TAB_BG": "#1e2127", "TAB_SEL_BG": "#2a2f3a", "TAB_SEL_FG": "#f6f8fb",
-        "MENU_BG": "#1e2127", "MENU_SEL": "#2a2f3a", "CHK_BG": "#191c22", "CHK_ON": "#7f8aa0",
-        "DOT_IDLE": "#586072",
+        "WIN_BG": "#1a1a1c", "MAIN_BG": "#151517", "FG": "#ededf0", "FG_DIM": "#90909a",
+        "TITLE_FG": "#ffffff", "CARD_BG": "#212124", "BORDER": "#33333a",
+        "HDR1": "#212124", "HDR2": "#1a1a1c", "CHIP_BG": "#26262b", "IN_BG": "#1c1c1f",
+        "BTN_BG": "#26262b", "BTN_HOVER": "#2f2f35", "BTN_BORDER": "#37373e",
+        "ACCENT": "#d0d0d6", "TREE_BG": "#1c1c1f", "TREE_ALT": "#202024",
+        "SEL_BG": "#33333c", "SEL_FG": "#ffffff", "HOVER_BG": "#26262b",
+        "SEC_BG": "#212124", "SEC_FG": "#b8b8c0", "LOG_BG": "#151517", "LOG_FG": "#c0c0c8",
+        "SCROLL": "#37373e", "SCROLL_HOVER": "#4a4a52", "ST_BG": "#151517", "ST_FG": "#90909a",
+        "PROG_BG": "#1c1c1f", "PROG1": "#55555e", "PROG2": "#d0d0d6",
+        "TAB_BG": "#212124", "TAB_SEL_BG": "#2a2a30", "TAB_SEL_FG": "#ffffff",
+        "MENU_BG": "#212124", "MENU_SEL": "#2a2a30", "CHK_BG": "#1c1c1f", "CHK_ON": "#d0d0d6",
+        "DOT_IDLE": "#55555e",
     }
     _LIGHT_COLORS = {
-        "WIN_BG": "#f1f3f6", "MAIN_BG": "#e6e9ee", "FG": "#1f2329", "FG_DIM": "#5b6673",
-        "TITLE_FG": "#11141a", "CARD_BG": "#ffffff", "BORDER": "#e1e4ea",
-        "HDR1": "#ffffff", "HDR2": "#eef0f4", "CHIP_BG": "#eaedf2", "IN_BG": "#ffffff",
-        "BTN_BG": "#f1f3f6", "BTN_HOVER": "#e7eaf0", "BTN_BORDER": "#d6dae2",
-        "ACCENT": "#7f8aa0", "TREE_BG": "#ffffff", "TREE_ALT": "#f5f7f9",
-        "SEL_BG": "#d7deeb", "SEL_FG": "#11141a", "HOVER_BG": "#eef0f4",
-        "SEC_BG": "#f1f3f6", "SEC_FG": "#3a3f4b", "LOG_BG": "#fafbfc", "LOG_FG": "#2a2e36",
-        "SCROLL": "#ccd1da", "SCROLL_HOVER": "#aeb4c0", "ST_BG": "#e6e9ee", "ST_FG": "#5b6673",
-        "PROG_BG": "#e7eaf0", "PROG1": "#9aa1af", "PROG2": "#7f8aa0",
-        "TAB_BG": "#eaedf2", "TAB_SEL_BG": "#ffffff", "TAB_SEL_FG": "#11141a",
-        "MENU_BG": "#ffffff", "MENU_SEL": "#eef0f4", "CHK_BG": "#ffffff", "CHK_ON": "#7f8aa0",
-        "DOT_IDLE": "#a7adba",
+        "WIN_BG": "#f7f7f6", "MAIN_BG": "#efefee", "FG": "#26262b", "FG_DIM": "#85858c",
+        "TITLE_FG": "#101014", "CARD_BG": "#ffffff", "BORDER": "#ececea",
+        "HDR1": "#ffffff", "HDR2": "#f2f2f0", "CHIP_BG": "#efefed", "IN_BG": "#ffffff",
+        "BTN_BG": "#f7f7f6", "BTN_HOVER": "#efefee", "BTN_BORDER": "#e2e2df",
+        "ACCENT": "#2a2a30", "TREE_BG": "#ffffff", "TREE_ALT": "#f7f7f6",
+        "SEL_BG": "#e6e6e2", "SEL_FG": "#101014", "HOVER_BG": "#f2f2f0",
+        "SEC_BG": "#f7f7f6", "SEC_FG": "#56565c", "LOG_BG": "#fafafa", "LOG_FG": "#33333a",
+        "SCROLL": "#d4d4d0", "SCROLL_HOVER": "#b8b8b4", "ST_BG": "#efefee", "ST_FG": "#85858c",
+        "PROG_BG": "#efefee", "PROG1": "#b0b0ac", "PROG2": "#2a2a30",
+        "TAB_BG": "#f0f0ee", "TAB_SEL_BG": "#ffffff", "TAB_SEL_FG": "#101014",
+        "MENU_BG": "#ffffff", "MENU_SEL": "#f2f2f0", "CHK_BG": "#ffffff", "CHK_ON": "#2a2a30",
+        "DOT_IDLE": "#b0b0ac",
     }
     # @@KEY@@ -> background hex, @KEY@ -> text/border hex (substituted in _build_qss).
     _THEME_QSS = """
@@ -2965,8 +2966,8 @@ class LibraryManagerWindow(QMainWindow):
         QMainWindow { background: transparent; }
         QWidget#rootCentral { background-color: @@WIN_BG@@; }
         QFrame#headerBar { background: transparent; border: none; }
-        QLabel#appTitle { font-size: 13pt; font-weight: 800; color: @TITLE_FG@; }
-        QPushButton#navTab { background: transparent; border: none; border-bottom: 3px solid transparent; border-radius: 0; padding: 8px 16px; margin-right: 4px; font-size: 12pt; font-weight: 800; color: @FG_DIM@; text-align: center; }
+        QLabel#appTitle { font-size: 12pt; font-weight: 800; color: @TITLE_FG@; }
+        QPushButton#navTab { background: transparent; border: none; border-bottom: 2px solid transparent; border-radius: 0; padding: 7px 14px; margin-right: 4px; font-size: 11pt; font-weight: 700; color: @FG_DIM@; text-align: center; }
         QPushButton#navTab:hover { color: @TITLE_FG@; }
         QPushButton#navTab:checked { color: @TITLE_FG@; border-bottom: 3px solid @ACCENT@; }
         QLabel#branchChip { color: @FG_DIM@; font-weight: 600; font-size: 9pt; }
@@ -2975,7 +2976,7 @@ class LibraryManagerWindow(QMainWindow):
         QToolButton#iconBtn { font-size: 13pt; padding: 0 8px; border: none; background: transparent; color: @FG_DIM@; }
         QToolButton#iconBtn:hover { color: @TITLE_FG@; }
         QFrame#card { border: 1px solid @BORDER@; border-radius: 12px; background-color: @@CARD_BG@@; margin-top: 6px; }
-        QLabel#cardTitle { color: @TITLE_FG@; padding: 6px 8px 2px 8px; font-weight: 800; font-size: 10pt; }
+        QLabel#cardTitle { color: @TITLE_FG@; padding: 6px 8px 2px 8px; font-weight: 700; font-size: 9pt; }
         QLabel#wfSection { color: @FG_DIM@; font-weight: 800; font-size: 7pt; padding: 7px 4px 1px 4px; }
         QLabel#previewPane { background-color: @@LOG_BG@@; border: 1px solid @BORDER@; border-radius: 10px; color: @FG_DIM@; }
         QToolButton { background: transparent; border: 1px solid @BORDER@; border-radius: 7px; padding: 6px 10px; font-weight: 600; }
@@ -3008,7 +3009,7 @@ class LibraryManagerWindow(QMainWindow):
         QTreeWidget::item:selected, QTableWidget::item:selected, QListWidget::item:selected { background-color: @SEL_BG@; color: @SEL_FG@; }
         QTreeWidget::item:hover, QListWidget::item:hover { background-color: @HOVER_BG@; }
         QHeaderView::section { background-color: @@SEC_BG@@; color: @SEC_FG@; padding: 7px; border: none; border-right: 1px solid @BORDER@; border-bottom: 1px solid @BORDER@; font-weight: 700; }
-        QTextEdit, QPlainTextEdit { background-color: @@LOG_BG@@; border: 1px solid @BORDER@; border-radius: 10px; color: @LOG_FG@; font-family: "Cascadia Mono","Consolas",monospace; font-size: 8pt; }
+        QTextEdit, QPlainTextEdit { background-color: @@LOG_BG@@; border: 1px solid @BORDER@; border-radius: 10px; color: @LOG_FG@; font-family: "JetBrains Mono","Cascadia Mono","Consolas",monospace; font-size: 8pt; }
         QScrollArea { background: transparent; border: none; }
         QScrollArea > QWidget > QWidget { background: transparent; }
         QTabWidget::pane { border: 1px solid @BORDER@; border-radius: 10px; top: -1px; background: transparent; }
