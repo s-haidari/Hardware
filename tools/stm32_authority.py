@@ -613,10 +613,10 @@ _NET_CATEGORY = {
 def _dest_contact(dest: str) -> str:
     if dest in RAIL_CONTACT:
         cs = RAIL_CONTACT[dest]
-        return cs[0] if cs else ("GND plane" if dest == "GND" else "local cap")
+        return cs[0] if cs else ("GND Plane" if dest == "GND" else "Local Cap")
     if dest in SERVICE_CONTACT:
         return SERVICE_CONTACT[dest]
-    return "lane row"
+    return "Lane Row"
 
 
 def socket_connections(authority: dict) -> list:

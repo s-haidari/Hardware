@@ -703,7 +703,7 @@ def detail_svg(a: dict, pos=None) -> str:
                     f'<rect x="{pad}" y="{y}" width="3" height="50" rx="1.5" fill="{neu}"/>')
         body.append(_chip_icon2(pad + 30, y + 25, neu))
         body.append(f'<text x="{pad+54}" y="{y+21}" fill="{_TXT}" font-size="{_FS_CARD}" font-weight="700">{_esc(name)}</text>')
-        body.append(f'<text x="{pad+54}" y="{y+38}" fill="{_MUT}" font-size="{_FS_CAP}">ZIF socket contact {pos}</text>')
+        body.append(f'<text x="{pad+54}" y="{y+38}" fill="{_MUT}" font-size="{_FS_CAP}">ZIF Socket Contact {pos}</text>')
         body.append(f'<text x="{W-pad-10}" y="{y+27}" fill="#a2a2a8" font-size="8" font-weight="700" '
                     f'text-anchor="end" letter-spacing="0.8">SOCKET</text>')
         y += 50
@@ -803,18 +803,18 @@ def detail_band_svg(a: dict, pos, width: int, height: int = 224) -> str:
         c = next((x for x in cw["channels"] if x["socket_pin"] == pos), None)
         if c:
             rail_sub = ("Contact " + " / ".join(c["connector_contacts"])) if c["connector_contacts"] \
-                else ("Ground plane" if c["rail"] == "GND" else "Local cap")
+                else ("Ground Plane" if c["rail"] == "GND" else "Local Cap")
             branches.append(("SWITCHED ROLE", [
                 (f"ADG714 Cell {c['cell']} · Ch {c['channel']}",
-                 f"{c['s_pin']} Pin {c['s_pin_num']} to {c['d_pin']} Pin {c['d_pin_num']}", None),
+                 f"{c['s_pin']} Pin {c['s_pin_num']} · {c['d_pin']} Pin {c['d_pin_num']}", None),
                 (c["rail"], rail_sub, pcol)]))
             branches.append(("DEFAULT IO LANE", [
                 ("33 Ω Series R", "R_IO", None),
-                (c["card_lane"], "Lane row", catcol("lane"))]))
+                (c["card_lane"], "Lane Row", catcol("lane"))]))
     elif kind == "resistor":
         branches.append(("IO LANE", [
             ("33 Ω Series R", "R_IO", None),
-            (conn["dest"], "Lane row", catcol("lane"))]))
+            (conn["dest"], "Lane Row", catcol("lane"))]))
     else:
         branches.append(("DIRECT", [
             (conn["dest"], f"Contact {conn['contact']}" if conn["contact"] else "Hardwired", pcol)]))
@@ -855,7 +855,7 @@ def detail_band_svg(a: dict, pos, width: int, height: int = 224) -> str:
 
     # ── socket node (shared source), then the branches to its right ──
     scy = H / 2 - 2
-    sr = node(pad + 150, scy, name or f"Pin {pos}", f"ZIF socket · contact {pos}", None)
+    sr = node(pad + 150, scy, name or f"Pin {pos}", f"ZIF Socket · Contact {pos}", None)
     rows = [scy] if len(branches) == 1 else [scy - 40, scy + 40]
     first_x = sr + 40
     for (caption, stops), rowy in zip(branches, rows):
@@ -1594,12 +1594,12 @@ class Stm32PinsWidget(QWidget):
         fv = el.get("five_v_positions", {})
         vdda = el.get("vdda_range_v")
         self.sc_switch.set(f"{r['must_switch_count']}",
-                           f"Must-switch · {r['osc_optional_count']} Oscillator · {r['fixed_count']} Fixed")
+                           f"Must-Switch · {r['osc_optional_count']} Oscillator · {r['fixed_count']} Fixed")
         self.sc_break.set(f"{ea.get('service_breakout_count', 0)} nets",
                           f"{len(ea.get('debug_positions', []))} Debug · "
                           f"{len(ea.get('trace_positions', []))} Trace")
         self.sc_5v.set(f"{fv.get('tolerant_all_parts', 0)} 5V-Tolerant",
-                       f"{fv.get('family_dependent', 0)} Part-dependent · "
+                       f"{fv.get('family_dependent', 0)} Part-Dependent · "
                        f"{fv.get('not_tolerant_any_part', 0)} Never")
         self.sc_elec.set(f"±{el.get('max_io_current_ma', '?')} mA I/O",
                          f"VDDA {vdda[0]}–{vdda[1]} V · VCAP {el.get('vcap_required')}" if vdda else "")
