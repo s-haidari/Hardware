@@ -299,14 +299,26 @@ def _position_tags(role_names: set, fam_names: set) -> dict:
     }
 
 
-def _adg714_map(rep) -> dict:
-    """position -> {cell, channel, destination} for the must-switch pins.
-    Deterministic: switched positions ascending, cell=floor(i/8)+1, channel=i%8+1."""
-    out: dict = {}
-    for bank in rep.adg714_banks(include_osc=False):
-        for ch, (pin, dest) in enumerate(bank.channels, start=1):
-            out[pin] = {"cell": bank.index, "channel": ch, "destination": dest}
-    return out
+def _adg714_channels(rep) -> tuple:
+    """One ADG714 channel per (must-switch pin, non-IO rail) branch — the one-hot
+    fabric. A dual-rail pin (e.g. VBAT|VDD across parts) needs a channel per rail, so
+    the channel count exceeds the pin count (IO stays on the hardwired default lane —
+    no channel). Deterministic packing: branches ordered by pin then rail, cell=i//8+1,
+    channel=i%8+1. Returns (pin -> [ {cell, channel, s_pin, d_pin, destination} ... ],
+    total_channels).
+
+    NB: this is the switching TOPOLOGY. The physical card may add parallel channels for
+    high-current rails (30 mA/channel budget) — that count is the vault's to specify."""
+    branches = []
+    for d in sorted(rep.must_switch, key=lambda d: d.pin):
+        for rail in sorted(set(d.target_nets.values())):
+            branches.append((d.pin, rail))
+    out: dict = defaultdict(list)
+    for i, (pin, rail) in enumerate(branches):
+        ch = i % 8 + 1
+        out[pin].append({"cell": i // 8 + 1, "channel": ch,
+                         "s_pin": f"S{ch}", "d_pin": f"D{ch}", "destination": rail})
+    return dict(out), len(branches)
 
 
 def _variant_note(pin_names: dict) -> str:
@@ -478,10 +490,11 @@ def card_materials(authority: dict) -> dict:
     vcap_fams = sorted(f for f, p in power.items() if p.get("vcap"))
     n_vdd = max((p.get("n_vdd") or 0) for p in power.values()) if power else 0
     items = [{
-        "ref": "U_SW_*", "part": "ADG714 (4x SPST, 8 ch/pkg)", "qty": r["cells_as_built"],
-        "role": "switch fabric",
-        "note": f"{r['must_switch_count']} must-switch (+{r['osc_optional_count']} osc-optional) "
-                f"-> {r['cells_min']} min / {r['cells_as_built']} as-built cells",
+        "ref": "U_SW_*", "part": "ADG714 (octal SPST, 8 channels)", "qty": r["cells_as_built"],
+        "role": "Switch fabric",
+        "note": f"{r['channel_count']} one-hot channels from {r['must_switch_count']} "
+                f"must-switch pins pack into {r['cells_min']} cells. Current-budget "
+                f"paralleling may add cells on the physical card; see the vault build card.",
     }]
     if vcap_fams:
         items.append({
@@ -600,31 +613,31 @@ def switch_rationale(position: dict) -> str:
 def adg714_cell_map(authority: dict) -> list:
     """The must-switch fabric as ADG714 instances, using the real symbol pin names.
     One entry per cell (chip), each carrying all 8 switches; unused channels are
-    marked spare. Which S/D terminal takes the MCU pin vs. the destination net is
-    the vault's wiring — this reports the switch a socket position lands on."""
+    marked spare. One channel per non-IO rail, so a dual-rail pin appears on two
+    channels. Which S/D terminal takes the MCU pin versus the destination net is the
+    vault's wiring; this reports the switch a socket position lands on."""
     cells: dict = defaultdict(dict)
     for p in authority["positions"]:
-        adg = p["assignment"].get("adg714")
-        if adg:
-            cells[adg["cell"]][adg["channel"]] = p
+        for chd in p["assignment"].get("channels", []):
+            cells[chd["cell"]][chd["channel"]] = (p, chd)
     out = []
     for cell in sorted(cells):
         chans = cells[cell]
         switches = []
         for ch in range(1, 9):
             s_pin, d_pin = ADG714_SWITCH_PINS[ch]
-            p = chans.get(ch)
-            if p is None:
+            entry = chans.get(ch)
+            if entry is None:
                 switches.append({"channel": ch, "s_pin": s_pin, "d_pin": d_pin,
                                  "position": None, "pin_name": "", "destination": None,
                                  "spare": True})
                 continue
+            p, chd = entry
             names = list(p["pin_names"].keys())
-            adg = p["assignment"]["adg714"]
             switches.append({
                 "channel": ch, "s_pin": s_pin, "d_pin": d_pin,
                 "position": p["position"], "pin_name": names[0] if names else "",
-                "destination": adg.get("destination") or p["assignment"].get("destination"),
+                "destination": chd["destination"],
                 "spare": False,
             })
         out.append({"cell": cell, "symbol": ADG714_SYMBOL, "footprint": ADG714_FOOTPRINT,
@@ -769,7 +782,7 @@ _SWITCH_MD = {db.SWITCH_MUST: "must", db.SWITCH_OSC_OPTIONAL: "osc", db.SWITCH_N
 def build(conn: sqlite3.Connection, package: str) -> dict:
     rep = db.package_report(conn, package)
     fam_names = _families_at(conn, package)
-    adg = _adg714_map(rep)
+    adg_ch, channel_count = _adg714_channels(rep)
     blob, ecs = _blob_at(conn, package)
     periph = _peripherals_at(conn, package)
 
@@ -791,7 +804,10 @@ def build(conn: sqlite3.Connection, package: str) -> dict:
     for d in sorted(rep.decisions, key=lambda d: d.pin):
         pin_names = dict(sorted(names.get(d.pin, {}).items(), key=lambda kv: -kv[1]))
         if d.switch_class == db.SWITCH_MUST:
-            assignment = {"kind": "switched", "adg714": adg.get(d.pin), "destination": d.primary_target_net}
+            chans = adg_ch.get(d.pin, [])
+            assignment = {"kind": "switched", "channels": chans,
+                          "adg714": chans[0] if chans else None,
+                          "destination": d.primary_target_net}
         elif d.switch_class == db.SWITCH_OSC_OPTIONAL:
             assignment = {"kind": "osc_optional", "destination": d.primary_target_net}
         else:
@@ -869,9 +885,9 @@ def build(conn: sqlite3.Connection, package: str) -> dict:
             "fixed_count": rep.fixed_count,
             "switched_pin_count": rep.must_switch_count,
             "incl_osc_count": incl_osc,
-            "channel_count": incl_osc,
-            "cells_min": math.ceil(rep.must_switch_count / 8) if rep.must_switch_count else 0,
-            "cells_as_built": math.ceil(incl_osc / 8) if incl_osc else 0,
+            "channel_count": channel_count,
+            "cells_min": math.ceil(channel_count / 8) if channel_count else 0,
+            "cells_as_built": math.ceil(channel_count / 8) if channel_count else 0,
         },
         "electrical": electrical,
         "extraction_access": _extraction_access(positions),
