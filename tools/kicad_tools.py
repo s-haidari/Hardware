@@ -49,11 +49,11 @@ def _gray_icon(style, sp, size: int = 16) -> QIcon:
 
 
 # Lucide icons (MIT), tinted — matches the main window. SVGs bundled in tools/lucide/.
-_LU_NEUTRAL = "#9aa3b2"
-_LU_BLUE = "#5b9bd5"
-_LU_GREEN = "#5aa469"
-_LU_RED = "#cc5b5b"
-_LU_AMBER = "#c99a2e"
+_LU_NEUTRAL = "#90909a"
+_LU_BLUE = "#7d9bc0"
+_LU_GREEN = "#74ab8f"
+_LU_RED = "#d76b6b"
+_LU_AMBER = "#cf9f57"
 _LU_CACHE = {}
 
 
@@ -684,7 +684,7 @@ class KiCadToolsWidget(QWidget):
                 self.ps_spins[attr] = sp
                 # show the mm equivalent side-by-side, updating live
                 mm = QLabel()
-                mm.setStyleSheet("color: #8a93a3;")   # neutral, readable on both themes
+                mm.setStyleSheet("color: #90909a;")   # neutral, readable on both themes
                 mm.setMinimumWidth(96)
 
                 def _upd(val, lbl=mm):

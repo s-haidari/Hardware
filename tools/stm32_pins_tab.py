@@ -148,9 +148,8 @@ def _summary_html(a: dict) -> str:
         for i in cm.get("items", []))
     return (
         f"<h3 style='margin:2px 0'>{a['package']} — {a['manifest']['part_count']} parts</h3>"
-        f"<p><b>Switch:</b> {r['must_switch_count']} must-switch → {r['cells_min']} ADG714 cells "
-        f"(as-built {r['cells_as_built']}); {r['osc_optional_count']} osc-optional; "
-        f"{r['fixed_count']} fixed</p>"
+        f"<p><b>Switch:</b> {r['must_switch_count']} must-switch; "
+        f"{r['osc_optional_count']} osc-optional; {r['fixed_count']} fixed</p>"
         f"<p><b>Breakout:</b> {ea.get('service_breakout_count', 0)} service · "
         f"{len(ea.get('debug_positions', []))} debug · {len(ea.get('trace_positions', []))} trace</p>"
         f"<p><b>Electrical:</b> I/O ±{el.get('max_io_current_ma', '?')} mA · "
@@ -514,8 +513,8 @@ class Stm32PinsWidget(QWidget):
         r, ea, el = a["rollup"], a["extraction_access"], a["electrical"]
         fv = el.get("five_v_positions", {})
         vdda = el.get("vdda_range_v")
-        self.sc_switch.set(f"{r['must_switch_count']} → {r['cells_min']} cells",
-                           f"{r['osc_optional_count']} osc · {r['fixed_count']} fixed")
+        self.sc_switch.set(f"{r['must_switch_count']}",
+                           f"must-switch · {r['osc_optional_count']} osc-opt · {r['fixed_count']} fixed")
         self.sc_break.set(f"{ea.get('service_breakout_count', 0)} nets",
                           f"{len(ea.get('debug_positions', []))} debug · "
                           f"{len(ea.get('trace_positions', []))} trace")
@@ -608,8 +607,7 @@ class Stm32PinsWidget(QWidget):
         self.rollup.setWordWrap(True)
         self.rollup.setText(
             f"{a['package']}  —  {a['manifest']['part_count']} parts · {r['positions_total']} positions · "
-            f"must-switch {r['must_switch_count']} ({r['cells_min']} ADG714 cells; "
-            f"{r['cells_as_built']} incl. osc) · osc-optional {r['osc_optional_count']} · "
+            f"must-switch {r['must_switch_count']} · osc-optional {r['osc_optional_count']} · "
             f"fixed {r['fixed_count']}   |   breakout {ea.get('service_breakout_count', 0)} "
             f"(debug {len(ea.get('debug_positions', []))}, trace {len(ea.get('trace_positions', []))})"
             f"{elec}")

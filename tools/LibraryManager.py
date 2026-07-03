@@ -1448,7 +1448,7 @@ class DropZone(QFrame):
         # Label inside dashed box
         self.label = QLabel("Drop ZIP Files Here")
         self.label.setAlignment(Qt.AlignCenter)
-        self.label.setStyleSheet("font-size: 10pt; color: #606060; background: transparent;")
+        self.label.setStyleSheet("font-size: 10pt; color: #808088; background: transparent;")
         inner.addStretch()
         inner.addWidget(self.label)
 
@@ -1461,8 +1461,8 @@ class DropZone(QFrame):
         layout.addWidget(self.dash_box)
 
         # Styles for dashed box (will be used/changed on hover)
-        self.default_style = "QFrame#dashBox { border: 1px dashed #9a9a9a; border-radius: 6px; background: transparent; }"
-        self.hover_style = "QFrame#dashBox { border: 1px dashed #808080; border-radius: 6px; background: #f7f7f7; }"
+        self.default_style = "QFrame#dashBox { border: 1px dashed #6a6a72; border-radius: 8px; background: transparent; }"
+        self.hover_style = "QFrame#dashBox { border: 1px dashed #90909a; border-radius: 8px; background: rgba(128,128,128,0.10); }"
         self.dash_box.setStyleSheet(self.default_style)
 
         # Hook dash_box event handlers to forward to parent signals
@@ -1552,8 +1552,8 @@ class PreviewView(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
         r = self.rect().adjusted(1, 1, -1, -1)
-        p.setPen(QPen(QColor("#2a2f37"), 1))
-        p.setBrush(QBrush(QColor("#14161a")))
+        p.setPen(QPen(QColor("#33333a"), 1))
+        p.setBrush(QBrush(QColor("#151517")))
         p.drawRoundedRect(r, 10, 10)
         p.setClipRect(r)
         if self._mesh is not None:
@@ -1562,7 +1562,7 @@ class PreviewView(QWidget):
                 fp_render.paint_mesh(p, self.width(), self.height(),
                                      self._mesh[0], self._mesh[1],
                                      self._rx, self._ry, self._zoom)
-                p.setPen(QColor("#5b6673"))
+                p.setPen(QColor("#90909a"))
                 p.drawText(self.rect().adjusted(0, 0, -12, -8),
                            Qt.AlignRight | Qt.AlignBottom, "drag to rotate · scroll to zoom")
             except Exception:
@@ -1572,7 +1572,7 @@ class PreviewView(QWidget):
             y = (self.height() - self._pixmap.height()) // 2
             p.drawPixmap(x, y, self._pixmap)
         else:
-            p.setPen(QColor("#7f8aa0"))
+            p.setPen(QColor("#b8b8c0"))
             p.drawText(self.rect(), Qt.AlignCenter, self._text)
         p.end()
 
@@ -2013,7 +2013,7 @@ class LibraryManagerWindow(QMainWindow):
         if result:
             self.result_chip.setText(result)
             self.result_chip.setStyleSheet(
-                "color: %s;" % (self._theme["FG"] if ok else "#d9534f")
+                "color: %s;" % (self._theme["FG"] if ok else "#d76b6b")
             )
 
     def _on_branch_text(self, txt: str):
@@ -3306,7 +3306,7 @@ class LibraryManagerWindow(QMainWindow):
                 for col in range(self.tree.columnCount()):
                     parent.setBackground(col, grp_bg)
                 f = parent.font(1); f.setBold(True); parent.setFont(1, f)
-                fc = parent.font(2); parent.setForeground(2, QBrush(QColor("#8a93a3")))
+                fc = parent.font(2); parent.setForeground(2, QBrush(QColor("#90909a")))
                 self.tree.addTopLevelItem(parent)
                 for r in grp:
                     parent.addChild(self._make_tree_item(r, dup_bg))
