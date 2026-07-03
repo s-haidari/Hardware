@@ -59,12 +59,12 @@ except Exception:  # pragma: no cover
 _COLS = ["Pin", "Side", "Pin Name(s)", "Role Set", "Switch", "Explanation", "Switch cell",
          "Destination", "Peripherals", "Breakout", "Tags", "Bootloader", "VDD (V)"]
 
-_BREAKOUT_COLOR = "#8f9fd4"   # extraction-access / debug-service breakout (periwinkle)
+_BREAKOUT_COLOR = "#4c8df0"   # extraction-access / debug-service breakout (blue)
 
 _SWITCH_COLOR = {
-    sdb.SWITCH_MUST: "#d76b6b",
-    sdb.SWITCH_OSC_OPTIONAL: "#cf9f57",
-    sdb.SWITCH_NONE: "#5c646b",
+    sdb.SWITCH_MUST: "#e5534b",
+    sdb.SWITCH_OSC_OPTIONAL: "#e6a030",
+    sdb.SWITCH_NONE: "#9aa1a9",
 }
 _SWITCH_LABEL = {
     sdb.SWITCH_MUST: "Must-Switch",
@@ -287,7 +287,7 @@ def pin_map_svg(authority: dict, w: int = 460, h: int = 460, selected=None) -> s
          f'font-size="12">{html.escape(authority["package"])}</text>']
     for pin in g["pins"]:
         x, y, pwd, ph = pin["rect"]
-        col = _SWITCH_COLOR.get(pin["sw"], "#5c646b")
+        col = _SWITCH_COLOR.get(pin["sw"], "#9aa1a9")
         s.append(f'<rect x="{x}" y="{y}" width="{pwd}" height="{ph}" rx="2" fill="{col}"/>')
         if pin["breakout"]:
             s.append(f'<rect x="{x-1.5}" y="{y-1.5}" width="{pwd+3}" height="{ph+3}" rx="3" '
@@ -302,11 +302,11 @@ def pin_map_svg(authority: dict, w: int = 460, h: int = 460, selected=None) -> s
 _SVG_FONT = "Inter,'Segoe UI',system-ui,Arial"
 _SVG_MONO = "'JetBrains Mono',Consolas,monospace"
 _RAIL_COLOR = {
-    "VTARGET": "#d78a6b", "VBAT_TGT": "#d78a6b",                       # power rails, warm
-    "GND": "#6b7076", "VSSA_TGT": "#6b7076",                           # ground, grey
-    "VDDA_TGT": "#cf9f57", "VREF_TGT": "#cf9f57",                      # analog supply, amber
-    "VCAP_NODE": "#8f9fd4",                                            # core cap, periwinkle
-    "SERVICE_BOOT0": "#5fadad", "SERVICE_NRST": "#5fadad", "SERVICE_OSC_IN": "#5fadad",
+    "VTARGET": "#e5534b", "VBAT_TGT": "#e5534b",                       # power rails, red
+    "GND": "#9aa1a9", "VSSA_TGT": "#9aa1a9",                           # ground, grey
+    "VDDA_TGT": "#e6a030", "VREF_TGT": "#e6a030",                      # analog supply, amber
+    "VCAP_NODE": "#8b6fe8",                                            # core cap, violet
+    "SERVICE_BOOT0": "#24b196", "SERVICE_NRST": "#24b196", "SERVICE_OSC_IN": "#24b196",
 }
 
 
@@ -393,13 +393,13 @@ def fabric_svg(a: dict) -> str:
     return "".join(s)
 
 
-_ROLE_COLOR = {"VBAT": "#d78a6b", "VDD": "#d78a6b", "VSS": "#6b7076", "VDDA": "#cf9f57",
-               "VREF": "#cf9f57", "VCAP": "#8f9fd4", "BOOT": "#5fadad", "OSC": "#5fadad",
-               "NRST": "#5fadad", "IO": "#8fb0c8"}
+_ROLE_COLOR = {"VBAT": "#e5534b", "VDD": "#e5534b", "VSS": "#9aa1a9", "VDDA": "#e6a030",
+               "VREF": "#e6a030", "VCAP": "#8b6fe8", "BOOT": "#24b196", "OSC": "#24b196",
+               "NRST": "#24b196", "IO": "#4c8df0"}
 
 
 def _role_color(role):
-    return _ROLE_COLOR.get(str(role), "#8fb0c8")
+    return _ROLE_COLOR.get(str(role), "#4c8df0")
 
 
 def _svg_chip(x, y, label, color, filled=False, mono=False, h=22):
@@ -467,7 +467,7 @@ def detail_svg(a: dict, pos=None) -> str:
         for label, col, nums in [("MUST-SWITCH", _SWITCH_COLOR[sdb.SWITCH_MUST], cats["must_switch"]),
                                  ("OSCILLATOR", _SWITCH_COLOR[sdb.SWITCH_OSC_OPTIONAL], cats["osc_optional"]),
                                  ("BREAKOUT", _BREAKOUT_COLOR, cats["breakout"]),
-                                 ("5V-TOLERANT", "#5fadad", cats["five_v_all_parts"]),
+                                 ("5V-TOLERANT", "#24b196", cats["five_v_all_parts"]),
                                  ("NEVER 5V", _MUT, cats["five_v_never"])]:
             section(f"{label} ({len(nums)})")
             if not nums:
@@ -557,9 +557,9 @@ def detail_svg(a: dict, pos=None) -> str:
         if fv is not None:
             section("5V TOLERANCE")
             if fv["tolerant"]:
-                chips([("5V-Tolerant", "#5fadad", True)])
+                chips([("5V-Tolerant", "#24b196", True)])
             elif any(fv["by_family"].values()):
-                chips([("Part-dependent", "#5fadad", False)])
+                chips([("Part-dependent", "#24b196", False)])
             else:
                 chips([("3.3V only", _MUT, False)])
         if p.get("peripherals"):
@@ -637,7 +637,7 @@ class PinMapWidget(QWidget):
         for pin in g["pins"]:
             x, y, pw, ph = pin["rect"]
             qp.setPen(Qt.NoPen)
-            qp.setBrush(QColor(_SWITCH_COLOR.get(pin["sw"], "#5c646b")))
+            qp.setBrush(QColor(_SWITCH_COLOR.get(pin["sw"], "#9aa1a9")))
             qp.drawRect(QRectF(x, y, pw, ph))
             if pin["breakout"]:
                 qp.setBrush(Qt.NoBrush)
@@ -645,7 +645,7 @@ class PinMapWidget(QWidget):
                 qp.drawRect(QRectF(x - 1.5, y - 1.5, pw + 3, ph + 3))
             if pin["pos"] in self.highlight:
                 qp.setBrush(Qt.NoBrush)
-                qp.setPen(QPen(QColor("#5fadad"), 2.5))
+                qp.setPen(QPen(QColor("#24b196"), 2.5))
                 qp.drawRect(QRectF(x - 3.5, y - 3.5, pw + 7, ph + 7))
             if pin["pos"] == self.selected:
                 qp.setBrush(Qt.NoBrush)
@@ -776,8 +776,8 @@ class Stm32PinsWidget(QWidget):
         col.setMinimumWidth(206)
         self.sc_switch = _StatCard("SWITCH FABRIC", _SWITCH_COLOR[sdb.SWITCH_MUST])
         self.sc_break = _StatCard("BREAKOUT", _BREAKOUT_COLOR)
-        self.sc_5v = _StatCard("5V-TOLERANCE", "#5fadad")
-        self.sc_elec = _StatCard("ELECTRICAL", "#cf9f57")
+        self.sc_5v = _StatCard("5V-TOLERANCE", "#24b196")
+        self.sc_elec = _StatCard("ELECTRICAL", "#e6a030")
         for c in (self.sc_switch, self.sc_break, self.sc_5v, self.sc_elec):
             cl.addWidget(c)
         cl.addStretch()
@@ -1068,7 +1068,7 @@ class Stm32PinsWidget(QWidget):
                 if c == 0:
                     it.setData(Qt.UserRole, p["position"])      # numeric sort + row->pin key
                 elif c == 4:  # switch class — colour it
-                    it.setForeground(QBrush(QColor(_SWITCH_COLOR.get(sc, "#5c646b"))))
+                    it.setForeground(QBrush(QColor(_SWITCH_COLOR.get(sc, "#9aa1a9"))))
                 elif c == 9 and (bnets or bk.get("trace")):  # breakout — violet
                     it.setForeground(QBrush(QColor(_BREAKOUT_COLOR)))
                 self.table.setItem(i, c, it)
