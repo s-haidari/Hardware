@@ -30,14 +30,13 @@ class AuthorityTests(unittest.TestCase):
         self.assertEqual(data["manifest"]["part_count"], 53)
         self.assertEqual(data["manifest"]["supported_families"],
                          ["STM32F0", "STM32F1", "STM32F2", "STM32F3", "STM32F4", "STM32F7"])
-        self.assertEqual(r["channel_count"], 15)   # 11 pins, 4 dual-rail -> 15 one-hot channels
+        self.assertEqual(r["channel_count"], 11)   # one channel per must-switch pin (Card 7B)
         p1 = next(p for p in data["positions"] if p["position"] == 1)
         self.assertIn("VBAT", p1["role_set"])
         self.assertIn("VDD", p1["role_set"])
         self.assertEqual(p1["switch_class"], db.SWITCH_MUST)
-        # dual-rail pin (VBAT|VDD across parts) gets a channel per rail; IO stays hardwired
-        self.assertEqual([c["destination"] for c in p1["assignment"]["channels"]],
-                         ["VBAT_TGT", "VTARGET"])
+        # one channel per pin -> its dominant rail (VBAT); IO alternate stays hardwired
+        self.assertEqual([c["destination"] for c in p1["assignment"]["channels"]], ["VBAT_TGT"])
         self.assertEqual(p1["assignment"]["adg714"]["destination"], "VBAT_TGT")
         p60 = next(p for p in data["positions"] if p["position"] == 60)
         self.assertTrue(p60["tags"]["is_boot"])
@@ -275,10 +274,10 @@ class AuthorityTests(unittest.TestCase):
         sw1 = cm[0]["switches"][0]                            # cell1/ch1 = VBAT (pin 1)
         self.assertEqual((sw1["position"], sw1["destination"]), (1, "VBAT_TGT"))
         spares = [sw for cell in cm for sw in cell["switches"] if sw["spare"]]
-        self.assertEqual(len(spares), 2 * 8 - a["rollup"]["channel_count"])   # 16 - 15 = 1
+        self.assertEqual(len(spares), 2 * 8 - a["rollup"]["channel_count"])   # 16 - 11 = 5
         lq100 = auth.build(self.conn, "LQFP100")
-        self.assertEqual(lq100["rollup"]["channel_count"], 52)               # 43 pins -> 52 channels
-        self.assertEqual(len(auth.adg714_cell_map(lq100)), 7)
+        self.assertEqual(lq100["rollup"]["channel_count"], 43)               # one per must-switch pin
+        self.assertEqual(len(auth.adg714_cell_map(lq100)), 6)
 
     def test_csv_and_markdown_export(self):
         a = auth.build(self.conn, "LQFP64")

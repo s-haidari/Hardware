@@ -300,25 +300,19 @@ def _position_tags(role_names: set, fam_names: set) -> dict:
 
 
 def _adg714_channels(rep) -> tuple:
-    """One ADG714 channel per (must-switch pin, non-IO rail) branch — the one-hot
-    fabric. A dual-rail pin (e.g. VBAT|VDD across parts) needs a channel per rail, so
-    the channel count exceeds the pin count (IO stays on the hardwired default lane —
-    no channel). Deterministic packing: branches ordered by pin then rail, cell=i//8+1,
-    channel=i%8+1. Returns (pin -> [ {cell, channel, s_pin, d_pin, destination} ... ],
-    total_channels).
-
-    NB: this is the switching TOPOLOGY. The physical card may add parallel channels for
-    high-current rails (30 mA/channel budget) — that count is the vault's to specify."""
-    branches = []
-    for d in sorted(rep.must_switch, key=lambda d: d.pin):
-        for rail in sorted(set(d.target_nets.values())):
-            branches.append((d.pin, rail))
+    """One ADG714 channel per must-switch pin, routed to that pin's dominant rail
+    (primary_target_net). Matches the vault's card wiring exactly: LQFP64 = 11 channels
+    across 2 cells (Card 7B), LQFP100 = 43. The pin's IO alternate stays on the hardwired
+    default lane (no channel). Deterministic packing: pins ascending, cell=i//8+1,
+    channel=i%8+1. Returns (pin -> [ {cell, channel, s_pin, d_pin, destination} ], total)."""
+    ms = sorted(rep.must_switch, key=lambda d: d.pin)
     out: dict = defaultdict(list)
-    for i, (pin, rail) in enumerate(branches):
+    for i, d in enumerate(ms):
         ch = i % 8 + 1
-        out[pin].append({"cell": i // 8 + 1, "channel": ch,
-                         "s_pin": f"S{ch}", "d_pin": f"D{ch}", "destination": rail})
-    return dict(out), len(branches)
+        out[d.pin].append({"cell": i // 8 + 1, "channel": ch,
+                           "s_pin": f"S{ch}", "d_pin": f"D{ch}",
+                           "destination": d.primary_target_net})
+    return dict(out), len(ms)
 
 
 def _variant_note(pin_names: dict) -> str:
