@@ -623,14 +623,14 @@ def detail_svg(a: dict, pos=None) -> str:
         pill_per = max(1, int((W - 2 * pad + 7) / (pill_w + 7)))
 
         def _role_chips_from(rx, y0, roles, col):
-            """Lay small outlined role chips right-to-left ending at rx; return left x."""
+            """Lay uniform-width role chips right-to-left ending at rx; return left x."""
+            rw = 48                                       # every role chip the same size
             for role in reversed(roles):
-                rw = 13 + len(role) * 6.1
                 rx -= rw
-                body.append(f'<rect x="{rx:.0f}" y="{y0-13}" width="{rw:.0f}" height="19" rx="9.5" '
+                body.append(f'<rect x="{rx:.0f}" y="{y0-13}" width="{rw}" height="{_CHIP_H}" rx="9" '
                             f'fill="{col}" fill-opacity="0.16" stroke="{col}" stroke-opacity="0.45"/>')
                 body.append(f'<text x="{rx+rw/2:.0f}" y="{y0+1}" fill="{col}" text-anchor="middle" '
-                            f'font-size="9.5" font-weight="600">{_esc(role)}</text>')
+                            f'font-size="{_FS_CHIP}" font-weight="600">{_esc(role)}</text>')
                 rx -= 5
             return rx
 
@@ -710,7 +710,7 @@ def detail_svg(a: dict, pos=None) -> str:
         # connection line + component badge (neutral)
         body.append(f'<line x1="{cx}" y1="{y}" x2="{cx}" y2="{y+44}" stroke="{neu}" stroke-width="2"/>')
         complbl = {"switch": "Switch", "resistor": "33 &#937; Series R", "direct": "Direct"}[kind]
-        bw = 22 + len(complbl.replace("&#937;", "O")) * 5.9
+        bw = 120                                          # one fixed size, whatever the label
         body.append(f'<rect x="{cx-bw/2:.0f}" y="{y+11}" width="{bw:.0f}" height="22" rx="11" '
                     f'fill="{_PANEL}" stroke="{neu}"/>')
         body.append(f'<text x="{cx:.0f}" y="{y+26}" fill="{_MUT}" text-anchor="middle" '
@@ -831,19 +831,18 @@ def detail_band_svg(a: dict, pos, width: int, height: int = 224) -> str:
         s.append(f'<text x="{pad}" y="{H-4:.0f}" fill="{_MUT}" font-size="{_FS_CAP}">'
                  f'firmware picks one.</text>')
 
-    # ── node + wire helpers ──
-    NH = 44
+    # ── node + wire helpers (every node is the same fixed size) ──
+    NH, NODE_W, GAP = 44, 178, 30
 
     def node(x, cy, title, sub, color):
         barcol = color or NEU
-        w = max(len(title) * 6.7, len(sub) * 5.8) + 28
         y = cy - NH / 2
-        s.append(f'<rect x="{x:.0f}" y="{y:.0f}" width="{w:.0f}" height="{NH}" rx="9" fill="{_CARD}"/>'
+        s.append(f'<rect x="{x:.0f}" y="{y:.0f}" width="{NODE_W}" height="{NH}" rx="9" fill="{_CARD}"/>'
                  f'<rect x="{x:.0f}" y="{y:.0f}" width="3" height="{NH}" rx="1.5" fill="{barcol}"/>')
         s.append(f'<text x="{x+13:.0f}" y="{cy-3:.0f}" fill="{color or _TXT}" '
                  f'font-size="{_FS_CARD}" font-weight="700">{_esc(title)}</text>')
         s.append(f'<text x="{x+13:.0f}" y="{cy+13:.0f}" fill="{_MUT}" font-size="{_FS_CAP}">{_esc(sub)}</text>')
-        return x + w
+        return x + NODE_W
 
     def wire(x1, y1, x2, y2):                             # wiring is always neutral
         if y1 == y2:
@@ -858,7 +857,7 @@ def detail_band_svg(a: dict, pos, width: int, height: int = 224) -> str:
     scy = H / 2 - 2
     sr = node(pad + 150, scy, name or f"Pin {pos}", f"ZIF socket · contact {pos}", None)
     rows = [scy] if len(branches) == 1 else [scy - 40, scy + 40]
-    first_x = sr + 42
+    first_x = sr + 40
     for (caption, stops), rowy in zip(branches, rows):
         s.append(f'<text x="{first_x:.0f}" y="{rowy-30:.0f}" fill="#a2a2a8" font-size="8" '
                  f'font-weight="700" letter-spacing="0.8">{caption}</text>')
@@ -869,7 +868,7 @@ def detail_band_svg(a: dict, pos, width: int, height: int = 224) -> str:
                 wire(prev_r, rowy, x, rowy)
             s.append(f'<circle cx="{x:.0f}" cy="{rowy:.0f}" r="2.4" fill="{color or NEU}"/>')
             prev_r = node(x, rowy, title, sub, color)
-            x = prev_r + 34
+            x = prev_r + GAP
     s.append("</svg>")
     return "".join(s)
 
@@ -1136,8 +1135,7 @@ class ConnectionRow(QFrame):
         lay.setContentsMargins(11, 6, 11, 6)
         lay.setSpacing(9)
         self._left = QLabel(); self._left.setTextFormat(Qt.RichText)
-        self._left.setMinimumWidth(88)
-        self._left.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        self._left.setFixedWidth(118)                    # same width every row, so chips align
         self._chip = QLabel(self._KIND.get(rec["kind"], rec["kind"]))
         self._chip.setObjectName("connChip")
         self._chip.setAlignment(Qt.AlignCenter)
