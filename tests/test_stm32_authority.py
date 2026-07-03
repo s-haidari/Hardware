@@ -315,7 +315,7 @@ class AuthorityTests(unittest.TestCase):
         self.assertEqual(w.table.item(0, 0).data(Qt.UserRole), 64)    # numeric, not "9"
         w.table.selectRow(0)
         self.assertEqual(w._sel_pos, 64)                              # selection follows sort
-        w.filter_combo.setCurrentText("Must switch")
+        w.filter_combo.setCurrentText("Must Switch")
         vis = sum(not w.table.isRowHidden(r) for r in range(w.table.rowCount()))
         self.assertEqual(vis, 11)
         w.filter_combo.setCurrentText("All")

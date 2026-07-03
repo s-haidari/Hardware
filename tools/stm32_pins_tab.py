@@ -1,5 +1,5 @@
 """stm32_pins_tab.py — the 'STM32 Pins' tab: build the CubeMX database, view the
-per-socket-position switch decision matrix, and generate the pinout authority.
+per-socket-position switch decision matrix, and generate the pin data.
 
 Reads tools/stm32_db.py (DB + switch engine) and tools/stm32_authority.py
 (Layer-B authority). Self-contained widget; the main window mounts it as the
@@ -21,8 +21,24 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtSvg import QSvgWidget
 
-# palette (mirrors the app's dark theme)
-_PANEL, _CARD, _TXT, _MUT, _LINE = "#212124", "#26262b", "#ededf0", "#90909a", "#33333a"
+# Theme-swappable surface colours. The pin/data colours further down are
+# theme-independent. set_tab_theme() reassigns these so the custom visuals (pin
+# map, stat cards, SVG panels) follow the app theme; the SVG generators and
+# paintEvents read these globals at call time, so a swap + refresh is enough.
+_PANEL = _CARD = _TXT = _MUT = _LINE = _BODY = ""
+
+
+def set_tab_theme(dark: bool):
+    global _PANEL, _CARD, _TXT, _MUT, _LINE, _BODY
+    if dark:
+        _PANEL, _CARD, _TXT, _MUT, _LINE, _BODY = \
+            "#212124", "#26262b", "#ededf0", "#90909a", "#33333a", "#1c1c1f"
+    else:
+        _PANEL, _CARD, _TXT, _MUT, _LINE, _BODY = \
+            "#f5f5f4", "#ffffff", "#2a2a30", "#70707a", "#e5e5e2", "#eeeeec"
+
+
+set_tab_theme(False)   # light is the app default
 
 import stm32_db as sdb
 import stm32_authority as sauth
@@ -40,7 +56,7 @@ except Exception:  # pragma: no cover
         return QIcon()
 
 
-_COLS = ["Pin", "Side", "Pin Name(s)", "Role Set", "Switch", "Why", "Switch cell",
+_COLS = ["Pin", "Side", "Pin Name(s)", "Role Set", "Switch", "Explanation", "Switch cell",
          "Destination", "Peripherals", "Breakout", "Tags", "Bootloader", "VDD (V)"]
 
 _BREAKOUT_COLOR = "#8f9fd4"   # extraction-access / debug-service breakout (periwinkle)
@@ -51,9 +67,9 @@ _SWITCH_COLOR = {
     sdb.SWITCH_NONE: "#5c646b",
 }
 _SWITCH_LABEL = {
-    sdb.SWITCH_MUST: "must switch",
-    sdb.SWITCH_OSC_OPTIONAL: "oscillator (optional)",
-    sdb.SWITCH_NONE: "fixed",
+    sdb.SWITCH_MUST: "Must-Switch",
+    sdb.SWITCH_OSC_OPTIONAL: "Oscillator (Optional)",
+    sdb.SWITCH_NONE: "Fixed",
 }
 
 
@@ -83,7 +99,7 @@ def _5v_suffix(five_v) -> str:
     if not five_v:
         return ""
     if five_v["tolerant"]:
-        return " · 5V-tolerant" + (" (not as oscillator)" if five_v.get("caveat") == "osc-mode" else "")
+        return " · 5V-Tolerant" + (" (not as oscillator)" if five_v.get("caveat") == "osc-mode" else "")
     if any(five_v["by_family"].values()):
         return " · 5V (part-dependent)"
     return " · 3.3V only"
@@ -92,17 +108,17 @@ def _5v_suffix(five_v) -> str:
 def _tag_summary(tags: dict) -> str:
     out = []
     if tags.get("is_debug"):
-        out.append("DEBUG:" + "/".join(tags.get("debug_role", [])))
+        out.append("Debug: " + "/".join(tags.get("debug_role", [])))
     if tags.get("is_boot"):
-        out.append("BOOT")
+        out.append("Boot")
     if tags.get("is_clock"):
-        out.append("clock")
+        out.append("Clock")
     if tags.get("is_core_power"):
         out.append("VCAP")
     if tags.get("is_analog_supply"):
         out.append("VDDA/VREF")
     if tags.get("is_trace"):
-        out.append("TRACE")
+        out.append("Trace")
     return " · ".join(out)
 
 
@@ -120,7 +136,7 @@ def _pin_detail_html(p: dict) -> str:
     if fv is None:
         fvt = "n/a (non-GPIO)"
     elif fv["tolerant"]:
-        fvt = "5V-tolerant" + (" (except in osc mode)" if fv.get("caveat") == "osc-mode" else "")
+        fvt = "5V-Tolerant" + (" (except in osc mode)" if fv.get("caveat") == "osc-mode" else "")
     elif any(fv["by_family"].values()):
         fam = ", ".join(f"{k.replace('STM32', '')}={'5V' if v else '3V3'}"
                         for k, v in fv["by_family"].items())
@@ -305,6 +321,9 @@ def fabric_svg(a: dict) -> str:
     r = a["rollup"]
     pinname = {p["position"]: (list(p["pin_names"])[0] if p["pin_names"] else "")
                for p in a["positions"]}
+    rails = [sw["destination"] for cell in cells for sw in cell["switches"]
+             if not sw["spare"] and sw["destination"]]
+    pill_w = 14 + max((len(x) for x in rails), default=6) * 6.4   # uniform pill width
     colw, gap, chh, top = 432, 20, 30, 50
     cellh = 8 * chh + top
     cols = 1 if len(cells) <= 1 else 2
@@ -351,7 +370,7 @@ def fabric_svg(a: dict) -> str:
             s.append(f'<text x="{cx+128}" y="{y+18}" fill="{_TXT}" font-size="11" '
                      f'font-family="{_SVG_MONO}">Pin {sw["position"]} {_esc(pinname.get(sw["position"],""))}</text>')
             pill = sw["destination"] or ""
-            pw = 14 + len(pill) * 6.4
+            pw = pill_w
             px = cx + colw - 16 - pw
             s.append(f'<line x1="{cx+232}" y1="{y+14}" x2="{px-6:.0f}" y2="{y+14}" stroke="{c}" '
                      f'stroke-width="1.3" opacity="0.5"/>')
@@ -474,7 +493,7 @@ def detail_svg(a: dict, pos=None) -> str:
         tagc = {sdb.SWITCH_MUST: _SWITCH_COLOR[sdb.SWITCH_MUST],
                 sdb.SWITCH_OSC_OPTIONAL: _SWITCH_COLOR[sdb.SWITCH_OSC_OPTIONAL],
                 sdb.SWITCH_NONE: _MUT}[sc]
-        tag = {sdb.SWITCH_MUST: "Must-switch", sdb.SWITCH_OSC_OPTIONAL: "Oscillator",
+        tag = {sdb.SWITCH_MUST: "Must-Switch", sdb.SWITCH_OSC_OPTIONAL: "Oscillator",
                sdb.SWITCH_NONE: "Fixed"}[sc]
         body.append(f'<text x="{pad}" y="{y}" fill="{_TXT}" font-size="19" font-weight="700">Pin {pos}</text>')
         body.append(f'<text x="{pad + 44 + len(str(pos)) * 12}" y="{y}" fill="{_MUT}" '
@@ -522,7 +541,7 @@ def detail_svg(a: dict, pos=None) -> str:
             body.append(f'<rect x="{pad}" y="{y-6}" width="{W-2*pad}" height="{bh}" rx="8" '
                         f'fill="{_CARD}" stroke="{_LINE}"/>')
             body.append(f'<text x="{pad+10}" y="{y+9}" fill="{_MUT}" font-size="9.5" '
-                        f'font-weight="700">WHY IT SWITCHES</text>')
+                        f'font-weight="700">EXPLANATION</text>')
             for i, ln in enumerate(lines):
                 body.append(f'<text x="{pad+10}" y="{y+26+i*15}" fill="{_TXT}" font-size="11">{_esc(ln)}</text>')
             y += bh + 12
@@ -538,7 +557,7 @@ def detail_svg(a: dict, pos=None) -> str:
         if fv is not None:
             section("5V TOLERANCE")
             if fv["tolerant"]:
-                chips([("5V-tolerant", "#5fadad", True)])
+                chips([("5V-Tolerant", "#5fadad", True)])
             elif any(fv["by_family"].values()):
                 chips([("Part-dependent", "#5fadad", False)])
             else:
@@ -611,7 +630,7 @@ class PinMapWidget(QWidget):
             return
         bl, bt, bw, bh = g["body"]
         qp.setPen(QPen(QColor(_LINE), 1.5))
-        qp.setBrush(QColor("#1c1c1f"))
+        qp.setBrush(QColor(_BODY))
         qp.drawRoundedRect(QRectF(bl, bt, bw, bh), 8, 8)
         qp.setPen(QColor(_MUT))
         qp.drawText(QRectF(bl, bt, bw, bh), Qt.AlignCenter, self.authority["package"])
@@ -630,7 +649,7 @@ class PinMapWidget(QWidget):
                 qp.drawRect(QRectF(x - 3.5, y - 3.5, pw + 7, ph + 7))
             if pin["pos"] == self.selected:
                 qp.setBrush(Qt.NoBrush)
-                qp.setPen(QPen(QColor("#ffffff"), 2))
+                qp.setPen(QPen(QColor(_TXT), 2))
                 qp.drawRect(QRectF(x - 3, y - 3, pw + 6, ph + 6))
 
     def mousePressEvent(self, ev):
@@ -652,19 +671,23 @@ class _StatCard(QFrame):
     def __init__(self, title, accent, parent=None):
         super().__init__(parent)
         self.setObjectName("statCard")
-        self.setStyleSheet(f"#statCard{{background:{_CARD};border-radius:10px;"
-                           f"border-left:4px solid {accent};}}")
+        self._accent = accent
         lay = QVBoxLayout(self)
         lay.setContentsMargins(14, 9, 14, 9)
         lay.setSpacing(1)
         self._t = QLabel(title)
-        self._t.setStyleSheet(f"color:{_MUT};font-size:10px;font-weight:700;")
         self._b = QLabel("")
-        self._b.setStyleSheet(f"color:{_TXT};font-size:19px;font-weight:700;")
         self._s = QLabel("")
-        self._s.setStyleSheet(f"color:{_MUT};font-size:11px;")
         for w in (self._t, self._b, self._s):
             lay.addWidget(w)
+        self.restyle()
+
+    def restyle(self):
+        self.setStyleSheet(f"#statCard{{background:{_CARD};border-radius:10px;"
+                           f"border-left:4px solid {self._accent};}}")
+        self._t.setStyleSheet(f"color:{_MUT};font-size:10px;font-weight:700;")
+        self._b.setStyleSheet(f"color:{_TXT};font-size:19px;font-weight:700;")
+        self._s.setStyleSheet(f"color:{_MUT};font-size:11px;")
 
     def set(self, big, sub):
         self._b.setText(str(big))
@@ -696,14 +719,14 @@ class Stm32PinsWidget(QWidget):
         self.btn_build.clicked.connect(self.build_database)
         bar.addWidget(self.btn_build)
 
-        self.btn_gen = QPushButton("Generate Authority")
+        self.btn_gen = QPushButton("Export Pin Data")
         self.btn_gen.setIcon(lucide_icon("save", LUCIDE_GREEN))
         self.btn_gen.clicked.connect(self.generate)
         bar.addWidget(self.btn_gen)
 
-        self.btn_vault = QPushButton("Generate → Vault")
+        self.btn_vault = QPushButton("Save to Vault")
         self.btn_vault.setIcon(lucide_icon("file-up", LUCIDE_GREEN))
-        self.btn_vault.setToolTip("Write the pinout authority into the Obsidian Brain vault")
+        self.btn_vault.setToolTip("Write the pin data into the Obsidian Brain vault")
         self.btn_vault.clicked.connect(self.generate_to_vault)
         bar.addWidget(self.btn_vault)
         bar.addStretch()
@@ -763,13 +786,13 @@ class Stm32PinsWidget(QWidget):
         self.pin_map.pinClicked.connect(self._select)
         lay.addWidget(self.pin_map, 2)
         self.map_detail = QSvgWidget()
-        mda = QScrollArea()
-        mda.setWidgetResizable(False)
-        mda.setWidget(self.map_detail)
-        mda.setMinimumWidth(300)
-        mda.setMaximumWidth(410)
-        mda.setStyleSheet("QScrollArea{border:none;background:%s;}" % _PANEL)
-        lay.addWidget(mda, 1)
+        self._mda = QScrollArea()
+        self._mda.setWidgetResizable(False)
+        self._mda.setWidget(self.map_detail)
+        self._mda.setMinimumWidth(300)
+        self._mda.setMaximumWidth(410)
+        self._mda.setStyleSheet("QScrollArea{border:none;background:%s;}" % _PANEL)
+        lay.addWidget(self._mda, 1)
         return page
 
     def _build_table_page(self):
@@ -780,8 +803,8 @@ class Stm32PinsWidget(QWidget):
         frow = QHBoxLayout()
         frow.addWidget(QLabel("Show:"))
         self.filter_combo = QComboBox()
-        self.filter_combo.addItems(["All", "Must switch", "Oscillator", "Fixed",
-                                    "Breakout", "5V-tolerant", "Never 5V"])
+        self.filter_combo.addItems(["All", "Must Switch", "Oscillator", "Fixed",
+                                    "Breakout", "5V-Tolerant", "Never 5V"])
         self.filter_combo.currentTextChanged.connect(self._apply_filter)
         frow.addWidget(self.filter_combo)
         frow.addWidget(QLabel("Peripheral:"))
@@ -797,7 +820,7 @@ class Stm32PinsWidget(QWidget):
         frow.addStretch()
         for _label, _slot in [("Export CSV", self._export_csv),
                               ("Export MD", self._export_md),
-                              ("Copy lists", self._copy_lists)]:
+                              ("Copy Lists", self._copy_lists)]:
             _b = QPushButton(_label)
             _b.clicked.connect(_slot)
             frow.addWidget(_b)
@@ -845,11 +868,11 @@ class Stm32PinsWidget(QWidget):
         lay = QVBoxLayout(page)
         lay.setContentsMargins(0, 0, 0, 0)
         self.bom_svg = QSvgWidget()
-        area = QScrollArea()
-        area.setWidgetResizable(False)
-        area.setWidget(self.bom_svg)
-        area.setStyleSheet("QScrollArea{border:none;background:%s;}" % _PANEL)
-        lay.addWidget(area)
+        self._bom_area = QScrollArea()
+        self._bom_area.setWidgetResizable(False)
+        self._bom_area.setWidget(self.bom_svg)
+        self._bom_area.setStyleSheet("QScrollArea{border:none;background:%s;}" % _PANEL)
+        lay.addWidget(self._bom_area)
         return page
 
     # ── selection + dashboard ───────────────────────────────────────
@@ -888,6 +911,20 @@ class Stm32PinsWidget(QWidget):
         widget.load(QByteArray(svg.encode("utf-8")))
         widget.setFixedSize(widget.renderer().defaultSize())
 
+    def apply_theme(self, dark: bool):
+        """Follow the app theme: swap the tab's surface colours and refresh the
+        custom visuals (stat cards, scroll areas, pin maps, SVG panels)."""
+        set_tab_theme(dark)
+        for sc in (self.sc_switch, self.sc_break, self.sc_5v, self.sc_elec):
+            sc.restyle()
+        for area in (self._mda, self.detail_area, self._bom_area):
+            area.setStyleSheet("QScrollArea{border:none;background:%s;}" % _PANEL)
+        for m in self._maps():
+            m.update()
+        if self.authority:
+            self._update_dashboard()
+            self._refresh_details()
+
     def _update_dashboard(self):
         a = self.authority
         if not a:
@@ -900,7 +937,7 @@ class Stm32PinsWidget(QWidget):
         self.sc_break.set(f"{ea.get('service_breakout_count', 0)} nets",
                           f"{len(ea.get('debug_positions', []))} debug · "
                           f"{len(ea.get('trace_positions', []))} trace")
-        self.sc_5v.set(f"{fv.get('tolerant_all_parts', 0)} 5V-tolerant",
+        self.sc_5v.set(f"{fv.get('tolerant_all_parts', 0)} 5V-Tolerant",
                        f"{fv.get('family_dependent', 0)} part-dependent · "
                        f"{fv.get('not_tolerant_any_part', 0)} never")
         self.sc_elec.set(f"±{el.get('max_io_current_ma', '?')} mA I/O",
@@ -986,7 +1023,7 @@ class Stm32PinsWidget(QWidget):
         if io and vdda:
             parts.append(f"I/O ±{io} mA · injection ±{inj} mA · VDDA {vdda[0]}–{vdda[1]} V")
             if fv:
-                parts.append(f"5V-tolerant {fv.get('tolerant_all_parts', 0)} all / "
+                parts.append(f"5V-Tolerant {fv.get('tolerant_all_parts', 0)} all / "
                              f"{fv.get('family_dependent', 0)} part-dependent / "
                              f"{fv.get('not_tolerant_any_part', 0)} none")
         line4 = (f"<span style='{lab}'>Power</span> " + " · ".join(parts)) if parts else ""
@@ -1012,7 +1049,7 @@ class Stm32PinsWidget(QWidget):
                 btxt = (btxt + " · TRACE") if btxt else "TRACE"
             cells = [
                 str(p["position"]),                                    # 0 Pin
-                p.get("side", ""),                                     # 1 Side
+                p.get("side", "").capitalize(),                                     # 1 Side
                 _names(p["pin_names"]),                                # 2 Name(s)
                 _names(p["role_set"]),                                 # 3 Role Set
                 _SWITCH_LABEL.get(sc, sc),                             # 4 Switch
@@ -1047,7 +1084,7 @@ class Stm32PinsWidget(QWidget):
         periph = self.periph_combo.currentText()
         periph = None if periph in ("", "Any peripheral") else periph
         want_class = {
-            "Must switch": sdb.SWITCH_MUST,
+            "Must Switch": sdb.SWITCH_MUST,
             "Oscillator": sdb.SWITCH_OSC_OPTIONAL,
             "Fixed": sdb.SWITCH_NONE,
         }.get(want)
@@ -1063,7 +1100,7 @@ class Stm32PinsWidget(QWidget):
                 hide = True
             elif want == "Breakout" and not p.get("breakout", {}).get("service_nets"):
                 hide = True
-            elif want == "5V-tolerant" and not (fv and fv["tolerant"]):
+            elif want == "5V-Tolerant" and not (fv and fv["tolerant"]):
                 hide = True
             elif want == "Never 5V" and not (fv and not any(fv["by_family"].values())):
                 hide = True
@@ -1131,7 +1168,7 @@ class Stm32PinsWidget(QWidget):
         if not self.db_path.exists():
             QMessageBox.information(self, "Generate", "Build the database first.")
             return
-        out = QFileDialog.getExistingDirectory(self, "Choose output folder for the pinout authority")
+        out = QFileDialog.getExistingDirectory(self, "Choose output folder for the pin data")
         if not out:
             return
         conn = sdb.connect(self.db_path)
@@ -1171,7 +1208,7 @@ class Stm32PinsWidget(QWidget):
         finally:
             conn.close()
         n = sum(len(w["files"]) for w in written)
-        self.status.setText(f"Wrote {n} authority files into the vault: {vdir}")
+        self.status.setText(f"Wrote {n} pin-data files into the vault: {vdir}")
         try:
             os.startfile(str(vdir))  # noqa: S606
         except Exception:

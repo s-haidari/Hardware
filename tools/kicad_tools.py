@@ -49,11 +49,11 @@ def _gray_icon(style, sp, size: int = 16) -> QIcon:
 
 
 # Lucide icons (MIT), tinted — matches the main window. SVGs bundled in tools/lucide/.
-_LU_NEUTRAL = "#90909a"
-_LU_BLUE = "#7d9bc0"
-_LU_GREEN = "#74ab8f"
-_LU_RED = "#d76b6b"
-_LU_AMBER = "#cf9f57"
+_LU_NEUTRAL = "#8b8b91"
+_LU_BLUE = "#8b8b91"
+_LU_GREEN = "#8b8b91"
+_LU_RED = "#8b8b91"
+_LU_AMBER = "#8b8b91"
 _LU_CACHE = {}
 
 

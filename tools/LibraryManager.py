@@ -158,11 +158,12 @@ def gray_icon(style, sp, size: int = 16) -> QIcon:
 # colour: pull = blue, push = green, delete/clean = red, repair = amber, rest
 # neutral slate. Falls back to a desaturated Qt icon if QtSvg is unavailable.
 # ---------------------------------------------------------------------------
-LUCIDE_NEUTRAL = "#90909a"
-LUCIDE_BLUE = "#7d9bc0"
-LUCIDE_GREEN = "#74ab8f"
-LUCIDE_RED = "#d76b6b"
-LUCIDE_AMBER = "#cf9f57"
+# Grayscale UI chrome: icons carry no colour; only the pin/data visuals are coloured.
+LUCIDE_NEUTRAL = "#8b8b91"
+LUCIDE_BLUE = "#8b8b91"
+LUCIDE_GREEN = "#8b8b91"
+LUCIDE_RED = "#8b8b91"
+LUCIDE_AMBER = "#8b8b91"
 
 _LUCIDE_CACHE: Dict[tuple, QIcon] = {}
 
@@ -1839,7 +1840,7 @@ class LibraryManagerWindow(QMainWindow):
         self.build_status_bar()
 
         # Theme + geometry (transparency removed; dark/light only)
-        theme = self._settings.value("theme", "dark")
+        theme = self._settings.value("theme", "light")
         self._apply_theme(str(theme).lower() != "light")
         geo = self._settings.value("geometry")
         if geo is not None:
@@ -3093,6 +3094,12 @@ class LibraryManagerWindow(QMainWindow):
         # repaint duplicate highlights with theme-appropriate colours
         if hasattr(self, "tree") and getattr(self, "rows", None) is not None:
             self.on_filter_change()
+        # let the STM32 tab's custom visuals follow the theme
+        if getattr(self, "stm32_widget", None) is not None:
+            try:
+                self.stm32_widget.apply_theme(dark)
+            except Exception:
+                pass
 
     def apply_dark_theme(self):
         self._apply_theme(True)
