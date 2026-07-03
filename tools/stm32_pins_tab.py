@@ -60,6 +60,26 @@ def _counts(d: dict) -> str:
     return ", ".join(f"{k}×{v}" for k, v in d.items())
 
 
+def _primary(d: dict) -> str:
+    """Compact table-cell value: the leading (most common) name/role plus a +N badge
+    for the remaining variants. The full ×count breakdown stays in the detail panel."""
+    keys = list(d.keys())
+    if not keys:
+        return "—"
+    return keys[0] if len(keys) == 1 else f"{keys[0]}  +{len(keys) - 1}"
+
+
+def _numlist(nums, per: int = 6) -> str:
+    """Socket numbers chunked into nowrap groups of `per`, so a long run reads as
+    scannable blocks instead of one wrapped wall (HTML, for the detail panel). Groups
+    are joined by a BREAKABLE space (+ nbsp for the gap) so Qt wraps between groups
+    rather than force-breaking a number in half in the narrow panel."""
+    if not nums:
+        return "—"
+    groups = [", ".join(str(n) for n in nums[i:i + per]) for i in range(0, len(nums), per)]
+    return " &nbsp;&nbsp;".join(f"<span style='white-space:nowrap'>{g}</span>" for g in groups)
+
+
 def _5v_suffix(five_v) -> str:
     """Compact 5V-tolerance token for the Tags cell."""
     if not five_v:
@@ -112,21 +132,23 @@ def _pin_detail_html(p: dict) -> str:
     bk = p.get("breakout", {})
     bnets = ", ".join(bk.get("service_nets", [])) or "—"
     adg = p["assignment"].get("adg714")
+    adg_t = None
     if adg:
         s_pin, d_pin = sauth.ADG714_SWITCH_PINS[adg["channel"]]
-        adg_t = f"ADG714 cell {adg['cell']} · SW{adg['channel']} ({s_pin}/{d_pin})"
-    else:
-        adg_t = "direct"
+        adg_t = f"cell {adg['cell']} · SW{adg['channel']} ({s_pin}/{d_pin})"
     dest = p["assignment"].get("destination") or p["assignment"].get("net") or "—"
     el = p.get("electrical", {}) or {}
     why = sauth.switch_rationale(p)
     rows = [
         ("Name(s)", _counts(p["pin_names"])),
         ("Roles", _counts(p["role_set"])),
-        ("Switch", f"{_SWITCH_LABEL.get(p['switch_class'], p['switch_class'])} · {adg_t} → {dest}"),
+        ("Switch", _SWITCH_LABEL.get(p['switch_class'], p['switch_class'])),
     ]
     if why:
         rows.append(("Why", why))
+    if adg_t:
+        rows.append(("ADG714", adg_t))
+    rows.append(("Destination", dest))
     rows += [
         ("Breakout", bnets + (" · TRACE" if bk.get("trace") else "")),
         ("Via", bk.get("via", "—")),
@@ -152,19 +174,19 @@ def _summary_html(a: dict) -> str:
     cm = a.get("card_materials", {})
     cats = sauth.category_lists(a)
 
-    def _lst(nums):
-        return ", ".join(str(n) for n in nums) if nums else "—"
+    def _row(label, color, nums):
+        return (f"<tr><td style='color:{color};white-space:nowrap;vertical-align:top;"
+                f"padding:2px 12px 2px 0'>{label} ({len(nums)})</td>"
+                f"<td style='padding:2px 0'>{_numlist(nums)}</td></tr>")
 
     lists_html = (
-        f"<p><b>Pin lists (socket #):</b><br>"
-        f"<span style='color:{_SWITCH_COLOR[sdb.SWITCH_MUST]}'>Must-switch "
-        f"({len(cats['must_switch'])}):</span> {_lst(cats['must_switch'])}<br>"
-        f"<span style='color:{_SWITCH_COLOR[sdb.SWITCH_OSC_OPTIONAL]}'>Osc-optional "
-        f"({len(cats['osc_optional'])}):</span> {_lst(cats['osc_optional'])}<br>"
-        f"<span style='color:{_BREAKOUT_COLOR}'>Breakout "
-        f"({len(cats['breakout'])}):</span> {_lst(cats['breakout'])}<br>"
-        f"5V all-parts ({len(cats['five_v_all_parts'])}): {_lst(cats['five_v_all_parts'])}<br>"
-        f"Never 5V ({len(cats['five_v_never'])}): {_lst(cats['five_v_never'])}</p>")
+        "<p><b>Pin lists (socket #):</b></p><table cellspacing='0'>"
+        + _row("Must-switch", _SWITCH_COLOR[sdb.SWITCH_MUST], cats["must_switch"])
+        + _row("Osc-optional", _SWITCH_COLOR[sdb.SWITCH_OSC_OPTIONAL], cats["osc_optional"])
+        + _row("Breakout", _BREAKOUT_COLOR, cats["breakout"])
+        + _row("5V all-parts", _MUT, cats["five_v_all_parts"])
+        + _row("Never 5V", _MUT, cats["five_v_never"])
+        + "</table>")
     items = "".join(
         f"<tr><td style='text-align:right;padding-right:6px'>{i['qty']}×</td>"
         f"<td>{_esc(i['part'])}</td>"
@@ -424,9 +446,7 @@ class Stm32PinsWidget(QWidget):
         root.addWidget(self.status)
         self.rollup = QLabel("")
         self.rollup.setWordWrap(True)
-        f = self.rollup.font()
-        f.setBold(True)
-        self.rollup.setFont(f)
+        self.rollup.setTextFormat(Qt.RichText)
         root.addWidget(self.rollup)
 
         # ── stacked views: Pin map (dashboard) | Table | Card BOM ──
@@ -676,20 +696,25 @@ class Stm32PinsWidget(QWidget):
         io, inj = el.get("max_io_current_ma"), el.get("injection_current_ma")
         vdda = el.get("vdda_range_v") or el.get("vdd_range_v")
         fv = el.get("five_v_positions", {})
-        elec = ""
+        lab = f"color:{_MUT};font-weight:600"
+        line1 = (f"<b>{a['package']}</b> · {a['manifest']['part_count']} parts · "
+                 f"{r['positions_total']} positions")
+        line2 = (f"<span style='{lab}'>Switch</span> "
+                 f"must {r['must_switch_count']} · osc {r['osc_optional_count']} · "
+                 f"fixed {r['fixed_count']}")
+        line3 = (f"<span style='{lab}'>Breakout</span> {ea.get('service_breakout_count', 0)} "
+                 f"({len(ea.get('debug_positions', []))} debug · "
+                 f"{len(ea.get('trace_positions', []))} trace)")
+        parts = []
         if io and vdda:
-            elec = f"   |   I/O ±{io} mA · inj ±{inj} mA · VDDA {vdda[0]}–{vdda[1]} V"
+            parts.append(f"I/O ±{io} mA · inj ±{inj} mA · VDDA {vdda[0]}–{vdda[1]} V")
             if fv:
-                elec += (f" · 5V-tol: {fv.get('tolerant_all_parts', 0)} all-parts / "
-                         f"{fv.get('family_dependent', 0)} part-dep / "
-                         f"{fv.get('not_tolerant_any_part', 0)} none")
-        self.rollup.setWordWrap(True)
-        self.rollup.setText(
-            f"{a['package']}  —  {a['manifest']['part_count']} parts · {r['positions_total']} positions · "
-            f"must-switch {r['must_switch_count']} · osc-optional {r['osc_optional_count']} · "
-            f"fixed {r['fixed_count']}   |   breakout {ea.get('service_breakout_count', 0)} "
-            f"(debug {len(ea.get('debug_positions', []))}, trace {len(ea.get('trace_positions', []))})"
-            f"{elec}")
+                parts.append(f"5V-tol {fv.get('tolerant_all_parts', 0)} all / "
+                             f"{fv.get('family_dependent', 0)} part-dep / "
+                             f"{fv.get('not_tolerant_any_part', 0)} none")
+        line4 = (f"<span style='{lab}'>Power</span> " + " · ".join(parts)) if parts else ""
+        self.rollup.setText(line1 + "<br>" + line2 + "<br>" + line3
+                            + (("<br>" + line4) if line4 else ""))
 
         rows = a["positions"]
         self.table.setSortingEnabled(False)
@@ -711,8 +736,8 @@ class Stm32PinsWidget(QWidget):
             cells = [
                 str(p["position"]),                                    # 0 Pin
                 p.get("side", ""),                                     # 1 Side
-                _counts(p["pin_names"]),                               # 2 Name(s)
-                _counts(p["role_set"]),                                # 3 Role Set
+                _primary(p["pin_names"]),                              # 2 Name(s)
+                _primary(p["role_set"]),                               # 3 Role Set
                 _SWITCH_LABEL.get(sc, sc),                             # 4 Switch
                 sauth.switch_rationale(p) or "—",                      # 5 Why
                 adg_txt,                                               # 6 ADG714
