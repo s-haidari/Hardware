@@ -2534,19 +2534,19 @@ class LibraryManagerWindow(QMainWindow):
         tabbar = QTabBar()
         tabbar.addTab("Log")
         tabbar.addTab("Activity")
-        # Make tabs expand equally so they appear symmetric
-        tabbar.setExpanding(True)
         tabbar.setDrawBase(False)
         tabbar.setCurrentIndex(0)
         tabbar.currentChanged.connect(lambda i: stack.setCurrentIndex(i))
         # Name the tabbar so theme styles can target it to match pane headers
         tabbar.setObjectName("cardTabBar")
-        # Match the card title font: bold, slightly larger for header-like appearance
         fa = tabbar.font()
-        fa.setPointSize(10)
+        fa.setPointSize(9)
         fa.setBold(True)
         tabbar.setFont(fa)
-        tabbar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        # size to content with room so 'Activity' never clips in the title slot
+        tabbar.setExpanding(False)
+        tabbar.setMinimumWidth(160)
+        tabbar.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Preferred)
         group.set_title_widget(tabbar)
 
         # Initialize logger
