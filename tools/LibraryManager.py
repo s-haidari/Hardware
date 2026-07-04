@@ -42,7 +42,7 @@ from PyQt5.QtWidgets import (
     QListWidget, QListWidgetItem, QAbstractItemView, QTabBar, QStackedWidget,
     QComboBox, QCheckBox, QGroupBox, QFileDialog, QMessageBox, QInputDialog,
     QHeaderView, QFrame, QScrollArea, QSizePolicy, QSplitter,
-    QToolButton, QMenu, QProgressBar, QStatusBar, QSlider, QLayout
+    QToolButton, QMenu, QProgressBar, QStatusBar, QSlider, QLayout, QDialog
 )
 from PyQt5.QtCore import (
     Qt, QTimer, pyqtSignal, QObject, QSettings,
@@ -2263,34 +2263,66 @@ class LibraryManagerWindow(QMainWindow):
         th.start()
         return th
 
+    def _branch_status_text(self) -> str:
+        """Build the header chip text: branch + ahead/behind (existing git
+        plumbing) enriched with working-tree state from the nd_git backend, e.g.
+        'main   ↑1 · 3 modified, 1 untracked'. Safe to call off the GUI thread;
+        returns '' on total failure. Pure read: never mutates the repo."""
+        repo = self.cfg.get("RepoRoot", "")
+        txt = ""
+        # Branch + ahead/behind vs origin/main via the existing plumbing.
+        try:
+            b = run_hidden(
+                ["git", "-C", repo, "rev-parse", "--abbrev-ref", "HEAD"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8"
+            ).stdout.strip()
+            counts = run_hidden(
+                ["git", "-C", repo, "rev-list", "--left-right", "--count",
+                 "origin/main...HEAD"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8"
+            ).stdout.strip()
+            behind = ahead = "0"
+            parts = counts.split()
+            if len(parts) == 2:
+                behind, ahead = parts
+            txt = b or "main"
+            extras = []
+            if ahead not in ("", "0"):
+                extras.append(f"↑{ahead}")   # ↑ahead
+            if behind not in ("", "0"):
+                extras.append(f"↓{behind}")  # ↓behind
+            if extras:
+                txt += "   " + " ".join(extras)
+        except Exception:
+            txt = ""
+        # Enrich with the working-tree summary from the nd_git backend.
+        try:
+            import nd_git
+            st = nd_git.status(repo)
+            if not st.get("error"):
+                bits = []
+                nsta = len(st.get("staged", []))
+                nmod = len(st.get("modified", []))
+                nunt = len(st.get("untracked", []))
+                if nsta:
+                    bits.append(f"{nsta} staged")
+                if nmod:
+                    bits.append(f"{nmod} modified")
+                if nunt:
+                    bits.append(f"{nunt} untracked")
+                if not bits and st.get("clean"):
+                    bits.append("clean")
+                if bits:
+                    txt = (txt + " · " + ", ".join(bits)) if txt else ", ".join(bits)
+        except Exception:
+            pass
+        return txt
+
     def update_branch_status(self):
-        """Fetch branch + ahead/behind in the background and update the header."""
+        """Fetch branch + ahead/behind AND working-tree status in the background
+        and update the header chip."""
         def _work():
-            try:
-                b = run_hidden(
-                    ["git", "-C", self.cfg["RepoRoot"], "rev-parse", "--abbrev-ref", "HEAD"],
-                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8"
-                ).stdout.strip()
-                counts = run_hidden(
-                    ["git", "-C", self.cfg["RepoRoot"], "rev-list", "--left-right", "--count",
-                     "origin/main...HEAD"],
-                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding="utf-8"
-                ).stdout.strip()
-                behind = ahead = "0"
-                parts = counts.split()
-                if len(parts) == 2:
-                    behind, ahead = parts
-                txt = b or "main"
-                extras = []
-                if ahead not in ("", "0"):
-                    extras.append(f"↑{ahead}")   # ↑ahead
-                if behind not in ("", "0"):
-                    extras.append(f"↓{behind}")  # ↓behind
-                if extras:
-                    txt += "   " + " ".join(extras)
-                self._emit(self.branch_signal, txt)
-            except Exception:
-                self._emit(self.branch_signal, "")
+            self._emit(self.branch_signal, self._branch_status_text())
         self._spawn(_work)
 
     def run_async(self, fn, busy_msg: str, success_msg: Optional[str] = None,
@@ -2365,6 +2397,129 @@ class LibraryManagerWindow(QMainWindow):
             else:
                 self.log.write("Push skipped: nothing was committed")
         self.run_async(work, "Commit & Push…", "Pushed ✓", refresh=True)
+
+    # ----- nd_git library commit (guarded, no push) -----------------------
+    def _commit_library_core(self, message: str):
+        """Stage the shared-library outputs and commit them through the nd_git
+        backend (which REFUSES to commit a conflict-markered / paren-unbalanced
+        KiCad file). Returns (ok: bool, detail: str) — the sha on success, or a
+        human-readable reason on refusal/failure. Never raises for ordinary
+        git failures; safe to call off the GUI thread."""
+        try:
+            import nd_git
+        except Exception as e:
+            return (False, f"nd_git unavailable: {e}")
+        root = self.cfg.get("RepoRoot", "")
+        repo = nd_git.repo_root(root) or root
+        if not nd_git.is_git_repo(repo):
+            return (False, "not a git repository")
+        # Stage exactly the library outputs (symbols, footprints, models).
+        paths = [self.cfg.get(k) for k in ("Libs", "SymbolLib", "FootprintLib", "ModelLib")]
+        paths = [p for p in paths if p and Path(p).exists()]
+        if not paths:
+            return (False, "no library paths to stage")
+        return nd_git.commit(repo, message, paths=paths)
+
+    def do_commit_library(self):
+        """Prompt for a message, then stage+commit the library via nd_git."""
+        try:
+            import nd_git
+        except Exception as e:
+            QMessageBox.warning(self, "Commit Library", f"nd_git unavailable:\n{e}")
+            return
+        if not nd_git.have_git():
+            QMessageBox.warning(self, "Commit Library",
+                                "git is not on PATH. Install Git and retry.")
+            return
+        default = f"Library update {time.strftime('%Y-%m-%d %H:%M:%S')}"
+        msg, ok = QInputDialog.getText(self, "Commit Library",
+                                       "Commit message:", text=default)
+        if not ok:
+            self.log.write("Commit Library: canceled by user")
+            return
+        message = msg.strip() or default
+
+        def work():
+            okc, detail = self._commit_library_core(message)
+            if okc:
+                self.log.write(f"Committed library outputs: {detail[:9]}")
+            else:
+                self.log.write(f"Commit refused/skipped: {detail}")
+        self.run_async(work, "Committing library…", "Committed ✓", refresh=True)
+
+    # ----- board 3D render (fp_render + kicad-cli) ------------------------
+    def _render_board_core(self, pcb_path):
+        """Render a .kicad_pcb via fp_render (kicad-cli). Returns
+        (QImage|None, message). Falls back to an explicit 'unavailable' message
+        when kicad-cli is missing; never raises for ordinary failure. Safe to
+        call off the GUI thread."""
+        try:
+            import fp_render
+        except Exception as e:
+            return (None, f"fp_render unavailable: {e}")
+        if not fp_render.have_board_render():
+            return (None, "kicad-cli not available (install KiCad or set KICAD_BIN)")
+        try:
+            res = fp_render.render_board_image(str(pcb_path))
+        except Exception as e:
+            return (None, str(e))
+        if res and res.ok:
+            return (res.image, res.method or "render")
+        return (None, getattr(res, "reason", "") or "board render failed")
+
+    def _show_board_result(self, image, message, pcb_path):
+        """Show a rendered board image in a scrollable dialog, or an explicit
+        unavailable/failure message. Runs on the GUI thread."""
+        if image is not None and not image.isNull():
+            dlg = QDialog(self)
+            dlg.setWindowTitle(f"Board render — {Path(pcb_path).name}")
+            lay = QVBoxLayout(dlg)
+            lay.setContentsMargins(8, 8, 8, 8)
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            lbl = QLabel()
+            lbl.setAlignment(Qt.AlignCenter)
+            pm = QPixmap.fromImage(image)
+            if pm.width() > 1000:
+                pm = pm.scaledToWidth(1000, Qt.SmoothTransformation)
+            lbl.setPixmap(pm)
+            scroll.setWidget(lbl)
+            lay.addWidget(scroll)
+            dlg.resize(min(pm.width() + 40, 1040), min(pm.height() + 80, 820))
+            dlg.exec_()
+        else:
+            QMessageBox.information(
+                self, "Render Board",
+                f"Board render unavailable.\n\n{message}")
+
+    def do_render_board(self):
+        """Pick a .kicad_pcb and render it. Explicitly reports the unavailable
+        state when kicad-cli is missing instead of crashing."""
+        try:
+            import fp_render
+        except Exception as e:
+            QMessageBox.warning(self, "Render Board", f"fp_render unavailable:\n{e}")
+            return
+        start = self._settings.value("projects_dir", "") or str(Path(self.cfg["RepoRoot"]).parent)
+        fn, _ = QFileDialog.getOpenFileName(
+            self, "Select KiCad PCB to render", start, "KiCad PCB (*.kicad_pcb)")
+        if not fn:
+            return
+        if not fp_render.have_board_render():
+            QMessageBox.information(
+                self, "Render Board",
+                "kicad-cli is not available. Install KiCad (or set KICAD_BIN) "
+                "to render boards.")
+            return
+        pcb = Path(fn)
+        holder = {}
+
+        def work():
+            holder["img"], holder["msg"] = self._render_board_core(pcb)
+
+        def done(ok):
+            self._show_board_result(holder.get("img"), holder.get("msg", ""), pcb)
+        self.run_async(work, f"Rendering {pcb.name}…", "Board ✓", done_cb=done)
 
     def do_export_catalog(self):
         def work():
@@ -2586,6 +2741,7 @@ class LibraryManagerWindow(QMainWindow):
         add_btn("Remove Duplicates", self.on_remove_duplicates, "copy-x", LUCIDE_NEUTRAL)
         add_btn("Export Catalog", self.do_export_catalog, "package", LUCIDE_NEUTRAL)
         add_btn("Register Libraries in KiCad", self.do_register_kicad, "link-2", LUCIDE_NEUTRAL)
+        add_btn("Render Board…", self.do_render_board, "image", LUCIDE_NEUTRAL)
 
         # ── More… (rarely used) ────────────────────────────────────────────
         adv_menu = QMenu(card)
@@ -2808,6 +2964,11 @@ class LibraryManagerWindow(QMainWindow):
         self._preview_token += 1
         token = self._preview_token
         item = self.tree.currentItem()
+        if item is not None:
+            _row = item.data(0, Qt.UserRole) or {}
+            if _row.get("_grouped"):          # grouped-part row (no flat columns)
+                self._preview_grouped_part(_row)
+                return
         if not item or not item.text(2):     # nothing / a group header (no path)
             self.preview.show_text("Select an item to preview")
             self.preview_info.setText("")
@@ -2877,8 +3038,38 @@ class LibraryManagerWindow(QMainWindow):
             except Exception:
                 self.preview.show_text("Symbol")
             self.preview_info.setText(f"{name}  ·  symbol in {path.name}  ·  {date}")
-   
-    
+
+    def _preview_grouped_part(self, row: Dict[str, object]):
+        """Preview for a grouped-part row: render the footprint if it exists on
+        disk, else show a text summary. Populates the info line with the part's
+        symbol/footprint/model links and a dangling flag."""
+        fp_path = row.get("_path")
+        rendered = False
+        if fp_path and Path(fp_path).exists():
+            try:
+                from fp_render import render_footprint_image
+                img = render_footprint_image(Path(fp_path), 300)
+                if img is not None:
+                    self.preview.show_image(img)
+                    rendered = True
+            except Exception:
+                rendered = False
+        if not rendered:
+            self.preview.show_text(str(row.get("name") or "(part)"))
+
+        syms = list(row.get("symbols") or [])
+        bits = [str(row.get("name") or "")]
+        bits.append(f"{len(syms)} symbol(s)")
+        if row.get("footprint"):
+            bits.append(f"fp: {row['footprint']}"
+                        + ("" if row.get("has_footprint") else " (missing)"))
+        if row.get("model"):
+            bits.append(f"model: {row['model']}"
+                        + ("" if row.get("has_model") else " (missing)"))
+        if row.get("dangling"):
+            bits.append("DANGLING")
+        self.preview_info.setText("  ·  ".join(bits))
+
     def create_log_panel(self) -> CardWidget:
         """Create log panel"""
         # Use empty title so we can place the Log/Activity tab bar in the title area
@@ -2937,6 +3128,13 @@ class LibraryManagerWindow(QMainWindow):
         top = QHBoxLayout()
         top.addWidget(QLabel("Commits:"))
         top.addStretch()
+        self.btn_commit_library = QPushButton("Commit")
+        self.btn_commit_library.setMaximumHeight(28)
+        self.btn_commit_library.setToolTip(
+            "Stage the shared library outputs and commit them via nd_git\n"
+            "(refuses conflict-markered / unbalanced KiCad files).")
+        self.btn_commit_library.clicked.connect(lambda: self.do_commit_library())
+        top.addWidget(self.btn_commit_library)
         btn_refresh = QPushButton("Refresh")
         btn_refresh.setMaximumHeight(28)
         btn_refresh.clicked.connect(lambda: self.refresh_commits())
@@ -3274,7 +3472,13 @@ class LibraryManagerWindow(QMainWindow):
 
     def _apply_theme(self, dark: bool):
         self._is_dark = dark
-        self._theme = ui_theme.set_theme(dark)   # publish app-wide (all tabs read it)
+        # Publish the palette app-wide AND drive QFluentWidgets to the same grayscale
+        # (neutral accent, no Fluent blue) so the new Fluent panels match every tab.
+        try:
+            import fluent_theme
+            self._theme = fluent_theme.apply_grayscale_fluent(dark)
+        except Exception:
+            self._theme = ui_theme.set_theme(dark)
         self.setPalette(self._theme_palette(self._theme))
         self._restyle()
         if hasattr(self, "drop_zone"):
@@ -3411,6 +3615,13 @@ class LibraryManagerWindow(QMainWindow):
         # distinct targets (all symbols share one .kicad_sym -> open it once)
         targets = []
         for it in items:
+            r = it.data(0, Qt.UserRole) or {}
+            if r.get("_grouped"):      # grouped part -> footprint file, else symbol lib
+                pth = r.get("_path")
+                target = Path(pth) if pth else Path(self.cfg["SymbolLib"])
+                if target not in targets:
+                    targets.append(target)
+                continue
             if not it.text(2):     # group header, no file
                 continue
             t = it.text(0)
@@ -3476,48 +3687,138 @@ class LibraryManagerWindow(QMainWindow):
             f = item.font(1); f.setBold(True); item.setFont(1, f)
         return item
 
-    def populate_tree(self, rows: List[Dict[str, object]]):
-        """Populate the tree, optionally grouping each component's assets."""
-        self.tree.clear()
-
-        is_dark = getattr(self, "_is_dark", True)
-        # Neutral slate tint so duplicates stand out without a colour accent.
-        dup_bg = QBrush(QColor(58, 62, 70) if is_dark else QColor(224, 228, 236))
-        grp_bg = QBrush(QColor(40, 44, 52) if is_dark else QColor(232, 235, 241))
-
-        grouped = bool(getattr(self, "chk_group", None) and self.chk_group.isChecked())
-        self.tree.setRootIsDecorated(grouped)
-
-        if grouped:
-            for label, grp in group_components(rows):
-                if len(grp) <= 1:
-                    self.tree.addTopLevelItem(self._make_tree_item(grp[0], dup_bg))
-                    continue
-                counts: Dict[str, int] = {}
-                for r in grp:
-                    counts[str(r["type"])] = counts.get(str(r["type"]), 0) + 1
-                summary = "   ".join(
-                    f"{counts[t]}× {t.lower()}" for t in ("Symbol", "Footprint", "Model") if t in counts)
-                parent = QTreeWidgetItem(["", label, summary, ""])
-                for col in range(self.tree.columnCount()):
-                    parent.setBackground(col, grp_bg)
-                f = parent.font(1); f.setBold(True); parent.setFont(1, f)
-                fc = parent.font(2); parent.setForeground(2, QBrush(QColor("#90909a")))
-                self.tree.addTopLevelItem(parent)
-                for r in grp:
-                    parent.addChild(self._make_tree_item(r, dup_bg))
-                parent.setExpanded(True)
-        else:
-            for r in rows:
-                self.tree.addTopLevelItem(self._make_tree_item(r, dup_bg))
-
-        # Update the library readout band
-        s = self.summary
+    def _update_lib_readout(self):
+        """Refresh the readout band from the flat library summary (valid in both
+        flat and grouped modes)."""
+        s = getattr(self, "summary", {}) or {}
         self.lib_readout.set("total", s.get("total", 0))
         self.lib_readout.set("symbols", s.get("symbols", 0))
         self.lib_readout.set("footprints", s.get("footprints", 0))
         self.lib_readout.set("models", s.get("models", 0))
         self.lib_readout.set("duplicates", s.get("duplicates", 0))
+
+    def _set_tree_columns(self, grouped: bool):
+        """Reconfigure the shared tree for the flat (Format/Name/Location/Date)
+        or grouped (Part/Symbol/Footprint/3D Model/Status) column layout."""
+        header = self.tree.header()
+        if grouped:
+            self.tree.setColumnCount(5)
+            self.tree.setHeaderLabels(["Part", "Symbol", "Footprint", "3D Model", "Status"])
+            modes = [QHeaderView.Stretch, QHeaderView.ResizeToContents,
+                     QHeaderView.ResizeToContents, QHeaderView.ResizeToContents,
+                     QHeaderView.ResizeToContents]
+        else:
+            self.tree.setColumnCount(4)
+            self.tree.setHeaderLabels(["Format", "Name", "Location", "Date"])
+            modes = [QHeaderView.ResizeToContents, QHeaderView.ResizeToContents,
+                     QHeaderView.Stretch, QHeaderView.ResizeToContents]
+        try:
+            for i, m in enumerate(modes):
+                header.setSectionResizeMode(i, m)
+        except Exception:
+            try:
+                self.tree.header().setStretchLastSection(True)
+            except Exception:
+                pass
+        self.tree.setRootIsDecorated(False)
+
+    def populate_tree(self, rows: List[Dict[str, object]]):
+        """Populate the tree. When 'Group by Component' is checked, show one row
+        per logical part (scan_library_grouped); otherwise the flat scan_library
+        view. `rows` is the filtered flat list — used only in flat mode."""
+        grouped = bool(getattr(self, "chk_group", None) and self.chk_group.isChecked())
+        if grouped:
+            self._populate_grouped_parts()
+            return
+
+        # ---- flat mode (unchanged behaviour) --------------------------------
+        self._set_tree_columns(False)
+        self.tree.clear()
+        is_dark = getattr(self, "_is_dark", True)
+        # Neutral slate tint so duplicates stand out without a colour accent.
+        dup_bg = QBrush(QColor(58, 62, 70) if is_dark else QColor(224, 228, 236))
+        for r in rows:
+            self.tree.addTopLevelItem(self._make_tree_item(r, dup_bg))
+        self._update_lib_readout()
+
+    def _populate_grouped_parts(self):
+        """Grouped library view: one row per logical part from
+        scan_library_grouped(), columns Part / Symbol / Footprint / 3D Model /
+        Status. Dangling parts (a symbol referencing a missing footprint, or a
+        footprint referencing a missing 3D model) get a desaturated warn dot."""
+        self._set_tree_columns(True)
+        self.tree.clear()
+        try:
+            parts = scan_library_grouped(self.cfg)
+        except Exception as e:
+            parts = []
+            try:
+                self.log.write(f"Grouped library scan failed: {e}")
+            except Exception:
+                pass
+
+        query = ""
+        if hasattr(self, "search_edit"):
+            query = (self.search_edit.text() or "").strip().lower()
+        dup_only = bool(getattr(self, "chk_dupes", None) and self.chk_dupes.isChecked())
+
+        warn_col = ui_theme.status("warn")
+        ok_col = ui_theme.tc("FG_DIM", "#8b8f97")
+        fp_dir = Path(self.cfg.get("FootprintLib", ""))
+
+        for p in parts:
+            name = str(p.get("name") or "")
+            syms = list(p.get("symbols") or [])
+            fp = p.get("footprint")
+            model = p.get("model")
+            dangling = bool(p.get("dangling"))
+
+            # In grouped mode "Duplicates Only" narrows to the parts that need
+            # attention (dangling links) rather than per-file duplicates.
+            if dup_only and not dangling:
+                continue
+            if query:
+                hay = " ".join([name, " ".join(syms), str(fp or ""), str(model or "")]).lower()
+                if query not in hay:
+                    continue
+
+            if not syms:
+                sym_txt = ""
+            elif len(syms) == 1:
+                sym_txt = syms[0]
+            else:
+                sym_txt = f"{syms[0]}  (+{len(syms) - 1})"
+            fp_txt = str(fp) if fp else ("(missing)" if p.get("has_symbol") else "—")
+            model_txt = str(model) if model else "—"
+
+            item = QTreeWidgetItem([name, sym_txt, fp_txt, model_txt, "●"])
+
+            # Carry the part + a marker so per-item actions route correctly, and
+            # a resolved file path (the footprint on disk, if any) for Open/preview.
+            row = dict(p)
+            row["_grouped"] = True
+            fp_path = ""
+            if fp and p.get("has_footprint"):
+                cand = fp_dir / f"{fp}.kicad_mod"
+                if cand.exists():
+                    fp_path = str(cand)
+            row["_path"] = fp_path
+            item.setData(0, Qt.UserRole, row)
+
+            item.setForeground(4, QBrush(QColor(warn_col if dangling else ok_col)))
+            if dangling:
+                missing = []
+                if p.get("has_symbol") and not p.get("has_footprint"):
+                    missing.append("footprint")
+                if p.get("model") and not p.get("has_model"):
+                    missing.append("3D model")
+                tip = "Dangling: missing " + (", ".join(missing) or "linked asset")
+                for c in range(self.tree.columnCount()):
+                    item.setToolTip(c, tip)
+                f = item.font(0); f.setBold(True); item.setFont(0, f)
+            self.tree.addTopLevelItem(item)
+
+        self._update_lib_readout()
    
     def on_tree_open(self):
         """Open the selected item(s) with their default app."""
@@ -3526,6 +3827,17 @@ class LibraryManagerWindow(QMainWindow):
             return
         seen = set()
         for it in items:
+            r = it.data(0, Qt.UserRole) or {}
+            if r.get("_grouped"):      # grouped part -> open its footprint file
+                pth = r.get("_path")
+                if pth and str(pth) not in seen:
+                    seen.add(str(pth))
+                    try:
+                        tp = Path(pth)
+                        os.startfile(str(tp if tp.exists() else tp.parent))
+                    except Exception as e:
+                        self.log.write(f"Open failed: {e}")
+                continue
             if not it.text(2):     # group header
                 continue
             path = Path(it.text(2))
@@ -3544,6 +3856,15 @@ class LibraryManagerWindow(QMainWindow):
         items = self.tree.selectedItems()
         if not items:
             QMessageBox.information(self, "Delete", "No item selected.")
+            return
+
+        # Grouped-part rows aggregate several files; deleting per-asset needs the
+        # flat view where each symbol/footprint/model is its own row.
+        if any((it.data(0, Qt.UserRole) or {}).get("_grouped") for it in items):
+            QMessageBox.information(
+                self, "Delete",
+                "Turn off 'Group by Component' to delete individual symbols, "
+                "footprints or 3D models.")
             return
 
         sym_to_remove: Dict[int, str] = {}   # sym_index -> name

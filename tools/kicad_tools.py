@@ -22,7 +22,8 @@ from PyQt5.QtWidgets import (
     QComboBox, QCheckBox, QListWidget, QListWidgetItem, QPlainTextEdit,
     QStackedWidget, QTableWidget, QTableWidgetItem, QFormLayout, QDoubleSpinBox,
     QFileDialog, QMessageBox, QAbstractItemView, QHeaderView, QSizePolicy,
-    QApplication, QColorDialog, QScrollArea, QToolButton, QMenu, QWidgetAction
+    QApplication, QColorDialog, QScrollArea, QToolButton, QMenu, QWidgetAction,
+    QGridLayout
 )
 import ui_widgets as uw
 import ui_theme
@@ -49,7 +50,27 @@ from nd_netclass_manager import (
     NetClass, NetClassManager, create_vault_standard_template,
     load_vault_standard, save_vault_standard,
 )
-from nd_project_settings_manager import ProjectSettings, ProjectSettingsManager
+from nd_project_settings_manager import (
+    ProjectSettings, ProjectSettingsManager, mils_to_mm,
+    SEVERITY_LEVELS, DRC_RULE_IDS, ERC_RULE_IDS, ERC_PIN_TYPES,
+)
+import nd_board_setup as board_setup
+
+# Grayscale QFluentWidgets components for the NEW Project Settings sections
+# (DRC/ERC severities, text variables, predefined size tables, editable Default
+# net class). Falls back to the plain PyQt5 widgets if QFluentWidgets is somehow
+# unavailable so construction never fails; the app themes these through the
+# shared apply_grayscale_fluent/_apply_theme path, so they match the design.
+try:
+    from qfluentwidgets import (
+        ComboBox as _FComboBox, DoubleSpinBox as _FDoubleSpinBox,
+        LineEdit as _FLineEdit, TableWidget as _FTableWidget,
+    )
+    _HAVE_FLUENT = True
+except Exception:  # pragma: no cover - fluent is a hard requirement; stay safe
+    _FComboBox, _FDoubleSpinBox = QComboBox, QDoubleSpinBox
+    _FLineEdit, _FTableWidget = QLineEdit, QTableWidget
+    _HAVE_FLUENT = False
 
 
 # Hidden-window flag so any kicad-cli call doesn't flash a console
@@ -891,13 +912,23 @@ class KiCadToolsWidget(QWidget):
         lw = QWidget(); lw.setLayout(left); lw.setMinimumWidth(320)
         rw = QWidget(); rw.setLayout(right); rw.setMinimumWidth(320)
         cols.addWidget(lw); cols.addWidget(rw); cols.addStretch(1)
+
+        # The scroll now holds a vertical stack: the existing mils groups on top,
+        # then the ADDED extended-coverage sections (DRC/ERC severities, text
+        # variables, predefined size tables, editable Default net class).
         scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.NoFrame)
-        colw = QWidget(); colw.setLayout(cols)
+        colw = QWidget(); content = QVBoxLayout(colw)
+        content.setContentsMargins(0, 0, 0, 0); content.setSpacing(16)
+        content.addLayout(cols)
+        content.addWidget(self._ps_build_extended())
+        content.addStretch(1)
         scroll.setWidget(colw)
         ov.addWidget(scroll, 1)
 
-        note = QLabel("Values in mils with the mm equivalent. Grid is per-project "
-                      "(.kicad_prl) and not synced.")
+        note = QLabel("Values in mils with the mm equivalent (extended tables are mm). "
+                      "Solder-mask/paste also write to each board's .kicad_pcb (setup). "
+                      "Grid is per-project (.kicad_prl) and not synced.")
+        note.setWordWrap(True)
         note.setStyleSheet(f"color:{ui_theme.tc('FG_DIM')};")
         ov.addWidget(note)
 
@@ -909,6 +940,195 @@ class KiCadToolsWidget(QWidget):
         bar.addWidget(b_load); bar.addWidget(b_sync); bar.addStretch()
         ov.addLayout(bar)
         return outer
+
+    # ── extended-coverage sections (DRC/ERC severities, text vars, size
+    #    tables, editable Default net class). Built with grayscale QFluentWidgets
+    #    components so they match the redesign; themed via apply_grayscale_fluent.
+    PS_UNMANAGED = "(inherit)"       # combo sentinel: leave KiCad's value as-is
+
+    def _build_extended_help(self, text: str) -> QLabel:
+        lbl = QLabel(text)
+        lbl.setWordWrap(True)
+        lbl.setStyleSheet(f"color:{ui_theme.tc('FG_DIM')};")
+        return lbl
+
+    def _ps_severity_grid(self, rule_ids, store: dict, cols: int = 2) -> QWidget:
+        """A grid of per-rule severity combos (SEVERITY_LEVELS + an inherit
+        sentinel). `store` is filled rule_id -> combo. A combo left on the
+        sentinel is preserve-by-default: it is not written on sync."""
+        w = QWidget(); grid = QGridLayout(w)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(14); grid.setVerticalSpacing(4)
+        per_col = (len(rule_ids) + cols - 1) // cols
+        for idx, rid in enumerate(rule_ids):
+            c = idx // per_col
+            r = idx % per_col
+            lbl = QLabel(rid)
+            lbl.setStyleSheet(f"color:{ui_theme.tc('FG_DIM')};")
+            combo = _FComboBox()
+            combo.addItems([self.PS_UNMANAGED] + list(SEVERITY_LEVELS))
+            combo.setCurrentText(self.PS_UNMANAGED)
+            combo.setMinimumWidth(110)
+            store[rid] = combo
+            grid.addWidget(lbl, r, c * 2)
+            grid.addWidget(combo, r, c * 2 + 1)
+        return w
+
+    def _mk_table(self, headers) -> QTableWidget:
+        t = _FTableWidget()             # QFluentWidgets TableWidget takes no (r,c)
+        t.setColumnCount(len(headers))
+        t.setRowCount(0)
+        t.setHorizontalHeaderLabels(list(headers))
+        t.verticalHeader().setVisible(False)
+        hdr = t.horizontalHeader()
+        for i in range(len(headers)):
+            hdr.setSectionResizeMode(i, QHeaderView.Stretch)
+        t.setMaximumHeight(180)
+        t.setSelectionBehavior(QAbstractItemView.SelectRows)
+        try:                                    # QFluentWidgets TableWidget extras
+            t.setBorderVisible(True); t.setBorderRadius(6)
+        except Exception:
+            pass
+        return t
+
+    def _table_toolbar(self, add_cb, remove_cb) -> QHBoxLayout:
+        bar = uw.toolbar_row()
+        b_add = uw.button("Add Row", "default", _lucide("plus", _LU_GREEN))
+        b_add.clicked.connect(add_cb)
+        b_rm = uw.button("Remove", "ghost", _lucide("trash-2", _LU_RED))
+        b_rm.clicked.connect(remove_cb)
+        bar.addWidget(b_add); bar.addWidget(b_rm); bar.addStretch()
+        return bar
+
+    def _ps_build_extended(self) -> QWidget:
+        wrap = QWidget(); v = QVBoxLayout(wrap)
+        v.setContentsMargins(0, 0, 0, 0); v.setSpacing(16)
+
+        # DRC severities -----------------------------------------------------
+        self.drc_combos: dict = {}
+        v.addWidget(uw.SectionHeader("DRC Rule Severities"))
+        v.addWidget(self._build_extended_help(
+            "Per-rule board DRC severity. Leave a rule on '(inherit)' to keep "
+            "KiCad's current value (preserve-by-default)."))
+        v.addWidget(self._ps_severity_grid(DRC_RULE_IDS, self.drc_combos))
+
+        # ERC severities -----------------------------------------------------
+        self.erc_combos: dict = {}
+        v.addWidget(uw.SectionHeader("ERC Rule Severities"))
+        v.addWidget(self._build_extended_help(
+            "Per-rule schematic ERC severity. '(inherit)' leaves the rule as KiCad wrote it."))
+        v.addWidget(self._ps_severity_grid(ERC_RULE_IDS, self.erc_combos))
+
+        # Text variables -----------------------------------------------------
+        v.addWidget(uw.SectionHeader("Text Variables"))
+        v.addWidget(self._build_extended_help(
+            "Project text variables (${NAME} substitutions). Name = Value rows."))
+        self.tv_table = self._mk_table(["Name", "Value"])
+        v.addLayout(self._table_toolbar(self._tv_add, self._tv_remove))
+        v.addWidget(self.tv_table)
+
+        # Predefined track widths -------------------------------------------
+        v.addWidget(uw.SectionHeader("Predefined Track Widths (mm)"))
+        self.tw_table = self._mk_table(["Track Width (mm)"])
+        v.addLayout(self._table_toolbar(self._tw_add, self._tw_remove))
+        v.addWidget(self.tw_table)
+
+        # Predefined via sizes ----------------------------------------------
+        v.addWidget(uw.SectionHeader("Predefined Via Sizes (mm)"))
+        self.via_table = self._mk_table(["Via Diameter (mm)", "Via Drill (mm)"])
+        v.addLayout(self._table_toolbar(self._via_add, self._via_remove))
+        v.addWidget(self.via_table)
+
+        # Predefined diff-pair sizes ----------------------------------------
+        v.addWidget(uw.SectionHeader("Predefined Diff-Pair Sizes (mm)"))
+        self.dp_table = self._mk_table(["Width (mm)", "Gap (mm)", "Via Gap (mm)"])
+        v.addLayout(self._table_toolbar(self._dp_add, self._dp_remove))
+        v.addWidget(self.dp_table)
+
+        # Editable Default net class ----------------------------------------
+        v.addWidget(uw.SectionHeader("Default Net Class (mm)"))
+        v.addWidget(self._build_extended_help(
+            "The 'Default' net-class routing values NetClassManager skips. Tick "
+            "'manage' to write a field; unticked fields keep KiCad's value."))
+        self.dnc_spins: dict = {}
+        self.dnc_checks: dict = {}
+        dnc_form = QFormLayout()
+        dnc_form.setLabelAlignment(Qt.AlignRight); dnc_form.setHorizontalSpacing(10)
+        for key, label in (
+            ("clearance", "Clearance"), ("track_width", "Track Width"),
+            ("via_diameter", "Via Diameter"), ("via_drill", "Via Drill"),
+            ("microvia_diameter", "µVia Diameter"), ("microvia_drill", "µVia Drill"),
+        ):
+            chk = QCheckBox("manage")
+            sp = _FDoubleSpinBox()
+            sp.setRange(0.0, 1000.0); sp.setDecimals(4); sp.setSingleStep(0.05)
+            sp.setSuffix(" mm"); sp.setEnabled(False)
+            chk.toggled.connect(sp.setEnabled)
+            self.dnc_checks[key] = chk
+            self.dnc_spins[key] = sp
+            roww = QWidget(); rh = QHBoxLayout(roww)
+            rh.setContentsMargins(0, 0, 0, 0); rh.setSpacing(10)
+            rh.addWidget(chk); rh.addWidget(sp); rh.addStretch(1)
+            dnc_form.addRow(label, roww)
+        dnc_wrap = QWidget(); dnc_wrap.setLayout(dnc_form)
+        v.addWidget(dnc_wrap)
+        return wrap
+
+    # ── table row helpers (add / remove) ────────────────────────────────────
+    def _tv_add(self):
+        r = self.tv_table.rowCount(); self.tv_table.insertRow(r)
+        self.tv_table.setItem(r, 0, QTableWidgetItem("VAR"))
+        self.tv_table.setItem(r, 1, QTableWidgetItem(""))
+
+    def _tw_add(self):
+        r = self.tw_table.rowCount(); self.tw_table.insertRow(r)
+        self.tw_table.setItem(r, 0, QTableWidgetItem("0.25"))
+
+    def _via_add(self):
+        r = self.via_table.rowCount(); self.via_table.insertRow(r)
+        self.via_table.setItem(r, 0, QTableWidgetItem("0.8"))
+        self.via_table.setItem(r, 1, QTableWidgetItem("0.4"))
+
+    def _dp_add(self):
+        r = self.dp_table.rowCount(); self.dp_table.insertRow(r)
+        self.dp_table.setItem(r, 0, QTableWidgetItem("0.2"))
+        self.dp_table.setItem(r, 1, QTableWidgetItem("0.15"))
+        self.dp_table.setItem(r, 2, QTableWidgetItem("0.25"))
+
+    @staticmethod
+    def _table_remove_selected(table: QTableWidget):
+        rows = sorted({i.row() for i in table.selectedItems()}, reverse=True)
+        for r in rows:
+            table.removeRow(r)
+
+    def _tv_remove(self):
+        self._table_remove_selected(self.tv_table)
+
+    def _tw_remove(self):
+        self._table_remove_selected(self.tw_table)
+
+    def _via_remove(self):
+        self._table_remove_selected(self.via_table)
+
+    def _dp_remove(self):
+        self._table_remove_selected(self.dp_table)
+
+    # ── cell readers ─────────────────────────────────────────────────────────
+    @staticmethod
+    def _cell_text(table: QTableWidget, r: int, c: int) -> str:
+        it = table.item(r, c)
+        return it.text().strip() if it else ""
+
+    @classmethod
+    def _cell_float(cls, table: QTableWidget, r: int, c: int):
+        """Return the cell's numeric value, or None if blank / non-numeric."""
+        s = cls._cell_text(table, r, c)
+        if s == "":
+            return None
+        try:
+            return float(s)
+        except ValueError:
+            return None
 
     def _ps_load(self):
         pros = self.selected_pro_files()
@@ -923,8 +1143,178 @@ class KiCadToolsWidget(QWidget):
             for attr, sp in self.ps_spins.items():
                 sp.setValue(float(getattr(m.settings, attr)))
             self.log(f"Loaded settings from {pros[0].parent.name}.")
+            # Extended coverage (DRC/ERC severities, text vars, size tables, the
+            # editable Default net class) — read from the same .kicad_pro.
+            try:
+                if m.load_extended(pros[0]):
+                    self._ps_load_extended_into_widgets(m)
+                    self.log("Loaded extended board/schematic setup.")
+            except Exception as e:
+                self.log(f"Extended settings load failed: {e}")
+            # Solder-mask/paste physically live in the board's .kicad_pcb (setup)
+            # block, not .kicad_pro — pull the REAL values from the board so the
+            # two mils spins reflect what KiCad actually uses.
+            self._ps_load_board_setup_into_widgets(pros[0])
         else:
             self.log("Could not load project settings.")
+
+    def _ps_load_extended_into_widgets(self, m: ProjectSettingsManager):
+        """Populate the extended-coverage widgets from a manager that has just
+        run load_extended(). Preserve-by-default: only keys the file actually held
+        move a widget off its inherit/blank default."""
+        # DRC / ERC severity combos.
+        for rid, combo in self.drc_combos.items():
+            combo.setCurrentText(m.drc_severities.get(rid, self.PS_UNMANAGED))
+        for rid, combo in self.erc_combos.items():
+            combo.setCurrentText(m.erc_severities.get(rid, self.PS_UNMANAGED))
+
+        # Text variables.
+        self.tv_table.setRowCount(0)
+        for name, value in m.text_variables.items():
+            r = self.tv_table.rowCount(); self.tv_table.insertRow(r)
+            self.tv_table.setItem(r, 0, QTableWidgetItem(str(name)))
+            self.tv_table.setItem(r, 1, QTableWidgetItem("" if value is None else str(value)))
+
+        # Predefined track widths (skip KiCad's leading 0.0 = 'use net class').
+        self.tw_table.setRowCount(0)
+        for w in m.track_widths:
+            if w == 0.0:
+                continue
+            r = self.tw_table.rowCount(); self.tw_table.insertRow(r)
+            self.tw_table.setItem(r, 0, QTableWidgetItem(self._fmt_mm(w)))
+
+        # Predefined via sizes (skip the all-zero 'use net class' row).
+        self.via_table.setRowCount(0)
+        for v in m.via_dimensions:
+            if v.diameter == 0.0 and v.drill == 0.0:
+                continue
+            r = self.via_table.rowCount(); self.via_table.insertRow(r)
+            self.via_table.setItem(r, 0, QTableWidgetItem(self._fmt_mm(v.diameter)))
+            self.via_table.setItem(r, 1, QTableWidgetItem(self._fmt_mm(v.drill)))
+
+        # Predefined diff-pair sizes (skip the all-zero row).
+        self.dp_table.setRowCount(0)
+        for d in m.diff_pair_dimensions:
+            if d.width == 0.0 and d.gap == 0.0 and d.via_gap == 0.0:
+                continue
+            r = self.dp_table.rowCount(); self.dp_table.insertRow(r)
+            self.dp_table.setItem(r, 0, QTableWidgetItem(self._fmt_mm(d.width)))
+            self.dp_table.setItem(r, 1, QTableWidgetItem(self._fmt_mm(d.gap)))
+            self.dp_table.setItem(r, 2, QTableWidgetItem(self._fmt_mm(d.via_gap)))
+
+        # Editable Default net class — None means 'not managed' -> untick.
+        for key, chk in self.dnc_checks.items():
+            val = getattr(m.default_netclass, key, None)
+            if val is None:
+                chk.setChecked(False)
+                self.dnc_spins[key].setValue(0.0)
+            else:
+                chk.setChecked(True)
+                self.dnc_spins[key].setValue(float(val))
+
+    def _ps_load_board_setup_into_widgets(self, pro: Path):
+        """Read solder-mask/paste from the project's board .kicad_pcb (setup)
+        block and reflect it in the two mils spins (best-effort)."""
+        try:
+            boards = wiz.list_boards(Path(pro).parent)
+        except Exception:
+            boards = []
+        for brd in boards:
+            try:
+                setup = board_setup.load_board_setup(brd)
+            except Exception:
+                continue
+            if "solder_mask_clearance" in setup and "solder_mask_clearance" in self.ps_spins:
+                self.ps_spins["solder_mask_clearance"].setValue(
+                    round(setup["solder_mask_clearance"] / 0.0254, 2))
+            if "solder_paste_margin" in setup and "solder_paste_margin" in self.ps_spins:
+                self.ps_spins["solder_paste_margin"].setValue(
+                    round(setup["solder_paste_margin"] / 0.0254, 2))
+            if setup:
+                self.log(f"Loaded solder-mask/paste from board {brd.name}.")
+                return
+
+    @staticmethod
+    def _fmt_mm(v: float) -> str:
+        """Format a mm value compactly (trim trailing zeros) for a table cell."""
+        s = ("%.6f" % float(v)).rstrip("0").rstrip(".")
+        return s if s not in ("", "-0") else "0"
+
+    def _ps_populate_extended(self, m: ProjectSettingsManager):
+        """Push the extended-coverage widget state into `m` via its ADDITIVE
+        mutator API (set_drc_severity/set_erc_severity/set_text_variable/
+        set_track_widths/set_via_dimensions/set_diff_pair_dimensions/
+        set_default_netclass). Preserve-by-default: a section with no user data
+        is left untouched so a sync never manufactures defaults into a project."""
+        for rid, combo in self.drc_combos.items():
+            lvl = combo.currentText()
+            if lvl in SEVERITY_LEVELS:
+                m.set_drc_severity(rid, lvl)
+        for rid, combo in self.erc_combos.items():
+            lvl = combo.currentText()
+            if lvl in SEVERITY_LEVELS:
+                m.set_erc_severity(rid, lvl)
+
+        for r in range(self.tv_table.rowCount()):
+            name = self._cell_text(self.tv_table, r, 0)
+            if name:
+                m.set_text_variable(name, self._cell_text(self.tv_table, r, 1))
+
+        tws = [f for f in (self._cell_float(self.tw_table, r, 0)
+                           for r in range(self.tw_table.rowCount())) if f is not None]
+        if tws:
+            m.set_track_widths(tws)
+
+        vias = []
+        for r in range(self.via_table.rowCount()):
+            d = self._cell_float(self.via_table, r, 0)
+            dr = self._cell_float(self.via_table, r, 1)
+            if d is not None and dr is not None:
+                vias.append((d, dr))
+        if vias:
+            m.set_via_dimensions(vias)
+
+        dps = []
+        for r in range(self.dp_table.rowCount()):
+            w = self._cell_float(self.dp_table, r, 0)
+            g = self._cell_float(self.dp_table, r, 1)
+            vg = self._cell_float(self.dp_table, r, 2)
+            if None not in (w, g, vg):
+                dps.append((w, g, vg))
+        if dps:
+            m.set_diff_pair_dimensions(dps)
+
+        kwargs = {key: self.dnc_spins[key].value()
+                  for key, chk in self.dnc_checks.items() if chk.isChecked()}
+        if kwargs:
+            m.set_default_netclass(**kwargs)
+
+    def _ps_write_board_setup(self, pros: List[Path]) -> dict:
+        """Write the solder-mask/paste globals to every selected project's board
+        .kicad_pcb (setup) block — the place KiCad actually reads them, unlike
+        .kicad_pro. Values convert mils -> mm. Returns {board_path: ok}."""
+        results: dict = {}
+        mask_mm = round(mils_to_mm(self.ps_spins["solder_mask_clearance"].value()), 6)
+        paste_mm = round(mils_to_mm(self.ps_spins["solder_paste_margin"].value()), 6)
+        values = {"solder_mask_clearance": mask_mm, "solder_paste_margin": paste_mm}
+        for pro in pros:
+            try:
+                boards = wiz.list_boards(Path(pro).parent)
+            except Exception:
+                boards = []
+            for brd in boards:
+                try:
+                    board_setup.save_board_setup(brd, values, backup=True)
+                    got = board_setup.load_board_setup(brd)
+                    ok = (abs(got.get("pad_to_mask_clearance", 1e9) - mask_mm) <= 1e-6
+                          and abs(got.get("pad_to_paste_clearance", 1e9) - paste_mm) <= 1e-6)
+                    results[brd] = ok
+                    self.log(f"  board {brd.name}: solder-mask/paste "
+                             f"{'written' if ok else 'NOT verified'}")
+                except Exception as e:
+                    results[brd] = False
+                    self.log(f"  board {brd.name}: FAILED {e}")
+        return results
 
     def _ps_sync(self):
         pros = self.selected_pro_files()
@@ -946,6 +1336,15 @@ class KiCadToolsWidget(QWidget):
                 val = int(round(val))
             setattr(m.settings, attr, val)
 
+        # Populate the manager's EXTENDED state from the new widgets BEFORE the
+        # sync. sync_to_projects -> save_to_project now also applies+verifies this
+        # extended state, so a single sync flushes both the flat drawing settings
+        # and DRC/ERC severities, text vars, size tables and the Default class.
+        try:
+            self._ps_populate_extended(m)
+        except Exception as e:
+            self.log(f"Extended settings not applied: {e}")
+
         # Match the other syncs: run off the GUI thread and report per project.
         def work():
             results = m.sync_to_projects(pros, backup=True)
@@ -955,6 +1354,12 @@ class KiCadToolsWidget(QWidget):
             for pf in pros:
                 why = details.get(pf) or details.get(Path(pf))
                 self.log(f"  {Path(pf).parent.name}: {why if why else ('updated' if results.get(pf) else 'not applied')}")
+            # Solder-mask/paste globals belong to the .kicad_pcb (setup) block, not
+            # .kicad_pro — write them to each project's board so they take effect.
+            self.log("Board solder-mask/paste (.kicad_pcb setup):")
+            board_results = self._ps_write_board_setup(pros)
+            if not board_results:
+                self.log("  (no boards found in selected projects)")
 
         self._run_heavy("Syncing project settings…", work)
 
