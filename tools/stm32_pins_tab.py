@@ -1331,7 +1331,7 @@ class Stm32PinsWidget(QWidget):
 
         bar.addWidget(QLabel("View:"))
         self.view_combo = QComboBox()
-        self.view_combo.addItems(["Overview", "Table", "Connections"])
+        self.view_combo.addItems(["Map", "Table"])
         self.view_combo.currentIndexChanged.connect(lambda i: self.stack.setCurrentIndex(i))
         bar.addWidget(self.view_combo)
         root.addLayout(bar)
@@ -1372,7 +1372,6 @@ class Stm32PinsWidget(QWidget):
         self.stack = QStackedWidget()
         self.stack.addWidget(self._build_overview_page())
         self.stack.addWidget(self._build_table_page())
-        self.stack.addWidget(self._build_bom_page())
         root.addWidget(self.stack, 1)
 
         # ── live file-watch: reload when the DB is rebuilt on disk ──
@@ -1385,17 +1384,24 @@ class Stm32PinsWidget(QWidget):
 
     # ── page builders ───────────────────────────────────────────────
     def _build_overview_page(self):
-        """The unified screen: the pin map as a large hero on top, and the selected
-        pin's full connection path spread out full-width in a band below it."""
+        """The Map screen: the pin map beside the full connection fabric. Clicking a pin
+        on the map highlights and scrolls to it in the fabric; clicking a fabric row
+        selects the pin on the map. Both stay in sync."""
         page = QWidget()
-        lay = QVBoxLayout(page)
+        lay = QHBoxLayout(page)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(8)
         self.pin_map = PinMapWidget()             # the primary pin visualizer
         self.pin_map.pinClicked.connect(self._select)
-        self.ov_band = _BandSvg(224)
-        lay.addWidget(self.pin_map, 1)
-        lay.addWidget(self.ov_band)
+        self.conn_list = ConnectionsList()        # the full socket -> header fabric
+        self.conn_list.pinClicked.connect(self._select)
+        split = QSplitter(Qt.Horizontal)
+        split.addWidget(self.pin_map)
+        split.addWidget(self.conn_list)
+        split.setStretchFactor(0, 2)
+        split.setStretchFactor(1, 3)
+        split.setSizes([460, 700])
+        lay.addWidget(split, 1)
         return page
 
     def _build_table_page(self):
@@ -1447,50 +1453,15 @@ class Stm32PinsWidget(QWidget):
             hdr.setSectionResizeMode(i, QHeaderView.ResizeToContents)
         self.table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.table.itemSelectionChanged.connect(self._on_table_select)
-        self.detail = QSvgWidget()
-        self.detail_area = QScrollArea()
-        self.detail_area.setWidgetResizable(False)
-        self.detail_area.setWidget(self.detail)
-        self.detail_area.setStyleSheet("QScrollArea{border:none;background:%s;}" % _PANEL)
-        # a pin visualizer beside the table: selecting a row lights up its pin here
-        self.table_pin_map = PinMapWidget()
-        self.table_pin_map.pinClicked.connect(self._select)
-        self.table_pin_map.setMinimumHeight(220)
-        rightcol = QSplitter(Qt.Vertical)
-        rightcol.addWidget(self.table_pin_map)
-        rightcol.addWidget(self.detail_area)
-        rightcol.setStretchFactor(0, 2)
-        rightcol.setStretchFactor(1, 3)
-        rightcol.setMinimumWidth(300)
-        split = QSplitter(Qt.Horizontal)
-        split.addWidget(self.table)
-        split.addWidget(rightcol)
-        split.setStretchFactor(0, 3)
-        split.setStretchFactor(1, 2)
-        lay.addWidget(split, 1)
+        # clicking a row jumps to the Map screen with that pin selected
+        self.table.cellClicked.connect(lambda *_: self.view_combo.setCurrentText("Map"))
+        lay.addWidget(self.table, 1)
         return page
 
-    def _build_bom_page(self):
-        """The Connections view: the interactive, filterable, sortable list of every
-        socket pin's connection (clicking a row selects the pin everywhere)."""
-        page = QWidget()
-        lay = QVBoxLayout(page)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(6)
-        self.conn_list = ConnectionsList()
-        self.conn_list.pinClicked.connect(self._select)
-        lay.addWidget(self.conn_list)
-        return page
-
-    # ── selection + dashboard ───────────────────────────────────────
+    # ── selection ───────────────────────────────────────────────────
     def _maps(self):
-        """Every pin visualizer (overview + table view) so selection and highlight
-        stay in sync across views."""
-        ms = [self.pin_map]
-        w = getattr(self, "table_pin_map", None)
-        if w is not None:
-            ms.append(w)
-        return ms
+        """Every pin visualizer, so selection and peripheral highlight stay in sync."""
+        return [self.pin_map]
 
     def _select(self, pos):
         self._sel_pos = pos
@@ -1499,7 +1470,6 @@ class Stm32PinsWidget(QWidget):
                 m.set_selected(pos)
             if getattr(self, "conn_list", None) is not None:
                 self.conn_list.set_selected(pos)
-        self._refresh_details()
 
     def _on_table_select(self):
         items = self.table.selectedItems()
@@ -1509,30 +1479,15 @@ class Stm32PinsWidget(QWidget):
             if pos is not None:
                 self._select(int(pos))
 
-    def _refresh_details(self):
-        if not self.authority:
-            return
-        self._load_svg(self.detail, detail_svg(self.authority, self._sel_pos))
-        if getattr(self, "ov_band", None) is not None:
-            self.ov_band.set_data(self.authority, self._sel_pos)
-
-    @staticmethod
-    def _load_svg(widget, svg):
-        widget.load(QByteArray(svg.encode("utf-8")))
-        widget.setFixedSize(widget.renderer().defaultSize())
-
     def apply_theme(self, dark: bool):
         """Follow the app theme: swap the tab's surface colours and refresh the
-        custom visuals (stat strip, scroll areas, pin map, SVG panels)."""
+        custom visuals (stat strip, pin map, connection fabric)."""
         set_tab_theme(dark)
         self._restyle_strip()
-        self.detail_area.setStyleSheet("QScrollArea{border:none;background:%s;}" % _PANEL)
         for m in self._maps():
             m.update()
         if getattr(self, "conn_list", None) is not None:
             self.conn_list.restyle()
-        if self.authority:
-            self._refresh_details()
 
     def _restyle_strip(self):
         self.pkg_name.setStyleSheet(f"color:{_TXT};font-size:16px;font-weight:700;")
@@ -1595,7 +1550,6 @@ class Stm32PinsWidget(QWidget):
             m.set_authority(self.authority)
         if getattr(self, "conn_list", None) is not None:
             self.conn_list.set_authority(self.authority)
-        self._refresh_details()
 
     def _populate(self):
         a = self.authority

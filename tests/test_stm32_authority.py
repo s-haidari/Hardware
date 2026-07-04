@@ -343,30 +343,25 @@ class AuthorityTests(unittest.TestCase):
         if spi:
             w.periph_combo.setCurrentText(spi)
             self.assertTrue(w.pin_map.highlight)                      # peripheral -> highlight
-        w.view_combo.setCurrentText("Connections")
-        svg = tab.connections_svg(w.authority)                       # all-pins connection view
-        self.assertIn("Socket Connections", svg)
-        self.assertIn("SWITCH", svg)                                 # switched pins present
-        self.assertIn("DIRECT", svg)                                 # direct-connect pins present
-        self.assertNotIn("ADG714", svg)                              # part name not shown in the app
-        # Connections view: the interactive list (one clickable row per pin, category
-        # filter, and re-sortable) drives selection.
-        w.view_combo.setCurrentText("Connections")
+        # Map view: the pin map beside the full connection fabric (one card per pin,
+        # every physical path shown, category-filterable and re-sortable).
+        w.view_combo.setCurrentText("Map")
         self.assertEqual(len(w.conn_list._rows), 64)                 # every socket pin listed
         w._select(1)
         self.assertEqual(w.conn_list._sel, 1)                        # selection follows the map
+        self.assertEqual(w.pin_map.selected, 1)
+        # the fabric spells out the exact vault wiring for a switched pin
+        row = w.conn_list._rows[1]
+        html_paths = " ".join(lbl.text() for lbl in row._paths)
+        self.assertIn("VBAT_TGT", html_paths)                        # delivered rail
+        self.assertIn("LA-33", html_paths)                           # connector contact
+        self.assertIn("CARD_LANE_001", html_paths)                   # default lane path too
         w.conn_list.filter_combo.setCurrentText("Switched")
         self.assertEqual(len(w.conn_list._rows), 11)                 # filter to switched pins only
         w.conn_list.sort_combo.setCurrentText("Destination")
         self.assertEqual(len(w.conn_list._rows), 11)                 # re-sort keeps the filtered set
         w.conn_list.filter_combo.setCurrentText("All")
         self.assertEqual(len(w.conn_list._rows), 64)
-        # Overview: selecting a pin fills the full-width detail band with its path.
-        w.view_combo.setCurrentText("Overview")
-        band = tab.detail_band_svg(w.authority, 1, 900)
-        self.assertIn("Pin 1", band)
-        self.assertIn("VBAT_TGT", band)                              # destination shown
-        self.assertIn("Switch", band)                                # component labelled
 
 
 if __name__ == "__main__":
