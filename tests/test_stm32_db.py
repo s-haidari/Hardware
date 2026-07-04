@@ -34,10 +34,14 @@ class ClassifyUnitTests(unittest.TestCase):
         self.assertEqual(db.electrical_class(_pin("RFU", "Power")), "io")
 
     def test_hse_vs_lse(self):
-        hse = db.roles(_pin("PH0-OSC_IN", "I/O", [("RCC_OSC_IN",), ("GPIO",)]))
-        self.assertIn(("oscillator_hse", "local_card"), hse)
+        # HSE keeps its IN/OUT side (the vault services the pair on split nets:
+        # SERVICE_OSC_IN contact RA-10 / SERVICE_OSC_OUT contact RA-12).
+        hse_in = db.roles(_pin("PH0-OSC_IN", "I/O", [("RCC_OSC_IN",), ("GPIO",)]))
+        self.assertIn(("oscillator_hse_in", "local_card"), hse_in)
+        hse_out = db.roles(_pin("PH1-OSC_OUT", "I/O", [("RCC_OSC_OUT",), ("GPIO",)]))
+        self.assertIn(("oscillator_hse_out", "local_card"), hse_out)
         lse = db.roles(_pin("PC14-OSC32_IN", "I/O", [("RCC_OSC32_IN",), ("GPIO",)]))
-        self.assertNotIn(("oscillator_hse", "local_card"), lse)
+        self.assertFalse(any(rn.startswith("oscillator_hse") for rn, _ in lse))
 
     def test_swclk_identity(self):
         r = db.roles(_pin("PA14", "I/O", [("SYS_JTCK-SWCLK",), ("GPIO",)]))
