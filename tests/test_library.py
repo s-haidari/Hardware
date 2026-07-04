@@ -161,6 +161,49 @@ def test_vault_template_matches_obsidian_spec():
     assert m.get_netclass("GND").priority == 0   # GND = highest precedence
 
 
+# --- audit tier-1 regressions --------------------------------------------
+def test_extract_blocks_escaped_quote(tmp_path):
+    # KiCad writes inch marks inside strings as an escaped quote (0.1\").
+    # The old scanner mis-paired quotes here and could infinite-loop the GUI.
+    text = ('(kicad_symbol_lib (version 20211014) (generator "t")\n'
+            '  (symbol "A" (property "Note" "gap 0.1\\" wide") (pin 1))\n'
+            '  (symbol "B" (pin 1))\n)\n')
+    blocks = L.extract_symbol_blocks(text)
+    assert [L.extract_symbol_name(b) for b in blocks] == ["A", "B"]
+    assert 'gap 0.1\\" wide' in blocks[0]
+
+
+def test_extract_blocks_unbalanced_terminates():
+    # Missing a closing paren must return (not hang). Reaching this assert = no loop.
+    assert L.extract_symbol_blocks('(symbol "X" (pin 1)') == []
+
+
+def test_strip_all_label_preserves_net_names():
+    import nd_wizard as wiz
+    # Labels: only a real tag prefix is removed; the net body is never truncated
+    # (the old path turned I2C1_SDA -> C1_SDA and USART2_TX -> T2_TX).
+    assert wiz.strip_all_label_tags("I2C1_SDA") == "I2C1_SDA"
+    assert wiz.strip_all_label_tags("USART2_TX") == "USART2_TX"
+    assert wiz.strip_all_label_tags("SH-I2C1_SDA") == "I2C1_SDA"
+    assert wiz.strip_all_label_tags("CG-SH-NET1") == "NET1"      # stacked prefixes
+    # Component references still use the designator-aware strip.
+    assert wiz.strip_all_tags("SH-R1") == "R1"
+    assert wiz.strip_all_tags("CG-U5") == "U5"
+
+
+def test_preview_returns_change_records(tmp_path):
+    # kicad_tools' rename audit iterates `for (t, o, n, f) in changes`; guard that
+    # contract (the 3rd return is a list of 4-tuples) so the NameError fix stays valid.
+    import nd_wizard as wiz
+    sch = tmp_path / "z.kicad_sch"
+    sch.write_text('(kicad_sch\n  (property "Reference" "R1")\n)\n', encoding="utf-8")
+    counts, samples, changes = wiz.schematic_preview_and_apply(
+        sch, "add_tag", "SH-", apply=False, touch_refs=True, touch_labels=False)
+    assert isinstance(changes, list)
+    assert all(len(rec) == 4 for rec in changes)
+    assert any(o == "R1" and n == "SH-R1" for (_t, o, n, _f) in changes)
+
+
 def test_project_settings_min_constraints_roundtrip(tmp_path):
     import json
     import nd_project_settings_manager as PSM

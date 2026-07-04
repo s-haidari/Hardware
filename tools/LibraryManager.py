@@ -256,30 +256,39 @@ def extract_symbol_blocks(src_text: str) -> List[str]:
     n = len(s)
     i = 0
     while i < n:
-        if s[i] == "(" and s.startswith("(symbol", i):
+        ch = s[i]
+        if ch == '"':                       # top-level string: skip it (escape-aware)
+            i += 1
+            while i < n and s[i] != '"':
+                i += 2 if s[i] == "\\" else 1
+            i += 1
+            continue
+        if ch == "(" and s.startswith("(symbol", i):
             start = i
             j = i
             depth = 0
+            captured = False
             while j < n:
-                ch = s[j]
-                if ch == "(":
-                    depth += 1
-                elif ch == ")":
-                    depth -= 1
-                    if depth == 0:
-                        blocks.append(s[start:j+1])
-                        i = j + 1
-                        break
-                elif ch == '"':
+                cj = s[j]
+                if cj == '"':               # string inside the block (KiCad \" escapes)
                     j += 1
                     while j < n and s[j] != '"':
-                        j += 1
+                        j += 2 if s[j] == "\\" else 1
+                    j += 1
+                    continue
+                if cj == "(":
+                    depth += 1
+                elif cj == ")":
+                    depth -= 1
+                    if depth == 0:
+                        blocks.append(s[start:j + 1])
+                        i = j + 1
+                        captured = True
+                        break
                 j += 1
+            if not captured:                # unbalanced input: advance, never re-scan forever
+                i = start + 1
             continue
-        elif s[i] == '"':
-            i += 1
-            while i < n and s[i] != '"':
-                i += 1
         i += 1
     return blocks
 

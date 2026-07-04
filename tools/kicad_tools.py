@@ -442,22 +442,25 @@ class KiCadToolsWidget(QWidget):
         def work():
             totals = {"local": 0, "global": 0, "hier": 0, "sheet_pin": 0, "symbol_ref": 0, "pcb_ref": 0}
             samples = []
+            changes = []                     # audit records; consumed by the JSON audit trail below
             self.log(f"\n=== {'APPLY' if apply else 'PREVIEW'}: {self.op_combo.currentText()} ===")
             for pro in pros:
                 proj = pro.parent
                 if do_labels or do_refs:
                     for sch in wiz.list_schematics(proj):
-                        counts, smp, _ = wiz.schematic_preview_and_apply(
+                        counts, smp, rec = wiz.schematic_preview_and_apply(
                             sch, op, tag_or_find, repl=repl, apply=apply,
                             touch_refs=do_refs, touch_labels=do_labels)
                         for k in totals:
                             totals[k] += counts.get(k, 0)
                         samples += smp
+                        changes += rec
                 if do_pcb:
                     for brd in wiz.list_boards(proj):
-                        cnt, smp, _ = wiz.pcb_preview_and_apply(brd, op, tag_or_find, repl=repl, apply=apply)
+                        cnt, smp, rec = wiz.pcb_preview_and_apply(brd, op, tag_or_find, repl=repl, apply=apply)
                         totals["pcb_ref"] += cnt
                         samples += smp
+                        changes += rec
             self.log(f"Schematic labels: {totals['local']+totals['global']+totals['hier']+totals['sheet_pin']}  "
                      f"| Schematic refs: {totals['symbol_ref']}  | PCB refs: {totals['pcb_ref']}")
             for smp in samples[:15]:

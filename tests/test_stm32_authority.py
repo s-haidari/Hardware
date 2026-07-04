@@ -41,6 +41,24 @@ class AuthorityTests(unittest.TestCase):
         p60 = next(p for p in data["positions"] if p["position"] == 60)
         self.assertTrue(p60["tags"]["is_boot"])
 
+    def test_representative_channel_matches_destination(self):
+        # Regression: the exported representative ADG714 channel must actually deliver
+        # the labelled destination, else CSV/MD tell the operator to close a switch
+        # that ties the socket pin to the wrong rail (analog ground vs VTARGET).
+        data = auth.build(self.conn, "LQFP100")
+        checked = 0
+        for p in data["positions"]:
+            asg = p["assignment"]
+            chans = asg.get("channels") or []
+            rep = asg.get("adg714")
+            if rep and any(c["destination"] == asg["destination"] for c in chans):
+                checked += 1
+                self.assertEqual(
+                    rep["destination"], asg["destination"],
+                    f"pin {p['position']} representative delivers {rep['destination']} "
+                    f"but is labelled {asg['destination']}")
+        self.assertGreater(checked, 20)   # LQFP100 has plenty of switched pins
+
     def test_bootloader_tags_from_an2606(self):
         data = auth.build(self.conn, "LQFP64")
 

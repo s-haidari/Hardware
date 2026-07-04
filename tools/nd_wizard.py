@@ -208,6 +208,21 @@ def strip_all_tags(name: str) -> str:
         return match.group(1)
     return name
 
+def strip_all_label_tags(txt: str) -> str:
+    """Strip stacked tag prefixes ('^[A-Z]{1,3}-') from a NET / LABEL name ONLY.
+
+    Unlike strip_all_tags — which scans for a component designator and is meant for
+    component *references* — this never truncates the body. Net names with no tag
+    prefix are returned unchanged (the old code turned 'I2C1_SDA' into 'C1_SDA' and
+    'USART2_TX' into 'T2_TX' by matching a designator mid-string)."""
+    prev = None
+    while prev != txt:
+        prev = txt
+        m = re.match(r'^[A-Z]{1,3}-', txt)
+        if m:
+            txt = txt[m.end():]
+    return txt
+
 def extract_tag_prefix(ref: str) -> tuple:
     """
     Extract tag prefix from a reference.
@@ -874,7 +889,7 @@ def schematic_preview_and_apply(
         if op == "remove_tag":
             return strip_tag(txt, tag_or_find)
         if op == "strip_all":
-            return strip_all_tags(txt)
+            return strip_all_label_tags(txt)   # label-safe: prefix only, never designator scan
         if op == "unannotate":
             return txt  # Don't modify labels for unannotate
         return txt.replace(tag_or_find, repl if repl else "")

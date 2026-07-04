@@ -1138,6 +1138,16 @@ def build(conn: sqlite3.Connection, package: str) -> dict:
             for key in ("net", "destination"):
                 if assignment.get(key) == "GND":
                     assignment[key] = "VSSA_TGT"
+        # The representative ADG714 channel MUST be the one that actually delivers the
+        # labelled destination. Blindly using chans[0] made CSV/MD tell the operator to
+        # close a switch tying the socket pin to the WRONG rail (e.g. analog ground
+        # instead of VTARGET) — an electrical hazard. Match on the final destination.
+        if assignment.get("kind") in ("switched", "osc_optional"):
+            _chans = assignment.get("channels") or []
+            _dest = assignment.get("destination")
+            assignment["adg714"] = next(
+                (c for c in _chans if c.get("destination") == _dest),
+                _chans[0] if _chans else None)
         tags = _position_tags(roles_at.get(d.pin, set()), fam_names.get(d.pin, set()))
         tags["is_trace"] = breakout["trace"]
         text = " ".join(tokens)
