@@ -313,7 +313,7 @@ class AuthorityTests(unittest.TestCase):
         self.assertIn("via Samtec QTH", auth.to_wiring_md(a))
 
     def test_tab_widget_offscreen(self):
-        """Headless Qt widget (offscreen platform): 13 columns, numeric Pin sort +
+        """Headless Qt widget (offscreen platform): 9 columns, numeric Pin sort +
         sort-safe row->pin selection, category filters, peripheral highlight, and the
         switch-fabric map in the BOM view. Guards the widget wiring (esp. numeric
         sort) that the pure-function tests can't reach."""
@@ -329,7 +329,7 @@ class AuthorityTests(unittest.TestCase):
         w = tab.Stm32PinsWidget()
         w.db_path = self.dbp                         # use the test's temp database
         w.load("LQFP64")
-        self.assertEqual((w.table.columnCount(), w.table.rowCount()), (13, 64))
+        self.assertEqual((w.table.columnCount(), w.table.rowCount()), (9, 64))
         w.table.sortItems(0, Qt.DescendingOrder)
         self.assertEqual(w.table.item(0, 0).data(Qt.UserRole), 64)    # numeric, not "9"
         w.table.selectRow(0)

@@ -56,8 +56,11 @@ except Exception:  # pragma: no cover
         return QIcon()
 
 
-_COLS = ["Pin", "Side", "Pin Name(s)", "Role Set", "Switch", "Explanation", "Switch cell",
-         "Destination", "Peripherals", "Breakout", "Tags", "Bootloader", "VDD (V)"]
+# Scannable columns that fit the viewport without horizontal scrolling. The verbose
+# per-pin detail (rationale, ADG714 wiring, tags, bootloader) lives in the focus
+# panel beside the table; the CSV/Markdown exports still carry the full column set.
+_COLS = ["Pin", "Side", "Pin Name(s)", "Role Set", "Switch",
+         "Destination", "Peripherals", "Breakout", "VDD (V)"]
 
 _BREAKOUT_COLOR = "#4c8df0"   # extraction-access / debug-service breakout (blue)
 
@@ -1478,11 +1481,15 @@ class Stm32PinsWidget(QWidget):
         self.table.setAlternatingRowColors(True)
         self.table.setSortingEnabled(True)
         self.table.verticalHeader().setVisible(False)
+        # Columns fill the viewport and never scroll horizontally: the short columns
+        # size to content, the text columns share the rest and elide with an ellipsis.
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.table.setWordWrap(False)
         hdr = self.table.horizontalHeader()
         for i in range(len(_COLS)):
+            hdr.setSectionResizeMode(i, QHeaderView.Stretch)
+        for i in (0, 1, 8):                     # Pin, Side, VDD (V) — short
             hdr.setSectionResizeMode(i, QHeaderView.ResizeToContents)
-        hdr.setSectionResizeMode(2, QHeaderView.Interactive)
-        hdr.setStretchLastSection(True)
         self.table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.table.itemSelectionChanged.connect(self._on_table_select)
         self.detail = QSvgWidget()
@@ -1688,12 +1695,6 @@ class Stm32PinsWidget(QWidget):
         self.table.setRowCount(len(rows))
         for i, p in enumerate(rows):
             sc = p["switch_class"]
-            adg = p["assignment"].get("adg714")
-            if adg:
-                s_pin, d_pin = sauth.ADG714_SWITCH_PINS[adg["channel"]]
-                adg_txt = f"cell {adg['cell']} · SW{adg['channel']} ({s_pin}/{d_pin})"
-            else:
-                adg_txt = ""
             dest = (p["assignment"].get("destination") or p["assignment"].get("net") or "")
             bk = p.get("breakout", {})
             bnets = bk.get("service_nets", [])
@@ -1702,19 +1703,15 @@ class Stm32PinsWidget(QWidget):
                 btxt = (btxt + " · TRACE") if btxt else "TRACE"
             cells = [
                 str(p["position"]),                                    # 0 Pin
-                p.get("side", "").capitalize(),                                     # 1 Side
+                p.get("side", "").capitalize(),                        # 1 Side
                 _names(p["pin_names"]),                                # 2 Name(s)
                 _names(p["role_set"]),                                 # 3 Role Set
                 _SWITCH_LABEL.get(sc, sc),                             # 4 Switch
-                sauth.switch_rationale(p) or "",                      # 5 Why
-                adg_txt,                                               # 6 ADG714
-                dest,                                                  # 7 Destination
-                ", ".join(p.get("peripherals", [])) or "",           # 8 Peripherals
-                btxt or "",                                           # 9 Breakout
-                _tag_summary(p["tags"]) + _5v_suffix(p.get("five_v")),  # 10 Tags
-                ", ".join(p["tags"].get("bootloader_periph", [])),     # 11 Bootloader
+                dest,                                                  # 5 Destination
+                ", ".join(p.get("peripherals", [])) or "",            # 6 Peripherals
+                btxt or "",                                            # 7 Breakout
                 (lambda e: f"{e['vdd_range_v'][0]}–{e['vdd_range_v'][1]}"
-                 if e and e.get("vdd_range_v") else "")(p.get("electrical")),  # 12 V(dd)
+                 if e and e.get("vdd_range_v") else "")(p.get("electrical")),  # 8 VDD
             ]
             for c, text in enumerate(cells):
                 it = _NumItem(text) if c == 0 else QTableWidgetItem(text)
@@ -1722,7 +1719,7 @@ class Stm32PinsWidget(QWidget):
                     it.setData(Qt.UserRole, p["position"])      # numeric sort + row->pin key
                 elif c == 4:  # switch class — colour it
                     it.setForeground(QBrush(QColor(_SWITCH_COLOR.get(sc, "#9aa1a9"))))
-                elif c == 9 and (bnets or bk.get("trace")):  # breakout — violet
+                elif c == 7 and (bnets or bk.get("trace")):  # breakout — violet
                     it.setForeground(QBrush(QColor(_BREAKOUT_COLOR)))
                 self.table.setItem(i, c, it)
         self.table.setSortingEnabled(True)
