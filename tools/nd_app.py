@@ -115,8 +115,11 @@ class ManagerView(QWidget):
     status + guarded commit, and the maintenance actions — all on the pure
     LibraryManager helpers + nd_git (no old-shell dependency)."""
 
+    _log_signal = pyqtSignal(str)
+
     def __init__(self, cfg, services: ShellServices, parent=None):
         super().__init__(parent)
+        self._log_signal.connect(self._append_log)
         self.setObjectName("managerView")
         self.cfg = cfg
         self.services = services
@@ -131,20 +134,21 @@ class ManagerView(QWidget):
             ("dupes", "Duplicates", 0)])
         root.addWidget(self.readout_card)
 
-        # toolbar: actions + git + grouped toggle + search
+        # command bar (Fluent): one primary + the maintenance/import actions
         bar = QHBoxLayout()
         bar.setSpacing(8)
         self.btn_refresh = PrimaryPushButton("Refresh")
         self.btn_refresh.clicked.connect(self.refresh)
-        self.btn_repair = PushButton("Repair Library")
-        self.btn_repair.clicked.connect(self._repair)
         bar.addWidget(self.btn_refresh)
-        bar.addWidget(self.btn_repair)
-        bar.addWidget(TransparentPushButton("Group by Component"))
-        self.group_sw = SwitchButton()
-        self.group_sw.setChecked(True)
-        self.group_sw.checkedChanged.connect(lambda *_: self.refresh())
-        bar.addWidget(self.group_sw)
+        for label, slot in [("Import ZIPs", self._process_zips),
+                            ("Clean Leftovers", self._clean),
+                            ("Repair", self._repair),
+                            ("Remove Duplicates", self._dedupe),
+                            ("Register Libraries", self._register),
+                            ("Render Board", self._render_board)]:
+            b = PushButton(label)
+            b.clicked.connect(slot)
+            bar.addWidget(b)
         bar.addStretch(1)
         self.git_lbl = CaptionLabel("")
         self.git_lbl.setTextColor(ui_theme.tc("FG_DIM"), ui_theme.tc("FG_DIM"))
@@ -154,10 +158,21 @@ class ManagerView(QWidget):
         bar.addWidget(self.btn_commit)
         root.addLayout(bar)
 
+        # view controls: grouped toggle + filter
+        vc = QHBoxLayout()
+        vc.setSpacing(8)
+        vc.addWidget(BodyLabel("Group by Component"))
+        self.group_sw = SwitchButton()
+        self.group_sw.setChecked(True)
+        self.group_sw.checkedChanged.connect(lambda *_: self.refresh())
+        vc.addWidget(self.group_sw)
+        vc.addStretch(1)
         self.search = SearchLineEdit()
         self.search.setPlaceholderText("Filter parts…")
+        self.search.setFixedWidth(300)
         self.search.textChanged.connect(self._apply_filter)
-        root.addWidget(self.search)
+        vc.addWidget(self.search)
+        root.addLayout(vc)
 
         self.table = TableWidget()
         self.table.setBorderVisible(True)
@@ -178,8 +193,11 @@ class ManagerView(QWidget):
         self._refresh_git()
 
     # -- logic wiring --
-    def write(self, msg):                      # UILog-compatible sink
-        self.log.appendPlainText(str(msg).rstrip())
+    def write(self, msg):                      # UILog sink — thread-safe via signal
+        self._log_signal.emit(str(msg).rstrip())
+
+    def _append_log(self, msg):
+        self.log.appendPlainText(msg)
 
     def refresh(self):
         grouped = self.group_sw.isChecked()
@@ -268,9 +286,53 @@ class ManagerView(QWidget):
             self.write(f"Commit: {msg}")
         self.services.run_async(job, ok="Commit finished.", done_cb=lambda ok: self._refresh_git())
 
+    def _info(self, ok, title, content=""):
+        try:
+            from qfluentwidgets import InfoBar
+            (InfoBar.success if ok else InfoBar.warning)(
+                title, content, parent=self, duration=3500)
+        except Exception:                      # noqa: BLE001
+            pass
+
+    def _run(self, fn, ok_msg):
+        def done(ok):
+            self.refresh()
+            self._refresh_git()
+            self._info(ok, ok_msg if ok else f"{ok_msg} — see log")
+        self.services.run_async(fn, ok=ok_msg, done_cb=done)
+
     def _repair(self):
-        self.services.run_async(lambda: LM.repair_library(self.cfg, self),
-                                ok="Repair finished.", done_cb=lambda ok: self.refresh())
+        self._run(lambda: LM.repair_library(self.cfg, self), "Library repaired")
+
+    def _process_zips(self):
+        self._run(lambda: LM.process_existing_zips(self.cfg, self), "Processed ZIPs")
+
+    def _clean(self):
+        self._run(lambda: LM.clean_leftovers(self.cfg, self), "Cleaned leftovers")
+
+    def _dedupe(self):
+        self._run(lambda: LM.dedupe_symbol_library(Path(self.cfg["SymbolLib"]), self),
+                  "Removed duplicate symbols")
+
+    def _register(self):
+        self._run(lambda: LM.register_libraries(self.cfg, self), "Registered libraries in KiCad")
+
+    def _render_board(self):
+        from PyQt5.QtWidgets import QFileDialog
+        import fp_render
+        if not fp_render.have_board_render():
+            self._info(False, "Board render unavailable", "kicad-cli was not found.")
+            return
+        fn, _ = QFileDialog.getOpenFileName(
+            self, "Select a board", str(Path(self.cfg.get("RepoRoot", "."))),
+            "KiCad PCB (*.kicad_pcb)")
+        if not fn:
+            return
+        def job():
+            res = fp_render.render_board_image(fn)
+            self.write(f"Board render: {getattr(res, 'message', 'done')}")
+        self.services.run_async(job, ok="Board rendered",
+                                done_cb=lambda ok: self._info(ok, "Board rendered", Path(fn).name))
 
 
 def _qcolor(hexs):

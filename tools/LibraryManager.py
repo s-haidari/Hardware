@@ -3951,6 +3951,16 @@ class LibraryManagerWindow(QMainWindow):
 # Main
 # -----------------------------
 def main():
+    """Launch NETDECK. The ground-up QFluentWidgets app (nd_app) is the shell now;
+    the legacy QMainWindow shell falls back only if the new app fails to import."""
+    try:
+        import nd_app
+    except Exception:
+        return _legacy_main()
+    return nd_app.main()
+
+
+def _legacy_main():
     cfg = load_config()
     save_config(cfg)  # create/refresh config.json
    
