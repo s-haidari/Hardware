@@ -1403,9 +1403,9 @@ class DropZone(QFrame):
         for the dashed border so the drop zone stays visible in both themes."""
         edge = _tc("FG_DIM", "#6a6a72")
         self.default_style = (f"QFrame#dashBox {{ border: 1px dashed {edge}; "
-                              f"border-radius: 8px; background: transparent; }}")
+                              f"border-radius: 4px; background: transparent; }}")
         self.hover_style = (f"QFrame#dashBox {{ border: 1px dashed {_tc('FG', '#90909a')}; "
-                            f"border-radius: 8px; background: rgba(128,128,128,0.10); }}")
+                            f"border-radius: 4px; background: rgba(128,128,128,0.10); }}")
         self.dash_box.setStyleSheet(self.default_style)
         self.label.setStyleSheet(f"font-size: 10pt; color: {edge}; background: transparent;")
 
@@ -2791,23 +2791,23 @@ class LibraryManagerWindow(QMainWindow):
         QLabel#headerStatus { color: @FG_DIM@; font-size: 9pt; }
         QToolButton#iconBtn { font-size: 13pt; padding: 0 8px; border: none; background: transparent; color: @FG_DIM@; }
         QToolButton#iconBtn:hover { color: @TITLE_FG@; }
-        QFrame#card { border: 1px solid @BORDER@; border-radius: 12px; background-color: @@CARD_BG@@; margin-top: 6px; }
+        QFrame#card { border: 1px solid @BORDER@; border-radius: 6px; background-color: @@CARD_BG@@; margin-top: 6px; }
         QLabel#cardTitle { color: @TITLE_FG@; padding: 6px 8px 2px 8px; font-weight: 700; font-size: 9pt; }
         QLabel#wfSection { color: @FG_DIM@; font-weight: 800; font-size: 7pt; padding: 7px 4px 1px 4px; }
-        QLabel#previewPane { background-color: @@LOG_BG@@; border: 1px solid @BORDER@; border-radius: 10px; color: @FG_DIM@; }
-        QToolButton { background: transparent; border: 1px solid @BORDER@; border-radius: 7px; padding: 6px 10px; font-weight: 600; }
+        QLabel#previewPane { background-color: @@LOG_BG@@; border: 1px solid @BORDER@; border-radius: 6px; color: @FG_DIM@; }
+        QToolButton { background: transparent; border: 1px solid @BORDER@; border-radius: 4px; padding: 6px 10px; font-weight: 600; }
         QToolButton:hover { border-color: @ACCENT@; }
         QToolButton::menu-indicator { image: none; }
-        QMenu { background-color: @@MENU_BG@@; border: 1px solid @BORDER@; border-radius: 8px; padding: 5px; }
-        QMenu::item { padding: 6px 18px; border-radius: 5px; }
+        QMenu { background-color: @@MENU_BG@@; border: 1px solid @BORDER@; border-radius: 4px; padding: 5px; }
+        QMenu::item { padding: 6px 18px; border-radius: 3px; }
         QMenu::item:selected { background-color: @@MENU_SEL@@; color: @FG@; }
         QMenu::separator { height: 1px; background: @BORDER@; margin: 4px 8px; }
-        QPushButton { background-color: @@BTN_BG@@; color: @FG@; border: 1px solid @BTN_BORDER@; border-radius: 7px; padding: 6px 12px; font-size: 8pt; font-weight: 600; text-align: left; }
+        QPushButton { background-color: @@BTN_BG@@; color: @FG@; border: 1px solid @BTN_BORDER@; border-radius: 4px; padding: 6px 12px; font-size: 8pt; font-weight: 600; text-align: left; }
         QPushButton:hover { border-color: @ACCENT@; background-color: @@BTN_HOVER@@; }
         QPushButton:pressed { background-color: @@MENU_SEL@@; }
         QPushButton:disabled { color: @FG_DIM@; border-color: @BORDER@; }
         QPushButton::menu-indicator { image: none; }
-        QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox { background-color: @@IN_BG@@; border: 1px solid @BORDER@; border-radius: 7px; padding: 5px 8px; color: @FG@; selection-background-color: @SEL_BG@; selection-color: @SEL_FG@; }
+        QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox { background-color: @@IN_BG@@; border: 1px solid @BORDER@; border-radius: 4px; padding: 5px 8px; color: @FG@; selection-background-color: @SEL_BG@; selection-color: @SEL_FG@; }
         QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus { border: 1px solid @ACCENT@; }
         QComboBox QAbstractItemView { background-color: @@MENU_BG@@; color: @FG@; selection-background-color: @SEL_BG@; border: 1px solid @BORDER@; border-radius: 6px; }
         QComboBox::drop-down { border: none; width: 20px; }
@@ -2817,23 +2817,23 @@ class LibraryManagerWindow(QMainWindow):
         QSpinBox::up-arrow, QDoubleSpinBox::up-arrow { image: url(@CARET_UP@); width: 9px; height: 6px; }
         QSpinBox::down-arrow, QDoubleSpinBox::down-arrow { image: url(@CARET_DOWN@); width: 9px; height: 6px; }
         QCheckBox { color: @FG@; spacing: 8px; }
-        QCheckBox::indicator { width: 17px; height: 17px; border: 1px solid @ACCENT@; border-radius: 5px; background: @@IN_BG@@; }
+        QCheckBox::indicator { width: 17px; height: 17px; border: 1px solid @FG_DIM@; border-radius: 3px; background: @@IN_BG@@; }
         QCheckBox::indicator:hover { border-color: @FG_DIM@; }
         QCheckBox::indicator:checked { image: url(@CHECK_IMG@); background: @@SEC_BG@@; border-color: @FG_DIM@; }
-        QTreeWidget, QTableWidget, QListWidget { background-color: @@TREE_BG@@; border: 1px solid @BORDER@; border-radius: 10px; color: @FG@; alternate-background-color: @@TREE_ALT@@; outline: 0; gridline-color: @BORDER@; }
+        QTreeWidget, QTableWidget, QListWidget { background-color: @@TREE_BG@@; border: 1px solid @BORDER@; border-radius: 6px; color: @FG@; alternate-background-color: @@TREE_ALT@@; outline: 0; gridline-color: @BORDER@; }
         QTreeWidget::item, QTableWidget::item { padding: 4px 3px; }
         QTreeWidget::item:selected, QTableWidget::item:selected, QListWidget::item:selected { background-color: @SEL_BG@; color: @SEL_FG@; }
         QTreeWidget::item:hover, QListWidget::item:hover { background-color: @HOVER_BG@; }
         QHeaderView::section { background-color: @@SEC_BG@@; color: @SEC_FG@; padding: 7px; border: none; border-right: 1px solid @BORDER@; border-bottom: 1px solid @BORDER@; font-weight: 700; }
-        QTextEdit, QPlainTextEdit { background-color: @@LOG_BG@@; border: 1px solid @BORDER@; border-radius: 10px; color: @LOG_FG@; font-family: "JetBrains Mono","Cascadia Mono","Consolas",monospace; font-size: 8pt; }
+        QTextEdit, QPlainTextEdit { background-color: @@LOG_BG@@; border: 1px solid @BORDER@; border-radius: 6px; color: @LOG_FG@; font-family: "JetBrains Mono","Cascadia Mono","Consolas",monospace; font-size: 8pt; }
         QScrollArea { background: transparent; border: none; }
         QScrollArea > QWidget > QWidget { background: transparent; }
-        QTabWidget::pane { border: 1px solid @BORDER@; border-radius: 10px; top: -1px; background: transparent; }
+        QTabWidget::pane { border: 1px solid @BORDER@; border-radius: 6px; top: -1px; background: transparent; }
         QScrollBar:vertical { background: transparent; width: 12px; margin: 2px; }
-        QScrollBar::handle:vertical { background: @SCROLL@; border-radius: 5px; min-height: 26px; }
+        QScrollBar::handle:vertical { background: @SCROLL@; border-radius: 3px; min-height: 26px; }
         QScrollBar::handle:vertical:hover { background: @SCROLL_HOVER@; }
         QScrollBar:horizontal { background: transparent; height: 12px; margin: 2px; }
-        QScrollBar::handle:horizontal { background: @SCROLL@; border-radius: 5px; min-width: 26px; }
+        QScrollBar::handle:horizontal { background: @SCROLL@; border-radius: 3px; min-width: 26px; }
         QScrollBar::handle:horizontal:hover { background: @SCROLL_HOVER@; }
         QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
         QScrollBar::add-page, QScrollBar::sub-page { background: none; }
@@ -2844,16 +2844,16 @@ class LibraryManagerWindow(QMainWindow):
         QStatusBar { background: @@ST_BG@@; border-top: 1px solid @BORDER@; color: @ST_FG@; }
         QStatusBar::item { border: none; }
         QLabel#resultChip { font-weight: 700; padding: 0 8px; }
-        QProgressBar#opProgress { background: @@PROG_BG@@; border: 1px solid @BORDER@; border-radius: 7px; }
+        QProgressBar#opProgress { background: @@PROG_BG@@; border: 1px solid @BORDER@; border-radius: 4px; }
         QProgressBar#opProgress::chunk { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 @PROG1@, stop:1 @PROG2@); border-radius: 6px; }
         QTabBar#cardTabBar { background: transparent; spacing: 6px; }
-        QTabBar#cardTabBar::tab { padding: 6px 14px; font-weight: 700; font-size: 10pt; color: @FG_DIM@; border: 1px solid @BORDER@; border-radius: 8px; background: @@TAB_BG@@; margin: 0 4px; min-height: 24px; }
+        QTabBar#cardTabBar::tab { padding: 6px 14px; font-weight: 700; font-size: 10pt; color: @FG_DIM@; border: 1px solid @BORDER@; border-radius: 4px; background: @@TAB_BG@@; margin: 0 4px; min-height: 24px; }
         QTabBar#cardTabBar::tab:hover { background: @@HOVER_BG@@; }
         QTabBar#cardTabBar::tab:selected { color: @TAB_SEL_FG@; background: @@TAB_SEL_BG@@; border-color: @ACCENT@; }
         QTabBar::tab { padding: 7px 14px; color: @FG_DIM@; background: @@TAB_BG@@; border: 1px solid @BORDER@; border-bottom: none; border-top-left-radius: 8px; border-top-right-radius: 8px; margin-right: 2px; }
         QTabBar::tab:selected { color: @TITLE_FG@; background: @@TAB_SEL_BG@@; }
         QTabBar::tab:hover { color: @TITLE_FG@; }
-        QToolTip { background: @MENU_BG@; color: @FG@; border: 1px solid @ACCENT@; padding: 5px 7px; }
+        QToolTip { background: @MENU_BG@; color: @FG@; border: 1px solid @BORDER@; padding: 5px 7px; }
     """
 
     def _theme_palette(self, c):

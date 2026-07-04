@@ -585,27 +585,43 @@ class PinMapWidget(QWidget):
 
 
 class _MiniStat(QFrame):
-    """A compact top-strip stat: a value over a small label with a coloured left
-    accent. Fixed width, so every stat is the same size whatever its value."""
-    def __init__(self, label, accent, parent=None):
+    """One instrument readout: a mono value over a small uppercase label, with a
+    whisper-volume colour tick between them for the categories that carry one.
+    No box — the readout band rules stats apart with hairlines, like the fascia
+    of a bench meter."""
+    def __init__(self, label, accent=None, parent=None):
         super().__init__(parent)
         self.setObjectName("miniStat")
         self._accent = accent
-        self.setFixedWidth(106)
+        self.setMinimumWidth(86)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(11, 5, 10, 6)
-        lay.setSpacing(0)
+        lay.setContentsMargins(14, 3, 14, 5)
+        lay.setSpacing(2)
         self._v = QLabel("–")
-        self._l = QLabel(label)
+        vf = QFont(_SVG_MONO.split(",")[0].strip("'"))
+        vf.setPointSizeF(11.5)
+        vf.setWeight(QFont.DemiBold)
+        self._v.setFont(vf)
+        self._tick = QFrame()
+        self._tick.setFixedSize(12, 2)
+        self._l = QLabel(label.upper())
+        lf = QFont(_SVG_FONT.split(",")[0])
+        lf.setPointSizeF(6.5)
+        lf.setBold(True)
+        lf.setLetterSpacing(QFont.AbsoluteSpacing, 1.1)
+        self._l.setFont(lf)
         lay.addWidget(self._v)
+        lay.addWidget(self._tick)
         lay.addWidget(self._l)
         self.restyle()
 
     def restyle(self):
-        self.setStyleSheet(f"#miniStat{{background:{_CARD};border-radius:8px;"
-                           f"border-left:3px solid {self._accent};}}")
-        self._v.setStyleSheet(f"color:{_TXT};font-size:14px;font-weight:700;")
-        self._l.setStyleSheet(f"color:{_MUT};font-size:9px;font-weight:600;")
+        self.setStyleSheet("#miniStat{background:transparent;}")
+        self._v.setStyleSheet(f"color:{_TXT};")
+        self._tick.setStyleSheet(
+            f"background:{self._accent or 'transparent'};border:none;")
+        self._tick.setVisible(bool(self._accent))
+        self._l.setStyleSheet(f"color:{_MUT};")
 
     def set(self, value):
         self._v.setText(str(value))
@@ -659,7 +675,7 @@ class ConnectionRow(QFrame):
         border = col if self._selected else "transparent"
         self.setStyleSheet(
             f"#connRow{{background:{_CARD};border:1px solid {border};"
-            f"border-left:3px solid {col};border-radius:8px;}}"
+            f"border-left:3px solid {col};border-radius:4px;}}"
             f"#connRow:hover{{background:{_PANEL};}}")
         self._head.setText(
             f"<span style='color:{_MUT};font-family:JetBrains Mono;font-weight:700'>{self.pin}</span>"
@@ -858,30 +874,38 @@ class Stm32PinsWidget(QWidget):
         root.addWidget(self.status)
 
         # ── top strip: package identity + compact stat cards (no wall of text) ──
-        strip = QHBoxLayout()
-        strip.setSpacing(8)
+        self._readout = QFrame()
+        self._readout.setObjectName("readout")
+        strip = QHBoxLayout(self._readout)
+        strip.setContentsMargins(0, 0, 0, 4)
+        strip.setSpacing(0)
         self.pkg_name = QLabel("")
         self.pkg_sub = QLabel("")
         idbox = QVBoxLayout()
-        idbox.setContentsMargins(2, 3, 12, 3)
+        idbox.setContentsMargins(2, 3, 18, 3)
         idbox.setSpacing(0)
         idbox.addWidget(self.pkg_name)
         idbox.addWidget(self.pkg_sub)
         strip.addLayout(idbox)
         self._stats = {}
+        self._seps = []
         for key, label, accent in [
                 ("must", "Must-Switch", _SWITCH_COLOR[sdb.SWITCH_MUST]),
                 ("osc", "Oscillator", _SWITCH_COLOR[sdb.SWITCH_OSC_OPTIONAL]),
-                ("fixed", "Fixed", _MUT),
+                ("fixed", "Fixed", None),
                 ("breakout", "Breakout", _BREAKOUT_COLOR),
                 ("fivev", "5V-Tolerant", "#24b196"),
-                ("io", "Per-Pin I/O", _MUT),
-                ("vdda", "VDDA (V)", _MUT)]:
+                ("io", "Per-Pin I/O", None),
+                ("vdda", "VDDA (V)", None)]:
+            sep = QFrame()
+            sep.setFixedWidth(1)
+            self._seps.append(sep)
+            strip.addWidget(sep)
             b = _MiniStat(label, accent)
             self._stats[key] = b
             strip.addWidget(b)
         strip.addStretch()
-        root.addLayout(strip)
+        root.addWidget(self._readout)
         self._restyle_strip()
 
         # ── stacked views: Overview | Table | Connections ──
@@ -945,7 +969,7 @@ class Stm32PinsWidget(QWidget):
 
     def _style_browsers(self):
         css = (f"QTextBrowser{{background:{_CARD};color:{_TXT};border:1px solid {_LINE};"
-               f"border-radius:10px;padding:10px;}}")
+               f"border-radius:6px;padding:10px;}}")
         for wdg in (getattr(self, "pin_detail", None), getattr(self, "cells_view", None)):
             if wdg is not None:
                 wdg.setStyleSheet(css)
@@ -1047,8 +1071,14 @@ class Stm32PinsWidget(QWidget):
             self._select(self._sel_pos)
 
     def _restyle_strip(self):
+        self._readout.setStyleSheet(
+            f"#readout{{background:transparent;border:none;"
+            f"border-bottom:1px solid {_LINE};}}")
         self.pkg_name.setStyleSheet(f"color:{_TXT};font-size:16px;font-weight:700;")
-        self.pkg_sub.setStyleSheet(f"color:{_MUT};font-size:10px;")
+        self.pkg_sub.setStyleSheet(
+            f"color:{_MUT};font-size:9px;font-family:'JetBrains Mono';")
+        for sep in self._seps:
+            sep.setStyleSheet(f"background:{_LINE};border:none;")
         for b in self._stats.values():
             b.restyle()
 

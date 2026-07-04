@@ -25,7 +25,8 @@ DARK_COLORS = {
     "TITLE_FG": "#ffffff", "CARD_BG": "#212124", "BORDER": "#33333a",
     "HDR1": "#212124", "HDR2": "#1a1a1c", "CHIP_BG": "#26262b", "IN_BG": "#1c1c1f",
     "BTN_BG": "#26262b", "BTN_HOVER": "#2f2f35", "BTN_BORDER": "#37373e",
-    "ACCENT": "#d0d0d6", "TREE_BG": "#1c1c1f", "TREE_ALT": "#202024",
+    "ACCENT": "#e5534b",   # NETDECK red — active states only
+    "TREE_BG": "#1c1c1f", "TREE_ALT": "#202024",
     "SEL_BG": "#33333c", "SEL_FG": "#ffffff", "HOVER_BG": "#26262b",
     "SEC_BG": "#212124", "SEC_FG": "#b8b8c0", "LOG_BG": "#151517", "LOG_FG": "#c0c0c8",
     "SCROLL": "#37373e", "SCROLL_HOVER": "#4a4a52", "ST_BG": "#151517", "ST_FG": "#90909a",
@@ -39,7 +40,8 @@ LIGHT_COLORS = {
     "TITLE_FG": "#101014", "CARD_BG": "#ffffff", "BORDER": "#ececea",
     "HDR1": "#ffffff", "HDR2": "#f2f2f0", "CHIP_BG": "#efefed", "IN_BG": "#ffffff",
     "BTN_BG": "#f7f7f6", "BTN_HOVER": "#efefee", "BTN_BORDER": "#e2e2df",
-    "ACCENT": "#2a2a30", "TREE_BG": "#ffffff", "TREE_ALT": "#f7f7f6",
+    "ACCENT": "#e5534b",   # NETDECK red — active states only
+    "TREE_BG": "#ffffff", "TREE_ALT": "#f7f7f6",
     "SEL_BG": "#e6e6e2", "SEL_FG": "#101014", "HOVER_BG": "#f2f2f0",
     "SEC_BG": "#f7f7f6", "SEC_FG": "#56565c", "LOG_BG": "#fafafa", "LOG_FG": "#33333a",
     "SCROLL": "#d4d4d0", "SCROLL_HOVER": "#b8b8b4", "ST_BG": "#efefee", "ST_FG": "#85858c",
