@@ -414,7 +414,7 @@ class KiCadToolsWidget(QWidget):
                 schs = wiz.list_schematics(pro.parent)
                 if not schs:
                     continue
-                top = schs[0]
+                top = wiz.pick_top_schematic(schs)   # the root sheet, not schs[0]
                 self.log(f"ERC: {top.name}")
                 try:
                     proc = subprocess.run([str(kdir), "sch", "erc", str(top)],
@@ -546,9 +546,11 @@ class KiCadToolsWidget(QWidget):
         r = self.nc_table.rowCount(); self.nc_table.insertRow(r)
         self._nc_make_row(r, {
             "name": "NewClass", "clearance": 0.127, "track_width": 0.2,
-            "via_diameter": 0.8, "via_drill": 0.4, "diff_pair_width": None,
-            "diff_pair_gap": None, "wire_thickness": 0.1524, "bus_thickness": 0.3048,
-            "color": "#808080", "line_style": "solid", "priority": 0,
+            "via_diameter": 0.8, "via_drill": 0.4,
+            "microvia_diameter": None, "microvia_drill": None,
+            "diff_pair_width": None, "diff_pair_gap": None, "diff_pair_via_gap": None,
+            "wire_thickness": 0.1524, "bus_thickness": 0.3048,
+            "color": "#808080", "line_style": "solid", "priority": 0, "patterns": [],
         })
 
     def _nc_remove(self):

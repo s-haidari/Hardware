@@ -511,16 +511,6 @@ def classify_pin(pin: int, side: str, identities: dict, total_mcus: int,
 
 
 @dataclass
-class Adg714Bank:
-    index: int
-    channels: list                          # (pin, target_net) per channel
-
-    @property
-    def spare(self) -> int:
-        return 8 - len(self.channels)
-
-
-@dataclass
 class PackageSwitchReport:
     package: str
     decisions: list
@@ -553,18 +543,6 @@ class PackageSwitchReport:
     @property
     def fixed_count(self) -> int:
         return len(self._of_class(SWITCH_NONE))
-
-    def adg714_banks(self, include_osc: bool = False) -> list:
-        pins = list(self.must_switch)
-        if include_osc:
-            pins += list(self.osc_optional)
-        pins.sort(key=lambda d: d.pin)
-        banks: list = []
-        for i, d in enumerate(pins):
-            if i % 8 == 0:
-                banks.append(Adg714Bank(index=len(banks) + 1, channels=[]))
-            banks[-1].channels.append((d.pin, d.primary_target_net))
-        return banks
 
     @property
     def adg714_count(self) -> int:

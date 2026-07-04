@@ -1328,7 +1328,7 @@ class Stm32PinsWidget(QWidget):
             return
         conn = sdb.connect(self.db_path)
         try:
-            written = [sauth.write_authority(conn, pkg, __import__("pathlib").Path(out))
+            written = [sauth.write_authority(conn, pkg, Path(out))
                        for pkg in ("LQFP64", "LQFP100")]
         except Exception as e:
             QMessageBox.warning(self, "Generate", f"Generate failed:\n{e}")
