@@ -577,7 +577,7 @@ ADG714_TERMINAL_PIN = {"S1": 5, "D1": 6, "S2": 7, "D2": 8, "S3": 9, "D3": 10, "S
 # RA = right). [] = not a connector contact (GND solid plane / local VCAP cap).
 RAIL_CONTACT = {
     "VBAT_TGT": ["LA-33"], "VDDA_TGT": ["RA-20"], "VREF_TGT": ["RA-22"], "VSSA_TGT": ["RA-24"],
-    "VTARGET": ["LA-27", "LA-29", "RA-16", "RA-18"], "SERVICE_BOOT0": ["RA-14"],
+    "VTARGET": ["RA-16", "RA-18"], "SERVICE_BOOT0": ["RA-14"],
     "SERVICE_NRST": ["LA-7"], "SERVICE_OSC_IN": ["RA-10"], "SERVICE_OSC_OUT": ["RA-12"],
     "GND": [], "VCAP_NODE": [],
 }

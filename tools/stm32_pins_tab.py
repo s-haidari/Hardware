@@ -576,15 +576,15 @@ def _pin_branches(a: dict, pos: int):
             rail_sub = ("Contact " + " / ".join(c["connector_contacts"])) if c["connector_contacts"] \
                 else ("Ground Plane" if c["rail"] == "GND" else "Local Cap")
             branches.append(("SWITCHED ROLE", [
-                (f"ADG714 Cell {c['cell']} · Ch {c['channel']}",
-                 f"{c['s_pin']} Pin {c['s_pin_num']} · {c['d_pin']} Pin {c['d_pin_num']}", None),
+                (f"ADG714 Cell {c['cell']} · Channel {c['channel']}",
+                 f"Source {c['s_pin']} Pin {c['s_pin_num']} · Drain {c['d_pin']} Pin {c['d_pin_num']}", None),
                 (c["rail"], rail_sub, pcol)]))
             branches.append(("DEFAULT IO LANE", [
-                ("33 Ω Series R", "R_IO", None),
+                ("33 Ω Series Resistor", "R_IO", None),
                 (c["card_lane"], "Lane Row", _CAT_COLOR["lane"])]))
     elif kind == "resistor":
         branches.append(("IO LANE", [
-            ("33 Ω Series R", "R_IO", None),
+            ("33 Ω Series Resistor", "R_IO", None),
             (conn["dest"], "Lane Row", _CAT_COLOR["lane"])]))
     else:
         branches.append(("DIRECT", [
@@ -750,7 +750,7 @@ def detail_svg(a: dict, pos=None) -> str:
 
         # socket (source), then each branch's nodes stacked vertically — same model
         # as the Overview wiring band, in a vertical form for the narrow panel.
-        _nodecard(name or f"Pin {pos}", f"ZIF Socket · Contact {pos}", None)
+        _nodecard("ZIF Socket", f"Contact {pos}", None)
         for caption, stops in branches:
             _wire(8)
             body.append(f'<text x="{pad}" y="{y+9}" fill="#a2a2a8" font-size="8" font-weight="700" '
@@ -838,7 +838,7 @@ def detail_band_svg(a: dict, pos, width: int, height: int = 224) -> str:
                  f'Firmware picks one.</text>')
 
     # ── node + wire helpers (every node is the same fixed size) ──
-    NH, NODE_W, GAP = 44, 178, 30
+    NH, NODE_W, GAP = 44, 212, 26
 
     def node(x, cy, title, sub, color):
         barcol = color or NEU
@@ -861,7 +861,7 @@ def detail_band_svg(a: dict, pos, width: int, height: int = 224) -> str:
 
     # ── socket node (shared source), then the branches to its right ──
     scy = H / 2 - 2
-    sr = node(pad + 150, scy, name or f"Pin {pos}", f"ZIF Socket · Contact {pos}", None)
+    sr = node(pad + 150, scy, "ZIF Socket", f"Contact {pos}", None)
     rows = [scy] if len(branches) == 1 else [scy - 40, scy + 40]
     first_x = sr + 40
     for (caption, stops), rowy in zip(branches, rows):
