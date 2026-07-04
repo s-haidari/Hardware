@@ -180,7 +180,7 @@ def load_config() -> Dict[str, str]:
     sym_path.parent.mkdir(parents=True, exist_ok=True)
     if not sym_path.exists():
         sym_path.write_text(
-            '(kicad_symbol_lib (version 20211014) (generator "LibraryManager.py"))\n)\n',
+            '(kicad_symbol_lib (version 20211014) (generator "LibraryManager.py")\n)\n',
             encoding="utf-8"
         )
     return cfg
@@ -244,7 +244,7 @@ def write_text(path: Path, text: str):
 
 def ensure_target_header(target_path: Path):
     if not target_path.exists():
-        write_text(target_path, '(kicad_symbol_lib (version 20211014) (generator "LibraryManager.py"))\n)\n')
+        write_text(target_path, '(kicad_symbol_lib (version 20211014) (generator "LibraryManager.py")\n)\n')
 
 def extract_symbol_blocks(src_text: str) -> List[str]:
     """
@@ -311,19 +311,35 @@ def extract_symbol_name(block: str) -> str:
     return head.strip()
 
 def insert_blocks_into_target(target_text: str, blocks: List[str]) -> str:
-    """Insert blocks just before the top-level closing paren"""
+    """Insert blocks just before the top-level closing paren.
+
+    The paren scan skips quoted strings (honoring KiCad's \\-escapes) so a
+    description like "smiley :)" can't drive depth to 0 early and splice the new
+    blocks into the middle of a symbol. Mirrors extract_symbol_blocks' scanner.
+    """
+    s = target_text
+    n = len(s)
     depth = 0
     last_close = None
-    for idx, ch in enumerate(target_text):
+    i = 0
+    while i < n:
+        ch = s[i]
+        if ch == '"':                       # quoted string: skip it (escape-aware)
+            i += 1
+            while i < n and s[i] != '"':
+                i += 2 if s[i] == "\\" else 1
+            i += 1
+            continue
         if ch == "(":
             depth += 1
         elif ch == ")":
             depth -= 1
             if depth == 0:
-                last_close = idx
+                last_close = i
+        i += 1
     if last_close is None:
         body = "\n".join(blocks)
-        return f'(kicad_symbol_lib (version 20211014) (generator "LibraryManager.py"))\n{body}\n)\n'
+        return f'(kicad_symbol_lib (version 20211014) (generator "LibraryManager.py")\n{body}\n)\n'
     return target_text[:last_close] + "\n" + "\n".join(blocks) + "\n" + target_text[last_close:]
 
 def remove_symbol_by_name(symbol_lib_path: Path, name: str, log: UILog) -> bool:
@@ -342,7 +358,7 @@ def remove_symbol_by_name(symbol_lib_path: Path, name: str, log: UILog) -> bool:
         if not removed:
             return False
         new_text = insert_blocks_into_target(
-            '(kicad_symbol_lib (version 20211014) (generator "LibraryManager.py"))\n)\n',
+            '(kicad_symbol_lib (version 20211014) (generator "LibraryManager.py")\n)\n',
             new_blocks
         )
         write_text(symbol_lib_path, new_text)
@@ -373,7 +389,7 @@ def dedupe_symbol_library(symbol_lib_path: Path, log: UILog) -> int:
             kept.append(b)
         if removed:
             new_text = insert_blocks_into_target(
-                '(kicad_symbol_lib (version 20211014) (generator "LibraryManager.py"))\n)\n',
+                '(kicad_symbol_lib (version 20211014) (generator "LibraryManager.py")\n)\n',
                 kept
             )
             write_text(symbol_lib_path, new_text)
@@ -408,7 +424,7 @@ def remove_symbols_by_indices(symbol_lib_path: Path, expected: Dict[int, str],
         removed = len(blocks) - len(kept)
         if removed:
             new_text = insert_blocks_into_target(
-                '(kicad_symbol_lib (version 20211014) (generator "LibraryManager.py"))\n)\n',
+                '(kicad_symbol_lib (version 20211014) (generator "LibraryManager.py")\n)\n',
                 kept
             )
             write_text(symbol_lib_path, new_text)
@@ -710,7 +726,7 @@ def repair_library(cfg: Dict[str, str], log: UILog) -> Dict[str, int]:
             new_blocks.append(nb)
         if result["symbols_fixed"]:
             new_text = insert_blocks_into_target(
-                '(kicad_symbol_lib (version 20211014) (generator "LibraryManager.py"))\n)\n',
+                '(kicad_symbol_lib (version 20211014) (generator "LibraryManager.py")\n)\n',
                 new_blocks)
             write_text(sym_path, new_text)
 
@@ -769,7 +785,7 @@ def remove_symbol_by_index(symbol_lib_path: Path, index: int, log: UILog,
             return False
         del blocks[index]
         new_text = insert_blocks_into_target(
-            '(kicad_symbol_lib (version 20211014) (generator "LibraryManager.py"))\n)\n',
+            '(kicad_symbol_lib (version 20211014) (generator "LibraryManager.py")\n)\n',
             blocks
         )
         write_text(symbol_lib_path, new_text)
@@ -1050,6 +1066,69 @@ def clean_leftovers(cfg: Dict[str, str], log: UILog, refresh_cb=None):
 # -----------------------------
 # Git commands
 # -----------------------------
+# Commit-safety guards. A committed KiCad file that still holds merge-conflict
+# markers or unbalanced parens is corrupt and unusable, so we refuse to commit
+# one rather than push corruption to everyone else (this is exactly how the
+# libs/MySymbols.kicad_sym breakage got shared last time).
+_CONFLICT_MARKER_RE = re.compile(r'^(<{7}|={7}|>{7})', re.MULTILINE)
+_KICAD_TEXT_SUFFIXES = (".kicad_sym", ".kicad_pcb", ".kicad_sch")
+
+
+def has_conflict_markers(text: str) -> bool:
+    """True if text contains a git merge-conflict marker at the start of a line
+    ('<<<<<<<', '=======', or '>>>>>>>')."""
+    return _CONFLICT_MARKER_RE.search(text) is not None
+
+
+def is_paren_balanced(text: str) -> bool:
+    """True if parentheses balance across the whole text, ignoring parens that
+    appear inside quoted strings (honoring KiCad's \\-escapes). A file whose
+    depth ever goes negative, or ends non-zero, is unbalanced."""
+    depth = 0
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch == '"':                       # quoted string: parens inside don't count
+            i += 1
+            while i < n and text[i] != '"':
+                i += 2 if text[i] == "\\" else 1
+            i += 1
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth < 0:
+                return False
+        i += 1
+    return depth == 0
+
+
+def find_corrupt_kicad_files(repo_root) -> List[tuple]:
+    """Scan *.kicad_sym/.kicad_pcb/.kicad_sch under repo_root for corruption.
+    Returns a list of (path, reason) for every file that carries merge-conflict
+    markers or is paren-unbalanced. Skips the .git directory."""
+    bad: List[tuple] = []
+    root = Path(repo_root)
+    if not root.exists():
+        return bad
+    for p in sorted(root.rglob("*")):
+        if not p.is_file() or p.suffix.lower() not in _KICAD_TEXT_SUFFIXES:
+            continue
+        if ".git" in p.parts:
+            continue
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        if has_conflict_markers(text):
+            bad.append((p, "merge-conflict markers"))
+        elif not is_paren_balanced(text):
+            bad.append((p, "unbalanced parentheses"))
+    return bad
+
+
 def run_git(args: List[str], cfg: Dict[str, str], log: UILog):
     try:
         proc = run_hidden(
@@ -1090,7 +1169,19 @@ def git_has_staged_changes(cfg: Dict[str, str]) -> bool:
 
 
 def git_stage_commit(cfg: Dict[str, str], log: UILog, message: Optional[str] = None) -> bool:
-    """Stage everything and commit. Returns True only if a commit was made."""
+    """Stage everything and commit. Returns True only if a commit was made.
+
+    Refuses to stage/commit when any tracked KiCad file (*.kicad_sym/.kicad_pcb/
+    .kicad_sch) still carries merge-conflict markers or is paren-unbalanced, so
+    corruption never gets committed or pushed."""
+    corrupt = find_corrupt_kicad_files(cfg["RepoRoot"])
+    if corrupt:
+        log.write("ERROR commit ABORTED: corrupt KiCad file(s) detected — "
+                  "refusing to commit corruption:")
+        for p, reason in corrupt:
+            log.write(f"  {p}: {reason}")
+        log.write("Fix the file(s) above (resolve conflicts / balance parens) and retry.")
+        return False
     run_git(["add", "-A"], cfg, log)
     if not git_has_staged_changes(cfg):
         log.write("Nothing to commit (working tree clean)")

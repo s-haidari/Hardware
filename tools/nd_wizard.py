@@ -36,6 +36,149 @@ STANDARD_DESIGNATORS = [
     'A', 'E', 'G', 'K', 'M', 'N', 'P', 'S', 'V', 'W', 'Z'
 ]
 
+# ---------- File I/O & atomic-apply helpers ----------
+def _write_text_lf(path: Path, text: str) -> None:
+    """Write *text* without newline translation so LF stays LF.
+
+    KiCad files are read here in universal-newline mode (every ending normalized
+    to '\n').  The default text-write path on Windows would re-expand each '\n'
+    back to '\r\n', flipping the entire file to CRLF so a single tag rename makes
+    *every* line read as changed in git and the .bak diff is total.  Opening with
+    ``newline=''`` disables translation so the bytes on disk match the in-memory
+    string exactly.  (Uses open() rather than Path.write_text's ``newline=`` kwarg,
+    which only exists on Python 3.10+, keeping the documented 3.8+ floor.)
+    """
+    with open(path, "w", encoding="utf-8", newline="") as fh:
+        fh.write(text)
+
+
+def _timestamped_backup_path(src: Path, timestamp: str) -> Path:
+    """Backup filename carrying *timestamp* so repeat runs never collide."""
+    return src.parent / f"{src.name}.{timestamp}.bak"
+
+
+def _make_backup(src: Path, timestamp: str) -> Path:
+    """Copy *src* to a timestamped ``.bak``, never overwriting an existing one.
+
+    The old code used one fixed ``foo.kicad_sch.bak`` and clobbered it every run --
+    a second run copied the already-modified file over the pristine backup,
+    destroying the only safety net.  Embedding the run timestamp keeps each run's
+    backup distinct; on a (rare) same-second collision we add a counter rather than
+    overwrite.  Returns the backup path actually written.
+    """
+    bak = _timestamped_backup_path(src, timestamp)
+    if bak.exists():
+        i = 1
+        while True:
+            alt = src.parent / f"{src.name}.{timestamp}.{i}.bak"
+            if not alt.exists():
+                bak = alt
+                break
+            i += 1
+    shutil.copy2(src, bak)
+    return bak
+
+
+def _rollback(written):
+    """Restore each (path, backup_path) from its backup (best-effort, reverse)."""
+    for path, bak in reversed(written):
+        try:
+            if bak is not None and Path(bak).exists():
+                shutil.copy2(bak, path)
+        except Exception:
+            pass
+
+
+class ApplyError(Exception):
+    """Raised by :func:`apply_transforms_atomically` when a file can't be
+    transformed or written; carries which file failed and in which phase."""
+
+    def __init__(self, path, stage, original):
+        self.path = Path(path)
+        self.stage = stage          # 'transform' or 'write'
+        self.original = original
+        super().__init__(f"{stage} failed for {self.path}: {original!r}")
+
+
+def apply_transforms_atomically(tasks, timestamp, write_fn=None, backup_fn=None):
+    """All-or-nothing bulk apply.
+
+    *tasks* is an iterable of ``(path, transform)`` where ``transform()`` returns
+    ``(new_content, changes)``.  Two phases:
+
+      1. **Stage** -- run every ``transform()`` in memory.  If any raises (locked or
+         unreadable file, bad UTF-8, ...) nothing has been written yet, so we abort
+         immediately with an :class:`ApplyError` (stage='transform') naming the
+         offending file.
+      2. **Commit** -- for each file that actually changed, back it up then write it.
+         If any write fails partway, restore every file already written (plus the
+         partially written current one) from its backup and raise ApplyError
+         (stage='write'), so the project is never left half-renamed.
+
+    Returns ``(applied_changes, backups)`` on full success.  ``write_fn`` /
+    ``backup_fn`` are injectable for tests.
+    """
+    write_fn = write_fn or _write_text_lf
+    backup_fn = backup_fn or _make_backup
+
+    # Phase 1: stage all transforms in memory (no writes yet).
+    staged = []  # (path, new_content, changes)
+    for path, transform in tasks:
+        try:
+            new_content, changes = transform()
+        except Exception as e:
+            raise ApplyError(path, "transform", e) from e
+        if changes:
+            staged.append((Path(path), new_content, changes))
+
+    # Phase 2: commit -- backup + write, rolling back on any failure.
+    written = []          # (path, backup_path) successfully written
+    applied_changes = []
+    for path, new_content, changes in staged:
+        bak = None
+        try:
+            bak = backup_fn(path, timestamp)
+            write_fn(path, new_content)
+        except Exception as e:
+            restore = list(written)
+            if bak is not None:
+                restore.append((path, bak))
+            _rollback(restore)
+            raise ApplyError(path, "write", e) from e
+        written.append((path, bak))
+        applied_changes.extend(changes)
+
+    return applied_changes, [b for (_, b) in written]
+
+
+def _paren_delta_outside_strings(line: str) -> int:
+    """Net ``'(' - ')'`` count for one line, ignoring parens inside quoted strings.
+
+    KiCad S-expression strings are double-quoted with backslash escapes.  A stray
+    paren in a symbol's Description or URL (e.g. ``"Resistor (SMD)"``) would
+    otherwise desync a naive paren-depth counter and break ``(lib_symbols ...)``
+    boundary detection.
+    """
+    depth = 0
+    in_str = False
+    escaped = False
+    for ch in line:
+        if in_str:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_str = False
+        elif ch == '"':
+            in_str = True
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+    return depth
+
+
 # ---------- Prompt helpers ----------
 def prompt_menu(title, options):
     print(f"\n{title}")
@@ -64,10 +207,26 @@ def prompt_yes_no(label, default="n"):
     return val.startswith("y")
 
 # ---------- Project discovery ----------
-def should_ignore_path(path: Path) -> bool:
-    """Check if path should be ignored (.history, etc.)"""
-    parts = path.parts
+def should_ignore_path(path: Path, root: Path = None) -> bool:
+    """Check if a path should be ignored (.history or any hidden component).
+
+    Only components *at or below* the search ``root`` are considered.  Testing the
+    whole absolute path (the old behavior) meant a single hidden ancestor dir --
+    e.g. a checkout under ``C:/Users/.dotuser/...`` -- made every project file look
+    ignored, so discovery silently reported "No KiCad files found."  When ``root``
+    is given we look only at the portion of the path relative to it.
+    """
+    if root is not None:
+        try:
+            parts = path.relative_to(root).parts
+        except ValueError:
+            # Not under root (shouldn't happen for rglob results); consider only
+            # the file's own name, never its ancestors.
+            parts = (path.name,)
+    else:
+        parts = path.parts
     return '.history' in parts or any(p.startswith('.') and p != '.' for p in parts)
+
 
 def discover_projects(repo_root: Path):
     """Discover KiCad projects, ignoring .history folders"""
@@ -76,13 +235,13 @@ def discover_projects(repo_root: Path):
     # Check standard locations
     for p in [repo_root/"projects"/"SH", repo_root/"projects"/"CG", repo_root/"projects"/"Master",
               repo_root/"SH", repo_root/"CG", repo_root/"Master"]:
-        if p.exists() and not should_ignore_path(p):
+        if p.exists() and not should_ignore_path(p, repo_root):
             candidates.append(p)
 
     pr_dir = repo_root/"projects"
     if pr_dir.exists():
         for sub in pr_dir.iterdir():
-            if sub.is_dir() and not should_ignore_path(sub):
+            if sub.is_dir() and not should_ignore_path(sub, repo_root):
                 if any(sub.rglob("*.kicad_sch")):
                     if sub not in candidates:
                         candidates.append(sub)
@@ -92,12 +251,12 @@ def discover_projects(repo_root: Path):
 def list_schematics(project_root: Path):
     """Find all schematics, excluding .history"""
     all_schs = project_root.rglob("*.kicad_sch")
-    return sorted([s for s in all_schs if not should_ignore_path(s)])
+    return sorted([s for s in all_schs if not should_ignore_path(s, project_root)])
 
 def list_boards(project_root: Path):
     """Find all boards, excluding .history"""
     all_brds = project_root.rglob("*.kicad_pcb")
-    return sorted([b for b in all_brds if not should_ignore_path(b)])
+    return sorted([b for b in all_brds if not should_ignore_path(b, project_root)])
 
 def pick_top_schematic(schematics):
     if not schematics:
@@ -121,7 +280,7 @@ def find_kicad_projects(root: Path, include_legacy: bool = True, include_prl: bo
     files = []
     for pat in patterns:
         for f in root.rglob(pat):
-            if not should_ignore_path(f):
+            if not should_ignore_path(f, root):
                 files.append(f)
 
     projects = {}
@@ -756,32 +915,37 @@ def get_designator_from_lib_id(lib_id: str) -> str:
     # Final fallback: assume IC/generic part
     return "U"
 
-def parse_schematic_symbols(sch_path: Path) -> dict:
-    """
-    Parse schematic and return mapping of {reference: lib_id}.
+def parse_symbols_from_content(content: str) -> dict:
+    """Return mapping of {reference: lib_id} parsed from schematic *content*.
+
     Robust regex-based approach that works with any schematic format.
     """
-    content = sch_path.read_text(encoding='utf-8')
     symbols = {}
-    
+
     # Pattern to match symbol instances (after lib_symbols section)
     # Look for: (symbol followed by (lib_id "...") then later (property "Reference" "...")
     pattern = r'\(symbol\s*\n\s*\(lib_id\s+"([^"]+)"\)(.*?)\(property\s+"Reference"\s+"([^"]+)"'
-    
+
     matches = re.finditer(pattern, content, re.DOTALL)
-    
+
     for match in matches:
         lib_id = match.group(1)
         reference = match.group(3)
-        
+
         # Only store actual component instances, not template defaults
         # Real references have numbers or are longer than 2 chars
         if reference and lib_id:
             # Skip very short single-letter refs (template defaults like "R", "C", "U")
             if len(reference) > 2 or any(c.isdigit() for c in reference):
                 symbols[reference] = lib_id
-    
+
     return symbols
+
+
+def parse_schematic_symbols(sch_path: Path) -> dict:
+    """Parse schematic file and return mapping of {reference: lib_id}."""
+    return parse_symbols_from_content(sch_path.read_text(encoding='utf-8'))
+
 
 def unannotate_ref_with_lib_id(ref: str, lib_id: str = None) -> str:
     """
@@ -845,44 +1009,41 @@ def ref_find_replace(ref: str, find_s: str, repl_s: str) -> str:
 
 # ---------- Schematic operations (lib_id-aware) ----------
 
-def schematic_preview_and_apply(
-    sch_path: Path,
+def _transform_schematic(
+    content,
     op,
     tag_or_find,
     repl=None,
-    apply=False,
     touch_refs=True,
-    touch_labels=True
+    touch_labels=True,
+    ref_to_lib_id=None,
+    src_path=None,
 ):
-    """
-    Pure regex-based editing of .kicad_sch files (S-expression format).
-    For unannotate operation, parses lib_id to get ground truth about component types.
-    
+    """Pure in-memory transform of .kicad_sch S-expression text.
+
+    Returns (new_content, counts, samples, changes) and never touches the
+    filesystem, so the caller can stage the result and decide whether to commit.
+    For 'unannotate', *ref_to_lib_id* (parsed from the same content) supplies the
+    lib_id ground truth; when None it is parsed here.
+
     op: 'add_tag', 'remove_tag', 'strip_all', 'unannotate', 'find_replace'
-    returns (counts dict, sample strings list, changes list)
     """
-    
-    content = sch_path.read_text(encoding='utf-8')
     lines = content.splitlines(keepends=True)
-    
+
     changes = []
     samples = []
     counts = {"local": 0, "global": 0, "hier": 0, "sheet_pin": 0, "symbol_ref": 0}
-    
-    # For unannotate, parse lib_id mappings first
-    ref_to_lib_id = {}
-    if op == "unannotate" and touch_refs:
-        ref_to_lib_id = parse_schematic_symbols(sch_path)
-        
-        if not ref_to_lib_id:
-            print(f"[WARN] Could not parse any lib_id mappings from {sch_path.name}")
-            print(f"[WARN] Unannotation may not work correctly without lib_id information")
+
+    # For unannotate, lib_id mappings give the ground-truth designator.
+    if ref_to_lib_id is None:
+        if op == "unannotate" and touch_refs:
+            ref_to_lib_id = parse_symbols_from_content(content)
         else:
-            print(f"[INFO] Found {len(ref_to_lib_id)} components in {sch_path.name}")
-    
+            ref_to_lib_id = {}
+
     # Track which refs we've already processed (to avoid double-counting)
     processed_refs = {}  # {old_ref: new_ref}
-    
+
     def transform_label(txt: str) -> str:
         if op == "add_tag":
             return add_tag(txt, tag_or_find)
@@ -893,12 +1054,12 @@ def schematic_preview_and_apply(
         if op == "unannotate":
             return txt  # Don't modify labels for unannotate
         return txt.replace(tag_or_find, repl if repl else "")
-    
+
     def transform_ref(ref: str) -> str:
         # Check if we've already processed this reference
         if ref in processed_refs:
             return processed_refs[ref]
-        
+
         # Transform the reference
         if op == "add_tag":
             new_ref = ref_add_tag(ref, tag_or_find)
@@ -910,30 +1071,30 @@ def schematic_preview_and_apply(
             # Use lib_id if available for this reference
             lib_id = ref_to_lib_id.get(ref)
             if not lib_id:
-                # No lib_id found - skip transformation with warning
+                # No lib_id found - skip transformation
                 processed_refs[ref] = ref
                 return ref
             new_ref = unannotate_ref_with_lib_id(ref, lib_id)
         else:
             new_ref = ref_find_replace(ref, tag_or_find, repl if repl else "")
-        
+
         # Record this transformation
         if new_ref != ref:
             processed_refs[ref] = new_ref
-            
+
             # Add to counts and samples (only once per unique ref)
             counts["symbol_ref"] += 1
             lib_info = ""
             if ref in ref_to_lib_id:
                 lib_info = f" [{ref_to_lib_id[ref]}]"
-            changes.append(("symbol_ref", ref, new_ref, sch_path))
+            changes.append(("symbol_ref", ref, new_ref, src_path))
             if len(samples) < 20:
                 samples.append(f"reference: {ref} -> {new_ref}{lib_info}")
         else:
             processed_refs[ref] = ref  # No change
-        
+
         return new_ref
-    
+
     new_lines = []
 
     # Track whether we are inside a (lib_symbols ...) block so we never
@@ -945,13 +1106,13 @@ def schematic_preview_and_apply(
         new_line = line
 
         # --- lib_symbols block tracking ---
+        # Use a paren counter that ignores parens inside quoted strings so a stray
+        # '(' in a symbol Description/URL can't desync the block boundary.
         if '(lib_symbols' in line:
             _in_lib_symbols = True
-            # Count net paren depth so we know when the block closes.
-            # Start from the opening paren of (lib_symbols itself.
-            _lib_symbols_depth = sum(1 for c in line if c == '(') - sum(1 for c in line if c == ')')
+            _lib_symbols_depth = _paren_delta_outside_strings(line)
         elif _in_lib_symbols:
-            _lib_symbols_depth += sum(1 for c in line if c == '(') - sum(1 for c in line if c == ')')
+            _lib_symbols_depth += _paren_delta_outside_strings(line)
             if _lib_symbols_depth <= 0:
                 _in_lib_symbols = False
                 _lib_symbols_depth = 0
@@ -965,13 +1126,13 @@ def schematic_preview_and_apply(
                     new = transform_label(old)
                     if new != old:
                         counts["local"] += 1
-                        changes.append(("local_label", old, new, sch_path))
+                        changes.append(("local_label", old, new, src_path))
                         if len(samples) < 10:
                             samples.append(f"local: {old} -> {new}")
                     return f'{m.group(1)}{new}{m.group(3)}'
-                
+
                 new_line = re.sub(r'(\(label\s+")(.*?)(")', replace_local, new_line)
-            
+
             # Global labels: (global_label "TEXT" ...
             if '(global_label "' in line:
                 def replace_global(m):
@@ -979,13 +1140,13 @@ def schematic_preview_and_apply(
                     new = transform_label(old)
                     if new != old:
                         counts["global"] += 1
-                        changes.append(("global_label", old, new, sch_path))
+                        changes.append(("global_label", old, new, src_path))
                         if len(samples) < 10:
                             samples.append(f"global: {old} -> {new}")
                     return f'{m.group(1)}{new}{m.group(3)}'
-                
+
                 new_line = re.sub(r'(\(global_label\s+")(.*?)(")', replace_global, new_line)
-            
+
             # Hierarchical labels: (hierarchical_label "TEXT" ...
             if '(hierarchical_label "' in line:
                 def replace_hier(m):
@@ -993,13 +1154,13 @@ def schematic_preview_and_apply(
                     new = transform_label(old)
                     if new != old:
                         counts["hier"] += 1
-                        changes.append(("hier_label", old, new, sch_path))
+                        changes.append(("hier_label", old, new, src_path))
                         if len(samples) < 10:
                             samples.append(f"hier: {old} -> {new}")
                     return f'{m.group(1)}{new}{m.group(3)}'
-                
+
                 new_line = re.sub(r'(\(hierarchical_label\s+")(.*?)(")', replace_hier, new_line)
-            
+
             # Sheet pins: (pin "TEXT" ...
             if '(pin "' in line:
                 def replace_pin(m):
@@ -1007,13 +1168,13 @@ def schematic_preview_and_apply(
                     new = transform_label(old)
                     if new != old:
                         counts["sheet_pin"] += 1
-                        changes.append(("sheet_pin", old, new, sch_path))
+                        changes.append(("sheet_pin", old, new, src_path))
                         if len(samples) < 10:
                             samples.append(f"pin: {old} -> {new}")
                     return f'{m.group(1)}{new}{m.group(3)}'
-                
+
                 new_line = re.sub(r'(\(pin\s+")(.*?)(")', replace_pin, new_line)
-        
+
         # --- SYMBOL REFERENCES ---
         # Skip reference transforms while inside (lib_symbols ...) to avoid
         # corrupting symbol template references (e.g. "R" in Device:R definition).
@@ -1043,31 +1204,65 @@ def schematic_preview_and_apply(
                     replace_ref_instance,
                     new_line
                 )
-        
+
         new_lines.append(new_line)
-    
-    # --- SAVE if modified ---
+
+    return ''.join(new_lines), counts, samples, changes
+
+
+def schematic_preview_and_apply(
+    sch_path: Path,
+    op,
+    tag_or_find,
+    repl=None,
+    apply=False,
+    touch_refs=True,
+    touch_labels=True
+):
+    """Read *sch_path*, transform it, and (only if apply=True) write it back with a
+    timestamped non-clobbering .bak and an LF-preserving write.
+
+    Retained for the preview pass and standalone single-file use.  Bulk Apply now
+    routes through apply_transforms_atomically() for all-or-nothing safety.
+    Returns (counts, samples, changes).
+    """
+    content = sch_path.read_text(encoding='utf-8')
+
+    # For unannotate, parse lib_id mappings first (and surface a warning if none).
+    ref_to_lib_id = None
+    if op == "unannotate" and touch_refs:
+        ref_to_lib_id = parse_symbols_from_content(content)
+        if not ref_to_lib_id:
+            print(f"[WARN] Could not parse any lib_id mappings from {sch_path.name}")
+            print("[WARN] Unannotation may not work correctly without lib_id information")
+        else:
+            print(f"[INFO] Found {len(ref_to_lib_id)} components in {sch_path.name}")
+
+    new_content, counts, samples, changes = _transform_schematic(
+        content, op, tag_or_find, repl, touch_refs, touch_labels,
+        ref_to_lib_id, sch_path,
+    )
+
+    # --- SAVE if modified (single-file path; bulk apply is atomic elsewhere) ---
     if apply and changes:
-        backup_path = sch_path.with_suffix(sch_path.suffix + ".bak")
-        shutil.copy2(sch_path, backup_path)
-        sch_path.write_text(''.join(new_lines), encoding='utf-8')
-    
+        _make_backup(sch_path, datetime.now().strftime("%Y%m%d_%H%M%S"))
+        _write_text_lf(sch_path, new_content)
+
     return counts, samples, changes
 
+
 # ---------- PCB operations ----------
-def pcb_preview_and_apply(board_path: Path, op, tag_or_find, repl=None, apply=False):
+def _transform_pcb(content, op, tag_or_find, repl=None, src_path=None):
+    """Pure in-memory transform of .kicad_pcb text.
+
+    Returns (new_content, count, samples, changes); never writes to disk.
     """
-    Pure regex-based editing of .kicad_pcb files.
-    Works without pcbnew dependency.
-    """
-    
-    content = board_path.read_text(encoding='utf-8')
     lines = content.splitlines(keepends=True)
-    
+
     count = 0
     samples = []
     changes = []
-    
+
     def transform_ref(ref: str) -> str:
         if op == "add_tag":
             return ref_add_tag(ref, tag_or_find)
@@ -1078,12 +1273,12 @@ def pcb_preview_and_apply(board_path: Path, op, tag_or_find, repl=None, apply=Fa
         if op == "unannotate":
             # NOTE: PCB unannotation uses the ref string alone (no lib_id available in
             # .kicad_pcb text).  This fallback heuristic is less accurate than the
-            # schematic path — the GUI should surface a warning to the user.
+            # schematic path -- the GUI should surface a warning to the user.
             return unannotate_ref_with_lib_id(ref, None)
         return ref_find_replace(ref, tag_or_find, repl if repl else "")
-    
+
     new_lines = []
-    
+
     for line in lines:
         # PCB footprint reference: KiCad 6: (fp_text reference "U1" ...)
         #                          KiCad 7+/10: (fp_text "reference" "U1" ...)
@@ -1094,7 +1289,7 @@ def pcb_preview_and_apply(board_path: Path, op, tag_or_find, repl=None, apply=Fa
                 new = transform_ref(old)
                 if new != old:
                     count += 1
-                    changes.append(("pcb_ref", old, new, board_path))
+                    changes.append(("pcb_ref", old, new, src_path))
                     if len(samples) < 10:
                         samples.append(f"pcb-reference: {old} -> {new}")
                 return f'{m.group(1)}{new}{m.group(3)}'
@@ -1104,13 +1299,53 @@ def pcb_preview_and_apply(board_path: Path, op, tag_or_find, repl=None, apply=Fa
             new_lines.append(new_line)
         else:
             new_lines.append(line)
-    
+
+    return ''.join(new_lines), count, samples, changes
+
+
+def pcb_preview_and_apply(board_path: Path, op, tag_or_find, repl=None, apply=False):
+    """Read *board_path*, transform it, and (only if apply=True) write it back with a
+    timestamped non-clobbering .bak and an LF-preserving write.  Returns
+    (count, samples, changes).  Bulk Apply routes through
+    apply_transforms_atomically()."""
+    content = board_path.read_text(encoding='utf-8')
+    new_content, count, samples, changes = _transform_pcb(
+        content, op, tag_or_find, repl, board_path)
+
     if apply and changes:
-        backup_path = board_path.with_suffix(board_path.suffix + ".bak")
-        shutil.copy2(board_path, backup_path)
-        board_path.write_text(''.join(new_lines), encoding='utf-8')
-    
+        _make_backup(board_path, datetime.now().strftime("%Y%m%d_%H%M%S"))
+        _write_text_lf(board_path, new_content)
+
     return count, samples, changes
+
+
+def _make_sch_task(sch_path, op, tag_or_find, repl, touch_refs, touch_labels):
+    """Build a zero-arg transform closure for one schematic (used by atomic apply).
+
+    Returns (new_content, changes); reads the file inside the closure so a locked
+    or unreadable file fails during the in-memory staging phase, before any write.
+    """
+    def _task():
+        content = sch_path.read_text(encoding="utf-8")
+        ref_to_lib_id = None
+        if op == "unannotate" and touch_refs:
+            ref_to_lib_id = parse_symbols_from_content(content)
+        new_content, _counts, _samples, changes = _transform_schematic(
+            content, op, tag_or_find, repl, touch_refs, touch_labels,
+            ref_to_lib_id, sch_path)
+        return new_content, changes
+    return _task
+
+
+def _make_pcb_task(board_path, op, tag_or_find, repl):
+    """Build a zero-arg transform closure for one board (used by atomic apply)."""
+    def _task():
+        content = board_path.read_text(encoding="utf-8")
+        new_content, _count, _samples, changes = _transform_pcb(
+            content, op, tag_or_find, repl, board_path)
+        return new_content, changes
+    return _task
+
 
 # ---------- ERC via kicad-cli ----------
 def run_erc(top_schematic: Path):
@@ -1292,44 +1527,44 @@ def main():
         print("[INFO] Aborted. No files modified.")
         return
 
-    # Apply changes
+    # Apply changes (ATOMIC: stage every transform in memory first, then write
+    # all-or-nothing so a KiCad-locked or bad file can't leave a half-renamed
+    # project -- the exact inconsistent state this tool exists to prevent).
     print("[INFO] Applying changes...")
-    applied_changes = []
 
+    arg = find if tag is None else tag
+    tasks = []
     if schematics and (scope_sch_labels or scope_sch_refs):
         for sch in schematics:
-            counts, samples, changes = schematic_preview_and_apply(
-                sch,
-                op,
-                find if tag is None else tag,
-                repl=repl,
-                apply=True,
-                touch_refs=scope_sch_refs,
-                touch_labels=scope_sch_labels
+            tasks.append(
+                (sch, _make_sch_task(sch, op, arg, repl,
+                                     scope_sch_refs, scope_sch_labels))
             )
-            applied_changes.extend(changes)
-
     if boards and scope_pcb:
         for brd in boards:
-            cnt, samples, changes = pcb_preview_and_apply(
-                brd,
-                op,
-                find if tag is None else tag,
-                repl=repl,
-                apply=True
-            )
-            applied_changes.extend(changes)
+            tasks.append((brd, _make_pcb_task(brd, op, arg, repl)))
+
+    try:
+        applied_changes, backups = apply_transforms_atomically(tasks, timestamp)
+    except ApplyError as e:
+        print(f"[ERROR] Apply aborted during {e.stage} of: {e.path}")
+        print(f"[ERROR] Reason: {e.original}")
+        print("[ERROR] All-or-nothing: no files were left modified "
+              "(any partial write was rolled back from its .bak).")
+        return
+
+    print(f"[INFO] Applied {len(applied_changes)} change(s) across {len(backups)} file(s).")
 
     applied_log = LOG_DIR / f"{timestamp}_applied.json"
     applied_log.write_text(json.dumps([
         {"type": t, "old": o, "new": n, "file": str(p)} for (t, o, n, p) in applied_changes
     ], indent=2))
-    
+
     try:
         rel_applied = applied_log.relative_to(repo_root)
-    except:
+    except ValueError:
         rel_applied = applied_log
-    
+
     print(f"[INFO] Wrote {rel_applied}")
 
     # ERC
@@ -1341,8 +1576,12 @@ def main():
             print("[INFO] ERC skipped.")
 
     print("\nDone.")
-    print("Backups (.bak) were created next to modified files.")
-    print(f"Logs saved to {LOG_DIR.relative_to(repo_root)}/")
+    print("Timestamped backups (.bak) were created next to modified files.")
+    try:
+        log_display = LOG_DIR.relative_to(repo_root)
+    except ValueError:
+        log_display = LOG_DIR
+    print(f"Logs saved to {log_display}/")
 
 if __name__ == "__main__":
     # Check if GUI should be launched

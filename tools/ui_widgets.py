@@ -107,6 +107,7 @@ class Rail(QWidget):
         self._lay.setContentsMargins(0, 0, 0, 0)
         self._lay.setSpacing(2)
         self._items = {}
+        self._headers = []   # group SectionHeaders, so restyle() can follow theme
         self._current = None
         self._lay.addStretch(1)
 
@@ -115,6 +116,7 @@ class Rail(QWidget):
         # a little breathing room above each group but the first
         self._lay.insertWidget(self._lay.count() - 1, _spacer(8) if self._items else _spacer(0))
         self._lay.insertWidget(self._lay.count() - 1, hdr)
+        self._headers.append(hdr)
         return hdr
 
     def add_item(self, key: str, label: str):
@@ -123,22 +125,30 @@ class Rail(QWidget):
         self._items[key] = btn
         self._lay.insertWidget(self._lay.count() - 1, btn)
         if self._current is None:
-            self.select(key)
+            # Mark the first item active WITHOUT emitting: add_item runs during
+            # construction, before the owner has connected selected(), so emitting
+            # here reaches no slots and the initial view's side effects never fire.
+            # The owner drives them by calling rail.select(key) after connecting.
+            self.select(key, emit=False)
         return btn
 
-    def select(self, key: str):
+    def select(self, key: str, emit: bool = True):
         if key not in self._items:
             return
         self._current = key
         for k, b in self._items.items():
             b.setChecked(k == key)
-        self.selected.emit(key)
+        if emit:
+            self.selected.emit(key)
 
     def current(self):
         return self._current
 
     def restyle(self):
-        pass   # styled by app QSS (#railItem rules)
+        # Item buttons are styled by app QSS (#railItem rules), but group
+        # SectionHeaders carry inline colours that must re-resolve on theme toggle.
+        for hdr in self._headers:
+            hdr.restyle()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -171,11 +181,28 @@ class _Readout(QFrame):
     def set_value(self, v):
         self._v.setText(str(v))
 
+    def _resolve_accent(self) -> str:
+        """Resolve the dot colour against the *active* theme on every restyle so
+        the accent follows a theme toggle instead of freezing at construction.
+
+        `accent` may be: None (→ neutral idle dot), a callable returning a colour
+        (re-called each time), a theme token key such as "ACCENT" (re-resolved via
+        ui_theme.tc), or a literal colour string ("#rrggbb" — used as-is, since the
+        CATEGORY pin/net palette is theme-independent and must stay fixed)."""
+        a = self._accent
+        if callable(a):
+            a = a()
+        if not a:
+            return ui_theme.tc("DOT_IDLE")
+        if isinstance(a, str) and not a.startswith("#") and a in ui_theme.theme():
+            return ui_theme.tc(a)
+        return a
+
     def restyle(self):
         self.setStyleSheet("background:transparent;")
         self._v.setStyleSheet(f"color:{ui_theme.tc('FG')};")
-        dot = self._accent or ui_theme.tc("DOT_IDLE")
-        self._dot.setStyleSheet(f"background:{dot};border:none;border-radius:3px;")
+        self._dot.setStyleSheet(
+            f"background:{self._resolve_accent()};border:none;border-radius:3px;")
         self._l.setStyleSheet(f"color:{ui_theme.tc('FG_DIM')};")
 
 

@@ -5,9 +5,43 @@ from __future__ import annotations
 
 import glob
 import os
+import re
 from pathlib import Path
 from shutil import which
-from typing import Optional
+from typing import Iterable, Optional
+
+
+def _kicad_version_key(path: str) -> tuple:
+    """Sort key for a KiCad install path, based on its PARSED version.
+
+    The version is the directory that contains ``bin`` (e.g.
+    ``C:\\Program Files\\KiCad\\10.0\\bin`` -> ``(10, 0)``). Comparing the
+    parsed integer tuple is what makes 10.0 rank ABOVE 9.0 — a plain string
+    sort would place "10.0" before "9.0" and drive the older install.
+
+    Returns ``(version_tuple, is_64bit)`` so that, on a version tie, the
+    64-bit install (not under "Program Files (x86)") wins. Paths whose
+    version segment has no digits sort lowest via an empty version tuple.
+    """
+    version_dir = Path(path).parent.name
+    nums = re.findall(r"\d+", version_dir)
+    version = tuple(int(n) for n in nums)
+    is_64bit = 0 if "(x86)" in str(path) else 1
+    return (version, is_64bit)
+
+
+def pick_newest_kicad(paths: Iterable[str]) -> Optional[str]:
+    """Return the newest KiCad ``bin`` path from candidate paths.
+
+    Selection is by PARSED version tuple (so '10.0' > '9.0'), never by
+    lexicographic string order. Both the x86 and x64 globs should be
+    resolved and passed in together; on a version tie the 64-bit install
+    is preferred. Returns ``None`` when there are no candidates.
+    """
+    candidates = [p for p in paths if p]
+    if not candidates:
+        return None
+    return max(candidates, key=_kicad_version_key)
 
 
 def find_kicad_bin() -> Optional[Path]:
@@ -18,8 +52,8 @@ def find_kicad_bin() -> Optional[Path]:
     hits: list = []
     for pat in (r"C:\Program Files\KiCad\*\bin", r"C:\Program Files (x86)\KiCad\*\bin"):
         hits += glob.glob(pat)
-    hits.sort()
-    return Path(hits[-1]) if hits else None
+    newest = pick_newest_kicad(hits)
+    return Path(newest) if newest else None
 
 
 def find_kicad_cli() -> Optional[str]:

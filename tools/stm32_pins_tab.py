@@ -132,6 +132,27 @@ def _fmt_rng(r, unit="V") -> str:
     return f"{r[0]}–{r[1]} {unit}" if r else ""
 
 
+def _pin_search_haystack(p: dict) -> str:
+    """Lowercase searchable text for one socket position, mirroring the columns the
+    Table view actually shows: pin number, pin name(s), role set, the *Switch* label
+    and the *Destination* net (both visible but previously un-indexed), plus breakout
+    service nets, peripherals, tags, switch rationale and bootloader periph. Pure —
+    unit-testable. Mirrors ConnectionsList._haystacks so typing a visible destination
+    (VTARGET, CARD_LANE_042) or a switch label finds its pin instead of '0 pins'."""
+    sc = p["switch_class"]
+    dest = p["assignment"].get("destination") or p["assignment"].get("net") or ""
+    parts = (
+        p["position"], p["pin_names"], p["role_set"],
+        _SWITCH_LABEL.get(sc, sc),                      # the visible Switch column
+        dest,                                           # the visible Destination column
+        p["tags"].get("bootloader_periph", []), _tag_summary(p["tags"]),
+        sauth.switch_rationale(p),
+        p.get("breakout", {}).get("service_nets", []),
+        p.get("peripherals", []),
+    )
+    return " ".join(str(v) for v in parts).lower()
+
+
 def _pin_detail_html(p: dict) -> str:
     """Full detail for one socket position (pure — unit-testable)."""
     fv = p.get("five_v")
@@ -1052,6 +1073,7 @@ class Stm32PinsWidget(QWidget):
         self.db_path = sdb.default_db_path()
         self.source = sdb.default_cubemx_source() or self._saved_source()
         self.authority: dict | None = None
+        self._loaded_package: str | None = None   # last package that loaded cleanly
         self._building = False
 
         root = QVBoxLayout(self)
@@ -1308,6 +1330,22 @@ class Stm32PinsWidget(QWidget):
                 m.set_selected(pos)
             if getattr(self, "conn_list", None) is not None:
                 self.conn_list.set_selected(pos)
+            # keep the Table view's row in lock-step with map/diagram clicks. Block
+            # the table's signals so selectRow() doesn't recurse back through
+            # _on_table_select -> _select. Resolve the row via col-0's UserRole
+            # (the pin key) so it's correct even after a numeric re-sort.
+            tbl = getattr(self, "table", None)
+            if tbl is not None:
+                target = next(
+                    (r for r in range(tbl.rowCount())
+                     if tbl.item(r, 0) is not None
+                     and tbl.item(r, 0).data(Qt.UserRole) == pos), None)
+                if target is not None:
+                    prev = tbl.blockSignals(True)
+                    tbl.selectRow(target)
+                    tbl.scrollToItem(tbl.item(target, 0),
+                                     QAbstractItemView.PositionAtCenter)
+                    tbl.blockSignals(prev)
             if getattr(self, "diagram", None) is not None and self.authority:
                 self.diagram.set_data(self.authority, pos, self._cw())
             if self.authority:
@@ -1377,13 +1415,16 @@ class Stm32PinsWidget(QWidget):
         pair stays the vault-export set); keeps the current selection."""
         if self._packages_populated or not self.db_path.exists():
             return
+        conn = None
         try:
             conn = sdb.connect(self.db_path)
             pkgs = [r[0] for r in conn.execute(
                 "SELECT DISTINCT package_name FROM mcu ORDER BY package_name")]
-            conn.close()
         except Exception:
             return
+        finally:
+            if conn is not None:
+                conn.close()
         if pkgs:
             cur = self.pkg_combo.currentText()
             self.pkg_combo.blockSignals(True)
@@ -1468,6 +1509,43 @@ class Stm32PinsWidget(QWidget):
             QApplication.restoreOverrideCursor()
         finish(ok)
 
+    def _reset_views(self):
+        """Clear every view to its empty state. Used when a package load fails and
+        there's no prior good package to fall back to, so stale pins never linger
+        under a package label they no longer belong to."""
+        self.authority = None
+        self._sel_pos = None
+        self._cw_cache = None
+        if getattr(self, "table", None) is not None:
+            self.table.setRowCount(0)
+        for m in self._maps():
+            m.set_authority(None)
+        if getattr(self, "conn_list", None) is not None:
+            self.conn_list.set_authority(None)
+        if getattr(self, "cells_view", None) is not None:
+            self.cells_view.setHtml("")
+        if getattr(self, "diagram", None) is not None:
+            self.diagram.set_data(None, None, None)
+        if getattr(self, "insp_header", None) is not None:
+            self.insp_header.setText(
+                f"<span style='color:{_MUT};font-size:11pt'>No package loaded</span>")
+        if getattr(self, "pin_detail", None) is not None:
+            self.pin_detail.setHtml("")
+
+    def _revert_package_or_clear(self):
+        """After a failed load, keep the UI self-consistent. Prefer reverting the
+        package selector to the last package that loaded cleanly (whose views are
+        still on screen); only if nothing ever loaded do we blank the views. Combo
+        signals are blocked so the revert doesn't kick off another load."""
+        prev = getattr(self, "_loaded_package", None)
+        idx = self.pkg_combo.findText(prev) if prev else -1
+        if idx >= 0:
+            self.pkg_combo.blockSignals(True)
+            self.pkg_combo.setCurrentIndex(idx)
+            self.pkg_combo.blockSignals(False)
+        else:
+            self._reset_views()
+
     def load(self, package: str):
         if not self.db_path.exists():
             return
@@ -1476,9 +1554,11 @@ class Stm32PinsWidget(QWidget):
             self.authority = sauth.build(conn, package)
         except Exception as e:
             QMessageBox.warning(self, "Load", f"Could not read the database:\n{e}")
+            self._revert_package_or_clear()
             return
         finally:
             conn.close()
+        self._loaded_package = package
         self._sel_pos = None
         self._cw_cache = None
         self._populate_peripherals()
@@ -1591,12 +1671,7 @@ class Stm32PinsWidget(QWidget):
                 hide = True
             if periph and periph not in p.get("peripherals", []):
                 hide = True
-            if q and q not in " ".join(str(v) for v in (
-                    p["position"], p["pin_names"], p["role_set"],
-                    p["tags"].get("bootloader_periph", []), _tag_summary(p["tags"]),
-                    sauth.switch_rationale(p),
-                    p.get("breakout", {}).get("service_nets", []),
-                    p.get("peripherals", []))).lower():
+            if q and q not in _pin_search_haystack(p):
                 hide = True
             self.table.setRowHidden(row, hide)
 
@@ -1633,7 +1708,20 @@ class Stm32PinsWidget(QWidget):
             self, f"Export {ext.upper()}", f"{stem}_{pkg}.{ext}", f"*.{ext}")
         if not path:
             return
-        Path(path).write_text(fn(self.authority), encoding="utf-8", newline="\n")
+        if not path.lower().endswith(f".{ext.lower()}"):
+            path += f".{ext}"
+        # Guard the render + write: a locked target (e.g. the file is open in Excel)
+        # raises PermissionError; unguarded it would tear down the whole app. Report
+        # it in a dialog and leave the tab alive.
+        try:
+            Path(path).write_text(fn(self.authority), encoding="utf-8", newline="\n")
+        except Exception as e:
+            QMessageBox.warning(
+                self, f"Export {ext.upper()}",
+                f"Could not write {Path(path).name}:\n{e}\n\n"
+                "If the file is open in another program (for example Excel), "
+                "close it and try again.")
+            return
         self.status.setText(f"Exported {Path(path).name}")
 
     def _copy_lists(self):

@@ -75,6 +75,60 @@ def project_pro_file(project_dir: Path) -> Optional[Path]:
     return hits[0] if hits else None
 
 
+def pick_root_schematic(schematics: List[Path],
+                        pro: Optional[Path] = None) -> Optional[Path]:
+    """Pick the root/top-level schematic for ERC **non-interactively**.
+
+    KiCad's convention: the root sheet shares the project's stem
+    (``project.kicad_pro`` -> ``project.kicad_sch`` next to it). Prefer that;
+    then a stem match anywhere; then any schematic sitting directly beside the
+    ``.kicad_pro``; finally the shallowest path (alphabetical tie-break). Never
+    prompts, so it is safe to call from a worker thread (unlike the CLI
+    ``nd_wizard.pick_top_schematic``, which ``input()``s and would hang/raise)."""
+    schs = [Path(s) for s in schematics]
+    if not schs:
+        return None
+    if pro is not None:
+        pro = Path(pro)
+        stem = pro.stem
+        # 1) exact stem match sitting next to the .kicad_pro (the true root sheet)
+        for s in schs:
+            if s.stem == stem and s.parent == pro.parent:
+                return s
+        # 2) stem match anywhere in the tree
+        for s in schs:
+            if s.stem == stem:
+                return s
+        # 3) any schematic directly beside the project file
+        in_dir = sorted((s for s in schs if s.parent == pro.parent),
+                        key=lambda p: str(p).lower())
+        if in_dir:
+            return in_dir[0]
+    # 4) fallback: shallowest path (closest to project root), then alphabetical
+    return sorted(schs, key=lambda p: (len(p.parts), str(p).lower()))[0]
+
+
+def _nc_priority_sort_key(snap: dict):
+    """Sort key for reordering net-class rows by Priority then Name. A blank or
+    non-numeric Priority sorts as 0 (KiCad's implicit default) rather than
+    raising or being dropped."""
+    p = snap.get("priority")
+    try:
+        pv = float(p) if p not in (None, "") else 0.0
+    except (ValueError, TypeError):
+        pv = 0.0
+    return (pv, (snap.get("name") or "").lower())
+
+
+def sort_netclass_snapshots(snaps: List[dict]) -> List[dict]:
+    """Stable, loss-free reorder of net-class row snapshots by priority then
+    name. Each snapshot is a dict of the row's *raw* cell text, returned intact
+    and in full — duplicate names, empty-name rows, and blank cells all survive
+    (unlike routing the table through NetClassManager, which is name-keyed and
+    back-fills blanks with defaults)."""
+    return sorted(snaps, key=_nc_priority_sort_key)
+
+
 class KiCadToolsWidget(QWidget):
     LINE_STYLES = ["solid", "dashed", "dotted", "dash_dot"]
 
@@ -499,7 +553,10 @@ class KiCadToolsWidget(QWidget):
                 schs = wiz.list_schematics(pro.parent)
                 if not schs:
                     continue
-                top = wiz.pick_top_schematic(schs)   # the root sheet, not schs[0]
+                # Auto-pick the root sheet (stem matches the .kicad_pro) without
+                # prompting — wiz.pick_top_schematic() calls input() and would
+                # hang or raise on this worker thread.
+                top = pick_root_schematic(schs, pro)
                 self.log(f"ERC: {top.name}")
                 try:
                     proc = subprocess.run([str(kdir), "sch", "erc", str(top)],
@@ -590,9 +647,36 @@ class KiCadToolsWidget(QWidget):
             else:
                 self.nc_table.setItem(r, col, QTableWidgetItem("" if val is None else str(val)))
 
+    def _nc_snapshot_row(self, r) -> dict:
+        """Capture a row's literal cell contents (blanks stay blank, the line-style
+        combo selection preserved) keyed by NetClass attr. Used to reorder rows
+        without round-tripping through NetClassManager, which would collapse
+        duplicate names, drop empty-name rows, and back-fill blank numerics."""
+        snap = {}
+        for col, (label, attr, kind) in enumerate(self.NC_COLS):
+            if kind == "linestyle":
+                cw = self.nc_table.cellWidget(r, col)
+                snap[attr] = cw.currentText() if cw else "solid"
+            else:
+                it = self.nc_table.item(r, col)
+                snap[attr] = it.text() if it else ""
+        return snap
+
     def _nc_sort_by_priority(self):
-        """Re-display the current rows sorted by their Priority column."""
-        self._nc_set_rows(self._nc_manager_from_table())
+        """Reorder the existing table rows by their Priority column, losslessly.
+
+        Snapshots each row's raw cell text and re-lays the rows in sorted order,
+        so nothing is lost: duplicate names, empty-name rows, and blank cells all
+        survive (the old path rebuilt from a name-keyed NetClassManager, which
+        collapsed dups, dropped blank-name rows, and back-filled blank numerics
+        with defaults)."""
+        snaps = sort_netclass_snapshots(
+            [self._nc_snapshot_row(r) for r in range(self.nc_table.rowCount())])
+        self.nc_table.setRowCount(0)
+        for snap in snaps:
+            r = self.nc_table.rowCount()
+            self.nc_table.insertRow(r)
+            self._nc_make_row(r, snap)
 
     def _nc_set_rows(self, manager: NetClassManager):
         self.nc_table.setRowCount(0)
@@ -635,8 +719,12 @@ class KiCadToolsWidget(QWidget):
 
     def _nc_load_project(self):
         pros = self.selected_pro_files()
-        if not pros:
-            QMessageBox.information(self, "Net Classes", "Select a project first."); return
+        if len(pros) != 1:
+            QMessageBox.information(
+                self, "Net Classes",
+                "Select a project first." if not pros else
+                f"Select exactly one project to load from ({len(pros)} selected).")
+            return
         m = NetClassManager()
         if m.load_from_project(pros[0]):
             self._nc_set_rows(m)
@@ -661,7 +749,14 @@ class KiCadToolsWidget(QWidget):
             self.nc_table.removeRow(r)
 
     def _nc_manager_from_table(self) -> NetClassManager:
+        # NetClassManager is name-keyed, so this reconstruction is inherently
+        # lossy: blank-name rows can't be represented and same-name rows collapse
+        # (last wins). That's acceptable for a real sync/export (KiCad needs a
+        # unique name + concrete numbers), but warn so the loss isn't silent.
         m = NetClassManager()
+        seen: set = set()
+        dropped_empty = 0
+        dups: List[str] = []
         for r in range(self.nc_table.rowCount()):
             row = {}
             for col, (label, attr, kind) in enumerate(self.NC_COLS):
@@ -671,8 +766,13 @@ class KiCadToolsWidget(QWidget):
                 else:
                     it = self.nc_table.item(r, col)
                     row[attr] = it.text().strip() if it else ""
-            if not row.get("name"):
+            name = row.get("name")
+            if not name:
+                dropped_empty += 1
                 continue
+            if name in seen:
+                dups.append(name)
+            seen.add(name)
 
             def fnum(key, d):
                 s = row.get(key, "")
@@ -703,6 +803,11 @@ class KiCadToolsWidget(QWidget):
                 m.add_netclass(nc)
             except Exception:
                 self.log(f"Skipping row {r + 1}: invalid value.")
+        if dropped_empty:
+            self.log(f"Note: skipped {dropped_empty} row(s) with a blank Name.")
+        if dups:
+            self.log("Note: duplicate net-class name(s) collapsed (last wins): "
+                     + ", ".join(sorted(set(dups))))
         return m
 
     def _nc_sync(self):
@@ -722,6 +827,8 @@ class KiCadToolsWidget(QWidget):
             results = m.sync_to_projects(pros, backup=True)
             ok = sum(1 for v in results.values() if v)
             self.log(f"\nNet-class sync: {ok}/{len(pros)} project(s) updated.")
+            for pf, good in results.items():
+                self.log(f"  {Path(pf).parent.name}: {'updated' if good else 'FAILED'}")
             if m.last_preserved_unmanaged:
                 self.log("Preserved unmanaged classes: " + ", ".join(m.last_preserved_unmanaged))
 
@@ -805,8 +912,12 @@ class KiCadToolsWidget(QWidget):
 
     def _ps_load(self):
         pros = self.selected_pro_files()
-        if not pros:
-            QMessageBox.information(self, "Project Settings", "Select a project first."); return
+        if len(pros) != 1:
+            QMessageBox.information(
+                self, "Project Settings",
+                "Select a project first." if not pros else
+                f"Select exactly one project to load from ({len(pros)} selected).")
+            return
         m = ProjectSettingsManager()
         if m.load_from_project(pros[0]):
             for attr, sp in self.ps_spins.items():
@@ -827,10 +938,25 @@ class KiCadToolsWidget(QWidget):
             return
         m = ProjectSettingsManager()
         for attr, sp in self.ps_spins.items():
-            setattr(m.settings, attr, sp.value())
-        results = m.sync_to_projects(pros, backup=True)
-        ok = sum(1 for v in results.values() if v)
-        self.log(f"\nProject-settings sync: {ok}/{len(pros)} project(s) updated.")
+            val = sp.value()
+            # Int-typed fields (e.g. junction_size -> default_junction_size) must
+            # not be written as floats; the spin box always yields a float.
+            cur = getattr(m.settings, attr, None)
+            if isinstance(cur, int) and not isinstance(cur, bool):
+                val = int(round(val))
+            setattr(m.settings, attr, val)
+
+        # Match the other syncs: run off the GUI thread and report per project.
+        def work():
+            results = m.sync_to_projects(pros, backup=True)
+            ok = sum(1 for v in results.values() if v)
+            self.log(f"\nProject-settings sync: {ok}/{len(pros)} project(s) updated.")
+            details = getattr(m, "last_sync_details", {}) or {}
+            for pf in pros:
+                why = details.get(pf) or details.get(Path(pf))
+                self.log(f"  {Path(pf).parent.name}: {why if why else ('updated' if results.get(pf) else 'not applied')}")
+
+        self._run_heavy("Syncing project settings…", work)
 
 
 def wiz_find_kicad_cli() -> Optional[str]:

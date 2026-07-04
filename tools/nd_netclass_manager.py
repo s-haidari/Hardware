@@ -165,21 +165,14 @@ class NetClass:
     @staticmethod
     def from_kicad_dict(name: str, data: dict) -> 'NetClass':
         """Create from KiCad .kicad_pro format"""
-        # Convert mils to mm for wire/bus widths
-        # Check if values are already in mm (float < 10) or mils (int > 10)
-        wire_width_val = data.get("wire_width", 6)
-        bus_width_val = data.get("bus_width", 12)
-
-        # If it's a large integer, it's mils; if small float, it's already mm
-        if isinstance(wire_width_val, int) and wire_width_val > 2:
-            wire_thickness = wire_width_val * 0.0254  # mils to mm
-        else:
-            wire_thickness = float(wire_width_val)
-
-        if isinstance(bus_width_val, int) and bus_width_val > 2:
-            bus_thickness = bus_width_val * 0.0254  # mils to mm
-        else:
-            bus_thickness = float(bus_width_val)
+        # KiCad stores schematic wire/bus widths as integer mils, and a value
+        # of 0 is the sentinel for "inherit the default width" — NOT a 0 mm
+        # wire. Treat any int as mils (0 -> default) and only trust a genuine
+        # float as an already-mm value.
+        wire_thickness = NetClass._width_from_kicad(
+            data.get("wire_width", 6), default_mm=0.1524)
+        bus_thickness = NetClass._width_from_kicad(
+            data.get("bus_width", 12), default_mm=0.3048)
 
         return NetClass(
             name=name,
@@ -201,12 +194,45 @@ class NetClass:
         )
 
     @staticmethod
+    def _width_from_kicad(value, default_mm: float) -> float:
+        """Interpret a KiCad schematic wire/bus width value.
+
+        KiCad stores these as integer mils; ``0`` means "inherit the default
+        width" and must map to ``default_mm`` rather than a 0 mm wire. A float
+        value is assumed to already be in mm (legacy/hand-edited files).
+        """
+        if isinstance(value, bool):  # bool is a subclass of int — guard first
+            return default_mm
+        if isinstance(value, int):
+            if value == 0:
+                return default_mm  # KiCad "inherit" sentinel
+            return value * 0.0254  # mils -> mm
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default_mm
+
+    @staticmethod
     def _hex_to_rgba(hex_color: str) -> str:
-        """Convert hex color to KiCad rgba format"""
-        hex_color = hex_color.lstrip('#')
-        r = int(hex_color[0:2], 16)
-        g = int(hex_color[2:4], 16)
-        b = int(hex_color[4:6], 16)
+        """Convert a hex color to KiCad rgba format, tolerantly.
+
+        Color cells are user-editable, so this never raises: it strips a
+        leading ``#``, expands 3-digit shorthand (``#abc`` -> ``#aabbcc``),
+        and validates 6 hex digits. Empty strings, named colors (``red``),
+        and malformed hex fall back to ``#808080`` so one bad cell cannot
+        abort the entire project save with a ValueError.
+        """
+        s = (hex_color or "").strip().lstrip('#')
+        if len(s) == 3:
+            s = "".join(c * 2 for c in s)  # #abc -> #aabbcc
+        try:
+            if len(s) != 6:
+                raise ValueError("expected 6 hex digits")
+            r = int(s[0:2], 16)
+            g = int(s[2:4], 16)
+            b = int(s[4:6], 16)
+        except ValueError:
+            r = g = b = 0x80  # #808080 fallback
         return f"rgba({r}, {g}, {b}, 1.000)"
 
     @staticmethod
@@ -357,16 +383,33 @@ class NetClassManager:
             # Replace the classes list
             data["net_settings"]["classes"] = new_classes
 
-            # Update patterns
-            patterns_list = []
-            for name, netclass in self.net_classes.items():
-                for pattern in netclass.patterns:
-                    patterns_list.append({
-                        "netclass": name,
-                        "pattern": pattern
-                    })
+            # Update patterns (safe merge — mirrors the class-definition merge
+            # above). Two guards protect user net assignments:
+            #
+            #  * Carry over existing patterns whose netclass is ``Default`` or
+            #    one of the preserved-unmanaged classes, THEN append the managed
+            #    patterns. The old code rebuilt this list from managed classes
+            #    alone, silently unassigning every unmanaged/Default net.
+            #  * If the managed set is empty, refuse to touch netclass_patterns
+            #    at all: an empty manager must never wipe every net assignment.
+            if self.net_classes:
+                preserved_names = set(self.last_preserved_unmanaged)
+                preserved_names.add("Default")
+                existing_patterns = data["net_settings"].get("netclass_patterns", [])
 
-            data["net_settings"]["netclass_patterns"] = patterns_list
+                patterns_list = [
+                    p for p in existing_patterns
+                    if isinstance(p, dict) and p.get("netclass") in preserved_names
+                ]
+                for name, netclass in self.net_classes.items():
+                    for pattern in netclass.patterns:
+                        patterns_list.append({
+                            "netclass": name,
+                            "pattern": pattern
+                        })
+
+                data["net_settings"]["netclass_patterns"] = patterns_list
+            # else: empty managed set -> leave existing netclass_patterns intact
 
             # Atomic write: temp file in same dir, then os.replace
             tmp_path = project_file.with_suffix(project_file.suffix + '.tmp')
@@ -418,8 +461,12 @@ class NetClassManager:
                 "track_width": netclass.track_width,
                 "via_diameter": netclass.via_diameter,
                 "via_drill": netclass.via_drill,
+                "microvia_diameter": netclass.microvia_diameter,
+                "microvia_drill": netclass.microvia_drill,
                 "diff_pair_width": netclass.diff_pair_width,
                 "diff_pair_gap": netclass.diff_pair_gap,
+                "diff_pair_via_gap": netclass.diff_pair_via_gap,
+                "priority": netclass.priority,
                 "patterns": netclass.patterns
             }
 
@@ -440,8 +487,12 @@ class NetClassManager:
                 track_width=nc_data.get("track_width", 0.2),
                 via_diameter=nc_data.get("via_diameter", 0.8),
                 via_drill=nc_data.get("via_drill", 0.4),
+                microvia_diameter=nc_data.get("microvia_diameter", 0.3),
+                microvia_drill=nc_data.get("microvia_drill", 0.1),
                 diff_pair_width=nc_data.get("diff_pair_width"),
                 diff_pair_gap=nc_data.get("diff_pair_gap"),
+                diff_pair_via_gap=nc_data.get("diff_pair_via_gap", 0.25),
+                priority=nc_data.get("priority", 0),
                 patterns=nc_data.get("patterns", [])
             )
             self.add_netclass(netclass)
@@ -583,6 +634,16 @@ def main_cli():
             print("Failed to load project")
 
     if args.sync_to:
+        # Guard: syncing an empty manager would treat every non-Default class
+        # as unmanaged and wipe all net assignments across each project.
+        # Refuse rather than silently unassign every net. Populate the manager
+        # first via --import-template or --load-from.
+        if not manager.net_classes:
+            print("ERROR: no net classes loaded — refusing to --sync-to "
+                  "(this would unassign every net). Use --import-template or "
+                  "--load-from to populate the manager first.")
+            raise SystemExit(2)
+
         project_files = [Path(p) for p in args.sync_to]
 
         # Clear cache first

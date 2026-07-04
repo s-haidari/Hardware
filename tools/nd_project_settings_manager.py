@@ -9,7 +9,7 @@ Manages universal settings across multiple KiCad projects:
 - Display options
 
 ALL MEASUREMENTS IN MILS (thousandths of an inch).
-NO BACKUP FILES - Direct modification only.
+Optional .kicad_pro.bak backup before each write when backup=True.
 Automatically clears cache (.prl, .lck, fp-info-cache).
 Completely ignores .history directories.
 
@@ -17,6 +17,7 @@ Supports KiCad v6+ .kicad_pro JSON format.
 """
 import json
 import os
+import shutil
 from pathlib import Path
 from typing import Dict, List, Optional
 from dataclasses import dataclass, asdict
@@ -126,7 +127,9 @@ class ProjectSettings:
     schematic_text_size: float = 50.0     # 50 mils (1.27mm) - KiCad standard default text size
     schematic_line_width: float = 6.0     # 0.1524mm - default line thickness
     pin_symbol_size: float = 25.0         # 25 mils - pin symbol size
-    junction_size: int = 36               # mils - wire junction dots
+    # KiCad junction dot size is an ENUM CHOICE (index 0-4), NOT a mils value.
+    # It maps to schematic.drawing.junction_size_choice. 3 is KiCad's default.
+    junction_size: int = 3                # junction_size_choice enum index 0-4
 
     # Schematic grid
     schematic_grid: str = "50 mil"
@@ -216,16 +219,53 @@ class ProjectSettingsManager:
 
         KiCad creates a `.lck` next to whichever file is open — usually the board
         and/or schematic (`Master.kicad_pcb.lck`, `Master.kicad_sch.lck`), not only
-        the project. Match ANY sibling `.lck` belonging to this project so the
-        open-guard actually fires (a write into an open project gets clobbered)."""
+        the project. Match the EXACT sibling lock filename for this project: a
+        substring test lets stem `Main` match an unrelated `Main_v2.kicad_pcb.lck`
+        and wrongly block a legit sync."""
         p = Path(project_file)
+        stem = p.stem
+        lock_names = {
+            f"{stem}.kicad_pro.lck",
+            f"{stem}.kicad_pcb.lck",
+            f"{stem}.kicad_sch.lck",
+            f"{stem}.lck",
+        }
         try:
             for lck in p.parent.glob("*.lck"):
-                if p.stem in lck.name:
+                if lck.name in lock_names:
                     return True
         except Exception:
             pass
-        return p.with_suffix('.lck').exists()
+        return False
+
+    @staticmethod
+    def _find_default_netclass(data: dict) -> dict:
+        """Return the existing 'Default' entry in net_settings.classes (read-only),
+        or {} if absent. KiCad stores the design's default via size/drill here —
+        board.design_settings.via_diameter/via_drill are NOT consumed by KiCad."""
+        classes = data.get("net_settings", {}).get("classes", [])
+        if isinstance(classes, list):
+            for cls in classes:
+                if isinstance(cls, dict) and cls.get("name") == "Default":
+                    return cls
+        return {}
+
+    @staticmethod
+    def _ensure_default_netclass(data: dict) -> dict:
+        """Find or create the 'Default' entry in net_settings.classes and return a
+        live reference to it (so callers can mutate it in place). Default is kept
+        first in the list, matching KiCad / NetClassManager convention."""
+        ns = data.setdefault("net_settings", {})
+        classes = ns.get("classes")
+        if not isinstance(classes, list):
+            classes = []
+            ns["classes"] = classes
+        for cls in classes:
+            if isinstance(cls, dict) and cls.get("name") == "Default":
+                return cls
+        default_cls = {"name": "Default"}
+        classes.insert(0, default_cls)
+        return default_cls
 
     def load_from_project(self, project_file: Path) -> bool:
         """Load settings from a .kicad_pro file (converts mm to mils)"""
@@ -247,15 +287,18 @@ class ProjectSettingsManager:
             # Pin symbol size (raw mils, e.g. 25.0 mils)
             self.settings.pin_symbol_size = sch_drawing.get("pin_symbol_size", 25.0)
 
-            # Junction size (raw mils, e.g. 36 mils)
-            self.settings.junction_size = int(sch_drawing.get("default_junction_size", 36))
+            # Junction dot size: KiCad key is junction_size_choice (enum index 0-4),
+            # NOT default_junction_size (which KiCad ignores). Default choice is 3.
+            self.settings.junction_size = int(sch_drawing.get("junction_size_choice", 3))
 
             # ═══ PCB SETTINGS ═══
             pcb_defaults = data.get("board", {}).get("design_settings", {}).get("defaults", {})
 
-            # PCB text boxes (user-placed text)
-            pcb_text_h = pcb_defaults.get("text_size_h", 1.016)
-            pcb_text_thick = pcb_defaults.get("text_thickness", 0.1524)
+            # PCB text boxes (generic/"other" user-placed text). KiCad's generic PCB
+            # text defaults are other_text_size_h/v / other_text_thickness — the bare
+            # text_size_h/text_thickness keys are not read by KiCad.
+            pcb_text_h = pcb_defaults.get("other_text_size_h", 1.016)
+            pcb_text_thick = pcb_defaults.get("other_text_thickness", 0.1524)
             self.settings.pcb_text_size = round(mm_to_mils(pcb_text_h), 1)
             self.settings.pcb_text_thickness = round(mm_to_mils(pcb_text_thick), 1)
 
@@ -293,12 +336,17 @@ class ProjectSettingsManager:
             self.settings.min_copper_edge_clearance = round(mm_to_mils(rules.get("min_copper_edge_clearance", 0.5)), 1)
             self.settings.min_silk_clearance = round(mm_to_mils(rules.get("min_silk_clearance", 0.0)), 1)
 
-            # Via settings
-            pcb_settings = data.get("board", {}).get("design_settings", {})
-            self.settings.default_via_diameter = round(mm_to_mils(pcb_settings.get("via_diameter", 0.8)), 1)
-            self.settings.default_via_drill = round(mm_to_mils(pcb_settings.get("via_drill", 0.4)), 1)
+            # Via settings: the design's default via size/drill live in the
+            # 'Default' net class (net_settings.classes), which is what KiCad reads.
+            # design_settings.via_diameter/via_drill are dead keys — do NOT read them.
+            default_nc = self._find_default_netclass(data)
+            self.settings.default_via_diameter = round(mm_to_mils(default_nc.get("via_diameter", 0.8)), 1)
+            self.settings.default_via_drill = round(mm_to_mils(default_nc.get("via_drill", 0.4)), 1)
 
-            # Solder mask/paste
+            # Solder mask/paste — NOTE: these physically live in the .kicad_pcb
+            # (setup) block, not .kicad_pro; KiCad ignores them here. Retained only
+            # for this tool's own round-trip. See report (skipped: needs .kicad_pcb).
+            pcb_settings = data.get("board", {}).get("design_settings", {})
             self.settings.solder_mask_clearance = round(mm_to_mils(pcb_settings.get("solder_mask_clearance", 0.05)), 1)
             self.settings.solder_paste_margin = round(mm_to_mils(pcb_settings.get("solder_paste_margin", -0.05)), 1)
 
@@ -313,7 +361,8 @@ class ProjectSettingsManager:
     def save_to_project(self, project_file: Path, backup: bool = False) -> bool:
         """
         Save settings to a .kicad_pro file (converts mils to mm for KiCad).
-        NO BACKUP FILES - Direct modification only.
+        If backup=True, a <file>.kicad_pro.bak copy is written before the atomic
+        replace so the change is undoable.
         Automatically clears associated cache files.
         """
         try:
@@ -346,8 +395,13 @@ class ProjectSettingsManager:
             # Pin symbol size (raw mils — no conversion)
             sch_drawing["pin_symbol_size"] = self.settings.pin_symbol_size
 
-            # Junction size (raw mils — no conversion)
-            sch_drawing["default_junction_size"] = self.settings.junction_size
+            # Junction dot size: the key KiCad actually consumes is
+            # junction_size_choice, an ENUM index (0-4), not mils — clamp to range.
+            sch_drawing["junction_size_choice"] = max(0, min(4, int(round(self.settings.junction_size))))
+            # The legacy default_junction_size key is IGNORED by KiCad, but an
+            # existing (un-editable) regression test asserts it is written as an int,
+            # so we keep emitting it for backward compatibility. It is otherwise dead.
+            sch_drawing["default_junction_size"] = int(self.settings.junction_size)
 
             # ═══ UPDATE PCB SETTINGS ═══
             if "board" not in data:
@@ -370,10 +424,12 @@ class ProjectSettingsManager:
             fab_size_mm = round(mils_to_mm(self.settings.fab_text_size), 4)
             fab_thick_mm = round(mils_to_mm(self.settings.fab_text_thickness), 4)
 
-            # PCB text boxes (user-placed text)
-            design["defaults"]["text_size_h"] = pcb_text_mm
-            design["defaults"]["text_size_v"] = pcb_text_mm
-            design["defaults"]["text_thickness"] = pcb_text_thick_mm
+            # PCB text boxes (generic/"other" user-placed text). KiCad's generic PCB
+            # text defaults are other_text_size_h/v / other_text_thickness — the bare
+            # text_size_h/text_thickness keys are not consumed by KiCad.
+            design["defaults"]["other_text_size_h"] = pcb_text_mm
+            design["defaults"]["other_text_size_v"] = pcb_text_mm
+            design["defaults"]["other_text_thickness"] = pcb_text_thick_mm
 
             # Silkscreen (footprint text)
             design["defaults"]["silk_text_size_h"] = silk_size_mm
@@ -394,6 +450,10 @@ class ProjectSettingsManager:
             if "rules" not in design:
                 design["rules"] = {}
 
+            # NOTE: default_clearance/default_track_width map to the DRC MINIMUMS
+            # (rules.min_clearance / rules.min_track_width), not per-net routing
+            # defaults. The GUI still labels them "Design Rules (Defaults)"; that
+            # label lives in kicad_tools.py and is out of scope for this file.
             design["rules"]["min_clearance"] = round(mils_to_mm(self.settings.default_clearance), 4)
             design["rules"]["min_track_width"] = round(mils_to_mm(self.settings.default_track_width), 4)
             design["rules"]["min_via_diameter"] = round(mils_to_mm(self.settings.min_via_diameter), 4)
@@ -406,13 +466,29 @@ class ProjectSettingsManager:
             design["rules"]["min_copper_edge_clearance"] = round(mils_to_mm(self.settings.min_copper_edge_clearance), 4)
             design["rules"]["min_silk_clearance"] = round(mils_to_mm(self.settings.min_silk_clearance), 4)
 
-            # Via settings (convert mils to mm)
-            design["via_diameter"] = round(mils_to_mm(self.settings.default_via_diameter), 4)
-            design["via_drill"] = round(mils_to_mm(self.settings.default_via_drill), 4)
+            # Via settings: write the design's default via size/drill into the
+            # 'Default' net class (net_settings.classes) — the ONLY place KiCad
+            # reads them from. board.design_settings.via_diameter/via_drill are dead
+            # keys, so we no longer write them (that produced deceptive "verified").
+            default_nc = self._ensure_default_netclass(data)
+            default_nc["via_diameter"] = round(mils_to_mm(self.settings.default_via_diameter), 4)
+            default_nc["via_drill"] = round(mils_to_mm(self.settings.default_via_drill), 4)
 
-            # Solder mask/paste (convert mils to mm)
+            # Solder mask/paste: these physically belong to the .kicad_pcb (setup)
+            # block, NOT .kicad_pro — KiCad ignores them here. Written only so this
+            # tool round-trips its own value; never verified. (See report: skipped.)
             design["solder_mask_clearance"] = round(mils_to_mm(self.settings.solder_mask_clearance), 4)
             design["solder_paste_margin"] = round(mils_to_mm(self.settings.solder_paste_margin), 4)
+
+            # Optional backup: copy the ORIGINAL project file to <file>.kicad_pro.bak
+            # BEFORE the destructive atomic replace, so the sync is undoable. The GUI
+            # promises "A .bak is written next to each" and passes backup=True.
+            if backup and project_file.exists():
+                try:
+                    backup_path = project_file.parent / (project_file.name + '.bak')
+                    shutil.copy2(str(project_file), str(backup_path))
+                except Exception as e:
+                    print(f"⚠️  Could not write backup for {project_file.name}: {e}")
 
             # Atomic write: write to a temp file in the same directory, then os.replace()
             # to swap it in atomically (avoids partial-write data loss on crash/interrupt).
@@ -438,29 +514,19 @@ class ProjectSettingsManager:
             return False
 
     def _clear_project_cache(self, project_file: Path):
-        """Clear cache files for a specific project (automatic, no prompt)"""
-        # Remove .prl (project local settings)
-        prl_file = project_file.with_suffix('.kicad_prl')
-        if prl_file.exists():
-            try:
-                prl_file.unlink()
-            except Exception as e:
-                pass
+        """Clear cache/lock files for a specific project (automatic, no prompt).
 
-        # Remove .lck (lock file)
-        lck_file = project_file.with_suffix('.lck')
-        if lck_file.exists():
-            try:
-                lck_file.unlink()
-            except Exception as e:
-                pass
+        Reuses _clear_local_cache's sibling list so the REAL KiCad locks
+        (<stem>.kicad_pcb.lck / .kicad_sch.lck / .kicad_pro.lck), not a bogus
+        <stem>.lck, are actually removed — plus the fp-info-cache."""
+        self._clear_local_cache(project_file)
 
         # Remove fp-info-cache in same directory
-        fp_cache = project_file.parent / "fp-info-cache"
+        fp_cache = Path(project_file).parent / "fp-info-cache"
         if fp_cache.exists():
             try:
                 fp_cache.unlink()
-            except Exception as e:
+            except Exception:
                 pass
 
     def export_template(self, template_file: Path):
@@ -517,9 +583,17 @@ class ProjectSettingsManager:
         if not near(rules.get("min_clearance"), mils_to_mm(self.settings.default_clearance), 0.001):
             mismatches.append(f"rules.min_clearance={rules.get('min_clearance')} "
                               f"(wanted {round(mils_to_mm(self.settings.default_clearance), 4)})")
-        if not near(design.get("via_diameter"), mils_to_mm(self.settings.default_via_diameter), 0.001):
-            mismatches.append(f"via_diameter={design.get('via_diameter')} "
+
+        # Via default lives in the 'Default' net class — the key KiCad reads. Verify
+        # THERE, never against the dead design_settings.via_diameter (which would
+        # report "verified" for a value KiCad ignores).
+        default_nc = self._find_default_netclass(data)
+        if not near(default_nc.get("via_diameter"), mils_to_mm(self.settings.default_via_diameter), 0.001):
+            mismatches.append(f"Default.via_diameter={default_nc.get('via_diameter')} "
                               f"(wanted {round(mils_to_mm(self.settings.default_via_diameter), 4)})")
+        if not near(default_nc.get("via_drill"), mils_to_mm(self.settings.default_via_drill), 0.001):
+            mismatches.append(f"Default.via_drill={default_nc.get('via_drill')} "
+                              f"(wanted {round(mils_to_mm(self.settings.default_via_drill), 4)})")
         return (len(mismatches) == 0), mismatches
 
     def _clear_local_cache(self, project_file: Path) -> List[str]:
@@ -530,6 +604,7 @@ class ProjectSettingsManager:
         siblings = [
             p.with_suffix(".kicad_prl"),
             p.with_suffix(".lck"),
+            p.parent / (p.stem + ".kicad_pro.lck"),
             p.parent / (p.stem + ".kicad_pcb.lck"),
             p.parent / (p.stem + ".kicad_sch.lck"),
         ]

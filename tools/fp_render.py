@@ -77,6 +77,67 @@ def _f(x, d=0.0):
         return d
 
 
+def _stroke_width(node, default: float = 0.1) -> float:
+    """Graphic line width from a flat ``(width X)`` or a nested
+    ``(stroke (width X))``. KiCad 7/8/9 moved the width into a ``(stroke …)``
+    sub-list; older files keep it flat. Returns ``default`` when neither carries
+    a numeric width (so a malformed flat width still falls through to stroke)."""
+    flat = _find(node, "width")
+    if flat is not None and len(flat) > 1:
+        try:
+            return float(flat[1])
+        except (TypeError, ValueError):
+            pass
+    stroke = _find(node, "stroke")
+    if stroke is not None:
+        sw = _find(stroke, "width")
+        if sw is not None and len(sw) > 1:
+            try:
+                return float(sw[1])
+            except (TypeError, ValueError):
+                pass
+    return default
+
+
+def _arc_polyline(start, mid, end, segs: int = 24):
+    """Sample the circular arc through the three model-space points
+    ``start → mid → end`` into ``segs``+1 polyline points. Falls back to the
+    chord ``[start, mid, end]`` when the points are collinear (no finite
+    circle). Used for both footprint ``fp_arc`` and symbol ``arc`` curves so
+    silk/body arcs render as real curves instead of straight chords."""
+    (x1, y1), (xm, ym), (x2, y2) = start, mid, end
+    d = 2.0 * (x1 * (ym - y2) + xm * (y2 - y1) + x2 * (y1 - ym))
+    if abs(d) < 1e-12:
+        return [start, mid, end]
+    s1 = x1 * x1 + y1 * y1
+    sm = xm * xm + ym * ym
+    s2 = x2 * x2 + y2 * y2
+    cx = (s1 * (ym - y2) + sm * (y2 - y1) + s2 * (y1 - ym)) / d
+    cy = (s1 * (x2 - xm) + sm * (x1 - x2) + s2 * (xm - x1)) / d
+    r = math.hypot(x1 - cx, y1 - cy)
+    a1 = math.atan2(y1 - cy, x1 - cx)
+    am = math.atan2(ym - cy, xm - cx)
+    a2 = math.atan2(y2 - cy, x2 - cx)
+    two_pi = 2.0 * math.pi
+    total = (a2 - a1) % two_pi            # CCW span start → end
+    mid_ccw = (am - a1) % two_pi
+    sweep = total if mid_ccw <= total + 1e-9 else total - two_pi
+    return [(cx + r * math.cos(a1 + sweep * i / segs),
+             cy + r * math.sin(a1 + sweep * i / segs)) for i in range(segs + 1)]
+
+
+def _arc_polyline_center(center, start, angle_deg: float, segs: int = 24):
+    """Legacy KiCad footprint arc: ``start`` is the centre, ``end`` the arc's
+    first point, ``angle_deg`` the swept angle. Sample into ``segs``+1 points."""
+    cx, cy = center
+    sx, sy = start
+    r = math.hypot(sx - cx, sy - cy)
+    a1 = math.atan2(sy - cy, sx - cx)
+    sweep = math.radians(angle_deg)
+    return [(cx + r * math.cos(a1 + sweep * i / segs),
+             cy + r * math.sin(a1 + sweep * i / segs)) for i in range(segs + 1)]
+
+
 def _layer_color(layer: str) -> QColor:
     if layer.endswith(".Cu"):
         return COL_COPPER
@@ -98,6 +159,7 @@ class _Footprint:
         self.circles = []       # (cx, cy, r, layer, width)
         self.rects = []         # (x1, y1, x2, y2, layer, width)
         self.polys = []         # (points[list of (x,y)], layer, width)
+        self.arcs = []          # (points[list of (x,y)], layer, width)
         self._parse()
 
     def _parse(self):
@@ -123,33 +185,43 @@ class _Footprint:
         for ln in _findall(r, "fp_line") + _findall(r, "gr_line"):
             s, e = _find(ln, "start"), _find(ln, "end")
             lay = _find(ln, "layer")
-            wid = _find(ln, "width") or _find(ln, "stroke")
             if s and e:
                 self.lines.append((_f(s[1]), _f(s[2]), _f(e[1]), _f(e[2]),
-                                   lay[1] if lay else "", _f(wid[1]) if wid else 0.1))
+                                   lay[1] if lay else "", _stroke_width(ln)))
         for c in _findall(r, "fp_circle") + _findall(r, "gr_circle"):
             ctr, end = _find(c, "center"), _find(c, "end")
             lay = _find(c, "layer")
-            wid = _find(c, "width")
             if ctr and end:
                 cx, cy = _f(ctr[1]), _f(ctr[2])
                 rad = math.hypot(_f(end[1]) - cx, _f(end[2]) - cy)
-                self.circles.append((cx, cy, rad, lay[1] if lay else "", _f(wid[1]) if wid else 0.1))
+                self.circles.append((cx, cy, rad, lay[1] if lay else "", _stroke_width(c)))
         for rc in _findall(r, "fp_rect") + _findall(r, "gr_rect"):
             s, e = _find(rc, "start"), _find(rc, "end")
             lay = _find(rc, "layer")
-            wid = _find(rc, "width")
             if s and e:
                 self.rects.append((_f(s[1]), _f(s[2]), _f(e[1]), _f(e[2]),
-                                   lay[1] if lay else "", _f(wid[1]) if wid else 0.1))
+                                   lay[1] if lay else "", _stroke_width(rc)))
         for pol in _findall(r, "fp_poly") + _findall(r, "gr_poly"):
             pts = _find(pol, "pts")
             lay = _find(pol, "layer")
-            wid = _find(pol, "width")
             if pts:
                 pp = [(_f(xy[1]), _f(xy[2])) for xy in _findall(pts, "xy")]
                 if pp:
-                    self.polys.append((pp, lay[1] if lay else "", _f(wid[1]) if wid else 0.1))
+                    self.polys.append((pp, lay[1] if lay else "", _stroke_width(pol)))
+        for ar in _findall(r, "fp_arc") + _findall(r, "gr_arc"):
+            lay = _find(ar, "layer")
+            layer = lay[1] if lay else ""
+            s, m, e = _find(ar, "start"), _find(ar, "mid"), _find(ar, "end")
+            ang = _find(ar, "angle")
+            pts = None
+            if s and m and e:                    # KiCad 6+ three-point arc
+                pts = _arc_polyline((_f(s[1]), _f(s[2])), (_f(m[1]), _f(m[2])),
+                                    (_f(e[1]), _f(e[2])))
+            elif s and e and ang:                # legacy centre + swept angle
+                pts = _arc_polyline_center((_f(s[1]), _f(s[2])),
+                                           (_f(e[1]), _f(e[2])), _f(ang[1]))
+            if pts:
+                self.arcs.append((pts, layer, _stroke_width(ar)))
 
     def bbox(self) -> Tuple[float, float, float, float]:
         xs, ys = [], []
@@ -160,7 +232,7 @@ class _Footprint:
             xs += [x1, x2]; ys += [y1, y2]
         for (cx, cy, rr, _l, _w) in self.circles:
             xs += [cx - rr, cx + rr]; ys += [cy - rr, cy + rr]
-        for (pp, _l, _w) in self.polys:
+        for (pp, _l, _w) in self.polys + self.arcs:
             xs += [p[0] for p in pp]; ys += [p[1] for p in pp]
         if not xs:
             return (-1, -1, 1, 1)
@@ -177,6 +249,9 @@ class _Footprint:
         for (x1, y1, x2, y2, lay, _w) in self.lines:
             if "CrtYd" in lay:
                 xs += [x1, x2]; ys += [y1, y2]
+        for (pp, lay, _w) in self.arcs:
+            if "CrtYd" in lay:
+                xs += [p[0] for p in pp]; ys += [p[1] for p in pp]
         if not xs:
             return self.bbox()
         return (min(xs), min(ys), max(xs), max(ys))
@@ -187,6 +262,8 @@ class _Footprint:
         for coll in (self.lines, self.rects):
             for item in coll:
                 layers.add(item[4])
+        for (_pp, lay, _w) in self.arcs:
+            layers.add(lay)
         smd = sum(1 for p in self.pads if p[7] == "smd")
         tht = len(self.pads) - smd
         return {
@@ -232,9 +309,20 @@ class _Footprint:
                 p.setPen(pen)
                 p.drawLine(T(x1_, y1_), T(x2_, y2_))
 
+        def draw_arcs(coll):
+            for (pp, lay, w) in coll:
+                if not any(_in(x, y) for (x, y) in pp):
+                    continue
+                pen = QPen(_layer_color(lay)); pen.setWidthF(max(w * scale, 1.0))
+                pen.setCapStyle(Qt.RoundCap); pen.setJoinStyle(Qt.RoundJoin)
+                p.setPen(pen); p.setBrush(Qt.NoBrush)
+                p.drawPolyline(QPolygonF([T(x, y) for (x, y) in pp]))
+
         # courtyard + fab + silk graphics
         draw_lines([l for l in self.lines if "CrtYd" in l[4]])
+        draw_arcs([a for a in self.arcs if "CrtYd" in a[1]])
         draw_lines([l for l in self.lines if "Fab" in l[4]])
+        draw_arcs([a for a in self.arcs if "Fab" in a[1]])
         for (a, b, c2, d, lay, w) in self.rects:
             if not (_in(a, b) or _in(c2, d)):
                 continue
@@ -293,6 +381,7 @@ class _Footprint:
 
         # silk last (most visible)
         draw_lines([l for l in self.lines if "SilkS" in l[4]])
+        draw_arcs([a for a in self.arcs if "SilkS" in a[1]])
         p.end()
         return img
 
@@ -351,9 +440,13 @@ def render_symbol_image(block_text: str, px: int = 280) -> Optional[QImage]:
                     if ctr and rad:
                         circs.append((_f(ctr[1]), _f(ctr[2]), _f(rad[1])))
                 elif h == "arc":
-                    s, e = _find(c, "start"), _find(c, "end")
+                    s, m, e = _find(c, "start"), _find(c, "mid"), _find(c, "end")
                     if s and e:
-                        arcs.append((_f(s[1]), _f(s[2]), _f(e[1]), _f(e[2])))
+                        start = (_f(s[1]), _f(s[2]))
+                        end = (_f(e[1]), _f(e[2]))
+                        mid = (_f(m[1]), _f(m[2])) if m else None
+                        pts = _arc_polyline(start, mid, end) if mid else [start, end]
+                        arcs.append(pts)
                 elif h == "pin":
                     at, ln = _find(c, "at"), _find(c, "length")
                     numf = _find(c, "number")
@@ -371,6 +464,8 @@ def render_symbol_image(block_text: str, px: int = 280) -> Optional[QImage]:
             xs += [p[0] for p in pp]; ys += [p[1] for p in pp]
         for (cx, cy, r) in circs:
             xs += [cx - r, cx + r]; ys += [cy - r, cy + r]
+        for pp in arcs:
+            xs += [pt[0] for pt in pp]; ys += [pt[1] for pt in pp]
         for (x, y, ang, ln, num) in pins:
             ex = x + ln * math.cos(math.radians(ang))
             ey = y + ln * math.sin(math.radians(ang))
@@ -412,8 +507,10 @@ def render_symbol_image(block_text: str, px: int = 280) -> Optional[QImage]:
             p.setPen(QPen(COL_SYMBODY, 2)); p.drawPolyline(QPolygonF([T(x, y) for (x, y) in pp]))
         for (ccx, ccy, r) in circs:
             p.setPen(QPen(COL_SYMBODY, 2)); p.drawEllipse(T(ccx, ccy), r * scale, r * scale)
-        for (sx, sy, ex, ey) in arcs:
-            p.setPen(QPen(COL_SYMBODY, 2)); p.drawLine(T(sx, sy), T(ex, ey))
+        p.setBrush(Qt.NoBrush)
+        for pp in arcs:
+            p.setPen(QPen(COL_SYMBODY, 2))
+            p.drawPolyline(QPolygonF([T(x, y) for (x, y) in pp]))
         p.end()
         return img
     except Exception:
@@ -421,11 +518,47 @@ def render_symbol_image(block_text: str, px: int = 280) -> Optional[QImage]:
 
 
 # ---------------------------------------------------------------------------
-# 3D model rendering — STEP -> mesh via cascadio (OpenCASCADE, the SnapMagic
-# approach), then a small software rasteriser draws a shaded thumbnail. All
-# local, no display required. Degrades gracefully if cascadio isn't installed.
+# 3D model rendering — dispatched by file suffix:
+#   * STEP/STP  -> mesh via cascadio (OpenCASCADE, the SnapMagic approach)
+#   * WRL/VRML  -> mesh via the built-in VRML IndexedFaceSet reader below
+# then a small software rasteriser draws a shaded thumbnail. All local, no
+# display required. Degrades gracefully if a backend / format isn't available.
+#
+# KiCad's own 3D library ships .wrl by default, so feeding those into cascadio's
+# STEP reader (as the previous STEP-only path did) raised and returned None —
+# most models rendered blank. trimesh has no VRML loader and VTK isn't a project
+# dependency, so WRL is parsed here with a tiny dependency-free reader (numpy
+# only) that pulls each Shape's IndexedFaceSet geometry.
 # ---------------------------------------------------------------------------
+import logging
+
+_log = logging.getLogger(__name__)
+
+STEP_SUFFIXES = (".step", ".stp")
+VRML_SUFFIXES = (".wrl", ".vrml")
+
+
+def model_format(path) -> str:
+    """Classify a 3D model path by suffix: 'step', 'vrml', or 'unsupported'."""
+    suf = Path(path).suffix.lower()
+    if suf in STEP_SUFFIXES:
+        return "step"
+    if suf in VRML_SUFFIXES:
+        return "vrml"
+    return "unsupported"
+
+
+def _have_numpy() -> bool:
+    try:
+        import numpy  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
 def have_3d() -> bool:
+    """STEP backend (cascadio + trimesh + numpy) availability. VRML needs only
+    numpy — see :func:`_have_numpy`."""
     try:
         import cascadio  # noqa: F401
         import trimesh   # noqa: F401
@@ -433,6 +566,96 @@ def have_3d() -> bool:
         return True
     except Exception:
         return False
+
+
+# --- VRML / .wrl reader ----------------------------------------------------
+_VRML_NUM = re.compile(r"[-+]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][-+]?\d+)?")
+
+
+def _vrml_indexed_face_sets(text: str):
+    """Yield (point_str, coord_index_str) for every IndexedFaceSet block in a
+    VRML2 (.wrl) document, using brace matching to bound each block so the
+    coordIndex and its coord/point stay paired per-Shape."""
+    n = len(text)
+    for m in re.finditer(r"IndexedFaceSet", text):
+        b = text.find("{", m.end())
+        if b < 0:
+            continue
+        depth = 0
+        end = -1
+        i = b
+        while i < n:
+            ch = text[i]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+            i += 1
+        if end < 0:
+            continue
+        block = text[b:end + 1]
+        pm = re.search(r"\bpoint\s*\[", block)
+        cm = re.search(r"\bcoordIndex\s*\[", block)
+        if not pm or not cm:
+            continue
+        pe = block.find("]", pm.end())
+        ce = block.find("]", cm.end())
+        if pe < 0 or ce < 0:
+            continue
+        yield block[pm.end():pe], block[cm.end():ce]
+
+
+def parse_vrml(text: str):
+    """Parse VRML2/.wrl IndexedFaceSet geometry into (verts Nx3, faces Mx3)
+    numpy arrays. Each Shape carries a flat ``point [x y z, …]`` list and a
+    ``coordIndex [i j k -1, …]`` list of 0-based indices, ``-1`` terminating a
+    face; polygons are fan-triangulated and per-Shape index bases are offset so
+    multiple Shapes concatenate correctly. Returns (None, None) if empty."""
+    import numpy as np
+    all_v = []
+    all_f = []
+    offset = 0
+    for point_str, index_str in _vrml_indexed_face_sets(text):
+        coords = [float(x) for x in _VRML_NUM.findall(point_str)]
+        n = (len(coords) // 3) * 3
+        if n < 9:                                   # need >= 3 vertices
+            continue
+        pv = np.asarray(coords[:n], float).reshape(-1, 3)
+        idx = [int(x) for x in re.findall(r"-?\d+", index_str)]
+        face = []
+
+        def _flush(face):
+            if len(face) >= 3:
+                for k in range(1, len(face) - 1):
+                    all_f.append((face[0] + offset,
+                                  face[k] + offset,
+                                  face[k + 1] + offset))
+
+        for vi in idx:
+            if vi < 0:                              # -1 ends the current polygon
+                _flush(face)
+                face = []
+            elif 0 <= vi < len(pv):
+                face.append(vi)
+        _flush(face)                                # trailing face without -1
+        all_v.append(pv)
+        offset += len(pv)
+    if not all_v or not all_f:
+        return None, None
+    return np.vstack(all_v), np.asarray(all_f, int)
+
+
+def load_vrml_mesh(path):
+    """Load a .wrl/.vrml model to (verts, faces). Pure-Python VRML reader (needs
+    only numpy) so it works without cascadio/OpenCASCADE. (None, None) on error."""
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+        return parse_vrml(text)
+    except Exception:
+        return None, None
 
 
 import contextlib
@@ -468,7 +691,19 @@ def _suppress_native_stderr():
 
 
 def load_step_mesh(step_path: Path):
-    """Return (vertices Nx3, faces Mx3) numpy arrays, or (None, None)."""
+    """Return (vertices Nx3, faces Mx3) numpy arrays, or (None, None).
+
+    Dispatches on the file suffix: STEP/STP go through cascadio+OpenCASCADE,
+    WRL/VRML through the built-in VRML reader. Unsupported suffixes are logged
+    (not silently swallowed) and return (None, None) — so a .wrl model is no
+    longer fed into the STEP reader (which raised → blank preview)."""
+    fmt = model_format(step_path)
+    if fmt == "vrml":
+        return load_vrml_mesh(step_path)
+    if fmt != "step":
+        _log.warning("fp_render: unsupported 3D model format %r (%s)",
+                     Path(step_path).suffix, step_path)
+        return None, None
     import os
     import tempfile
     import cascadio
@@ -550,17 +785,30 @@ def paint_mesh(painter, w: int, h: int, verts, faces,
         painter.drawPolygon(poly)
 
 
+def _model_backend_ready(fmt: str) -> bool:
+    """True when the backend for this format is importable: STEP needs the full
+    cascadio stack, VRML needs only numpy."""
+    if fmt == "step":
+        return have_3d()
+    if fmt == "vrml":
+        return _have_numpy()
+    return False
+
+
 def step_summary(step_path: Path) -> Optional[dict]:
-    if not have_3d():
+    """Size/triangle summary for a STEP or WRL model (None if unavailable or
+    unsupported)."""
+    fmt = model_format(step_path)
+    if not _model_backend_ready(fmt):
         return None
     try:
-        import numpy as np
         v, f = _load_step_mesh(step_path)
-        if v is None or len(v) == 0:
+        if v is None or f is None or len(v) == 0:
             return None
         dims = v.max(0) - v.min(0)
-        # glTF/GLB from cascadio is in metres; convert to mm for display
-        if float(dims.max()) < 1.0:
+        # glTF/GLB from cascadio is in metres; convert to mm for display. VRML
+        # geometry is already in model units, so it's left untouched.
+        if fmt == "step" and float(dims.max()) < 1.0:
             dims = dims * 1000.0
         return {"triangles": int(len(f)),
                 "size_mm": [round(float(d), 2) for d in dims]}
@@ -569,12 +817,14 @@ def step_summary(step_path: Path) -> Optional[dict]:
 
 
 def render_step_image(step_path: Path, px: int = 420) -> Optional[QImage]:
-    """Render a static shaded 3D thumbnail of a STEP model (None if unavailable)."""
-    if not have_3d():
+    """Render a static shaded 3D thumbnail of a STEP or WRL model (None if the
+    format is unsupported or its backend is unavailable)."""
+    fmt = model_format(step_path)
+    if not _model_backend_ready(fmt):
         return None
     try:
         v, faces = load_step_mesh(step_path)
-        if v is None or len(faces) == 0:
+        if v is None or faces is None or len(faces) == 0:
             return None
         img = QImage(px, px, QImage.Format_ARGB32)
         img.fill(BG)

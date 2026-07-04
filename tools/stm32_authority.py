@@ -817,7 +817,10 @@ def to_switchmap_c(authority: dict) -> str:
     rail} plus the daisy-chain cell order. Rails become an enum."""
     w = card_wiring(authority)
     pkg = w["package"]
-    rails = sorted({c["rail"] for c in w["channels"]})
+    # A zero-channel package would emit an empty `enum {}` and empty array
+    # initializers `{}` — both invalid ISO C. Guard every list that becomes a C
+    # aggregate with a placeholder so the header always compiles.
+    rails = sorted({c["rail"] for c in w["channels"]}) or ["NONE"]
     L = [f"/* NETDECK switch map for {pkg}. Generated from the pinout data; wiring per the",
          " * vault Connector Contract (Cards 7A/7B/7C). Do not edit by hand.",
          f" * {_stamp_line(authority)} */",
@@ -831,9 +834,12 @@ def to_switchmap_c(authority: dict) -> str:
     for c in w["channels"]:
         L.append(f"    {{ {c['cell']}, {c['channel']}, {c['socket_pin']}, RAIL_{c['rail']} }},"
                  f"  /* {c['s_pin']}<-pin{c['socket_pin']} {c['socket_name']}, {c['d_pin']}->{c['rail']} */")
+    if not w["channels"]:
+        L.append("    { 0, 0, 0, RAIL_NONE },  /* placeholder: package has no switch channels */")
     L.append("};")
+    cell_order = w["daisy_chain"]["order"]
     L.append(f"static const unsigned char NETDECK_{pkg}_CELL_ORDER[] = "
-             f"{{ {', '.join(str(n) for n in w['daisy_chain']['order'])} }};")
+             f"{{ {', '.join(str(n) for n in cell_order) if cell_order else '0'} }};")
     L += ["",
           f"#define NETDECK_{pkg}_CELLS {w['cells']}",
           f"#define NETDECK_{pkg}_CHANNELS_USED {len(w['channels'])}",
@@ -1286,8 +1292,14 @@ def to_kicad_symbol(authority: dict) -> str:
     half_h = round((max(len(left), len(right)) / 2 * pitch) + pitch, 2)
 
     def pin(p, side, y):
-        net = (p["assignment"].get("destination") or p["assignment"].get("net")
-               or f"CARD_LANE_{p['position']}")
+        net = p["assignment"].get("destination") or p["assignment"].get("net")
+        # Fixed IO pins carry the generic net "CARD_LANE" (db.TARGET_NET[ID_IO]),
+        # which is truthy — so the old `or f"CARD_LANE_{position}"` fallback was
+        # dead code and every fixed IO pin got the identical name "CARD_LANE",
+        # defeating per-lane identity in the symbol. Give each its socket-numbered
+        # lane (matching the by_pin lane policy elsewhere: CARD_LANE_{pin:03d}).
+        if net in (None, "", "CARD_LANE"):
+            net = f"CARD_LANE_{p['position']:03d}"
         at = f"(at {-(hw + length)} {y} 0)" if side == "L" else f"(at {hw + length} {y} 180)"
         return (f'      (pin {_pin_kind(p, net)} line {at} (length {length})\n'
                 f'        (name "{_sx(net)}" (effects (font (size 1.27 1.27))))\n'
