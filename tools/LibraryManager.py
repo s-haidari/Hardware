@@ -2545,7 +2545,7 @@ class LibraryManagerWindow(QMainWindow):
         tabbar.setFont(fa)
         # size to content with room so 'Activity' never clips in the title slot
         tabbar.setExpanding(False)
-        tabbar.setMinimumWidth(160)
+        tabbar.setMinimumWidth(196)
         tabbar.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Preferred)
         group.set_title_widget(tabbar)
 
@@ -2859,7 +2859,7 @@ class LibraryManagerWindow(QMainWindow):
         QProgressBar#opProgress { background: @@PROG_BG@@; border: 1px solid @BORDER@; border-radius: 4px; }
         QProgressBar#opProgress::chunk { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 @PROG1@, stop:1 @PROG2@); border-radius: 6px; }
         QTabBar#cardTabBar { background: transparent; spacing: 6px; }
-        QTabBar#cardTabBar::tab { padding: 6px 14px; font-weight: 700; font-size: 10pt; color: @FG_DIM@; border: 1px solid @BORDER@; border-radius: 4px; background: @@TAB_BG@@; margin: 0 4px; min-height: 24px; }
+        QTabBar#cardTabBar::tab { padding: 5px 12px; font-weight: 700; font-size: 9pt; color: @FG_DIM@; border: 1px solid @BORDER@; border-radius: 4px; background: @@TAB_BG@@; margin: 0 3px; min-height: 22px; }
         QTabBar#cardTabBar::tab:hover { background: @@HOVER_BG@@; }
         QTabBar#cardTabBar::tab:selected { color: @TAB_SEL_FG@; background: @@TAB_SEL_BG@@; border-color: @ACCENT@; }
         QTabBar::tab { padding: 7px 14px; color: @FG_DIM@; background: @@TAB_BG@@; border: 1px solid @BORDER@; border-bottom: none; border-top-left-radius: 8px; border-top-right-radius: 8px; margin-right: 2px; }
