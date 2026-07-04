@@ -835,3 +835,313 @@ def render_step_image(step_path: Path, px: int = 420) -> Optional[QImage]:
         return img
     except Exception:
         return None
+
+
+# ---------------------------------------------------------------------------
+# Board-level render — export a WHOLE .kicad_pcb to an image via kicad-cli.
+#
+# The footprint/symbol/STEP/WRL paths above render a single part. There was no
+# way to preview an assembled board. This shells out to the installed KiCad's
+# ``kicad-cli`` (located through the shared kicad_paths locator) and turns the
+# board into a QImage — with zero new pip dependencies.
+#
+# Two strategies, tried in order by ``render_board_image(method="auto")``:
+#   * "render" — ``kicad-cli pcb render`` writes a 3D PNG directly. Preferred:
+#                the PNG loads with QImage alone (no QtSvg, no QApplication) and
+#                mirrors the existing STEP/WRL 3D thumbnails.
+#   * "svg"    — ``kicad-cli pcb export svg`` writes a 2D board plot which is
+#                rasterised with PyQt5.QtSvg (used only as a fallback, and only
+#                when QtSvg is importable). Older kicad-cli builds without the
+#                ``pcb render`` subcommand fall through to this automatically.
+#
+# Everything is defensive: missing CLI, subprocess timeout, non-zero exit, empty
+# / unreadable output each return a BoardRenderResult carrying an explicit
+# ``reason`` instead of raising. Windows console flashes are suppressed with
+# CREATE_NO_WINDOW (0 on other platforms).
+# ---------------------------------------------------------------------------
+from dataclasses import dataclass
+
+_BOARD_RENDER_TIMEOUT = 120           # seconds; board renders are usually <1 s
+_BOARD_SVG_LAYERS = "F.Cu,F.SilkS,F.Mask,Edge.Cuts"
+
+
+@dataclass
+class BoardRenderResult:
+    """Outcome of :func:`render_board_image`.
+
+    On success ``image`` is a non-null QImage (and the object is truthy);
+    ``png_bytes`` carries the same picture as PNG for callers that want raw
+    bytes, and ``method`` is "render" or "svg". On failure ``image`` is None,
+    the object is falsy, and ``reason`` explains why (CLI missing, timeout,
+    bad file, …) so the UI can show a message instead of a blank pane."""
+    image: Optional[QImage] = None
+    png_bytes: Optional[bytes] = None
+    method: str = ""
+    reason: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return self.image is not None and not self.image.isNull()
+
+    def __bool__(self) -> bool:
+        return self.ok
+
+
+def _no_window_flag() -> int:
+    """CREATE_NO_WINDOW on Windows (suppresses the kicad-cli console flash); 0
+    elsewhere, where the flag doesn't exist and 0 means 'no special flags'."""
+    import subprocess
+    return getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def find_board_render_cli() -> Optional[str]:
+    """Locate ``kicad-cli`` for board rendering via the shared kicad_paths
+    locator. Delegates to :func:`kicad_paths.find_kicad_cli` (which honours
+    KICAD_BIN / PATH), then falls back to :func:`kicad_paths.find_kicad_bin`.
+    Returns None when KiCad isn't installed, so callers/tests can probe
+    availability without launching a subprocess."""
+    try:
+        from kicad_paths import find_kicad_cli, find_kicad_bin
+    except Exception:
+        return None
+    try:
+        cli = find_kicad_cli()
+        if cli and Path(cli).exists():
+            return cli
+    except Exception:
+        pass
+    try:
+        bin_dir = find_kicad_bin()
+        if bin_dir:
+            for name in ("kicad-cli.exe", "kicad-cli"):
+                exe = Path(bin_dir) / name
+                if exe.exists():
+                    return str(exe)
+    except Exception:
+        pass
+    return None
+
+
+def have_board_render() -> bool:
+    """True when a board render is possible right now (kicad-cli is on disk).
+    Convenience for the UI to enable/disable a 'Render board' action."""
+    return find_board_render_cli() is not None
+
+
+def _run_kicad_cli(args, timeout):
+    """Run kicad-cli, hidden-window and time-bounded. Returns
+    ``(returncode, combined_output_text)``; on timeout/spawn failure returns
+    ``(None, message)`` so callers can branch on ``rc is None``."""
+    import subprocess
+    try:
+        proc = subprocess.run(
+            args,
+            stdin=subprocess.DEVNULL,            # avoid WinError 6 under pythonw/pytest
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            timeout=timeout, creationflags=_no_window_flag(),
+        )
+        return proc.returncode, (proc.stdout or b"").decode("utf-8", "replace")
+    except subprocess.TimeoutExpired:
+        return None, "timed out after %ss" % timeout
+    except Exception as e:                       # FileNotFoundError, OSError, …
+        return None, str(e)
+
+
+def _board_extents(pcb_path) -> Optional[Tuple[float, float, float, float]]:
+    """(min_x, min_y, max_x, max_y) of the board outline in mm, reusing this
+    module's S-expr parser. Prefers Edge.Cuts geometry; falls back to the bbox
+    of all top-level graphics when the outline is empty. None if unparseable."""
+    try:
+        root = parse_sexpr(Path(pcb_path).read_text(encoding="utf-8", errors="replace"))
+    except Exception:
+        return None
+    if not root or root[0] != "kicad_pcb":
+        return None
+    xs, ys, exs, eys = [], [], [], []
+
+    def _is_edge(node) -> bool:
+        lay = _find(node, "layer")
+        return bool(lay and len(lay) > 1 and lay[1] == "Edge.Cuts")
+
+    def _add(node, pts):
+        xs.extend(p[0] for p in pts)
+        ys.extend(p[1] for p in pts)
+        if _is_edge(node):
+            exs.extend(p[0] for p in pts)
+            eys.extend(p[1] for p in pts)
+
+    for g in _findall(root, "gr_line") + _findall(root, "gr_rect"):
+        s, e = _find(g, "start"), _find(g, "end")
+        if s and e:
+            _add(g, [(_f(s[1]), _f(s[2])), (_f(e[1]), _f(e[2]))])
+    for g in _findall(root, "gr_circle"):
+        ctr, end = _find(g, "center"), _find(g, "end")
+        if ctr and end:
+            cx, cy = _f(ctr[1]), _f(ctr[2])
+            r = math.hypot(_f(end[1]) - cx, _f(end[2]) - cy)
+            _add(g, [(cx - r, cy - r), (cx + r, cy + r)])
+    for g in _findall(root, "gr_arc"):
+        pts = [(_f(pt[1]), _f(pt[2])) for pt in
+               (_find(g, "start"), _find(g, "mid"), _find(g, "end"))
+               if pt and len(pt) > 2]
+        if pts:
+            _add(g, pts)
+
+    use_x, use_y = (exs, eys) if exs else (xs, ys)
+    if not use_x:
+        return None
+    return (min(use_x), min(use_y), max(use_x), max(use_y))
+
+
+def _board_canvas(pcb_path, max_px: int) -> Tuple[int, int]:
+    """Pick a (width, height) that fits the board's aspect ratio inside a
+    ``max_px`` square. Falls back to a square canvas when extents are unknown."""
+    ext = _board_extents(pcb_path)
+    if not ext:
+        return max_px, max_px
+    bw = max(ext[2] - ext[0], 0.1)
+    bh = max(ext[3] - ext[1], 0.1)
+    if bw >= bh:
+        return max_px, max(int(round(max_px * bh / bw)), 64)
+    return max(int(round(max_px * bw / bh)), 64), max_px
+
+
+def _render_board_png(cli, pcb_path, max_px, side, timeout):
+    """``kicad-cli pcb render`` → (QImage, png_bytes, "") or (None, None, reason)."""
+    import os
+    import tempfile
+    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+    tmp.close()
+    try:
+        w, h = _board_canvas(pcb_path, max_px)
+        rc, log = _run_kicad_cli(
+            [cli, "pcb", "render", "--output", tmp.name,
+             "--width", str(w), "--height", str(h), "--side", str(side),
+             pcb_path], timeout)
+        if rc is None:
+            return None, None, "pcb render: %s" % log
+        if rc != 0:
+            return None, None, "pcb render exit %s: %s" % (rc, (log or "").strip()[-160:])
+        data = Path(tmp.name).read_bytes()
+        if not data:
+            return None, None, "pcb render produced an empty file"
+        img = QImage()
+        if not img.loadFromData(data, "PNG") or img.isNull():
+            return None, None, "pcb render output was not a readable PNG"
+        return img, data, ""
+    except Exception as e:
+        return None, None, "pcb render error: %s" % e
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except Exception:
+            pass
+
+
+def _render_board_svg(cli, pcb_path, max_px, timeout):
+    """``kicad-cli pcb export svg`` rasterised via PyQt5.QtSvg →
+    (QImage, png_bytes, "") or (None, None, reason). Needs QtSvg (optional);
+    returns a clear reason when it isn't importable."""
+    try:
+        from PyQt5.QtSvg import QSvgRenderer
+    except Exception as e:
+        return None, None, "svg rasteriser unavailable (PyQt5.QtSvg): %s" % e
+    import os
+    import tempfile
+    tmp = tempfile.NamedTemporaryFile(suffix=".svg", delete=False)
+    tmp.close()
+    try:
+        rc, log = _run_kicad_cli(
+            [cli, "pcb", "export", "svg", "--output", tmp.name,
+             "--layers", _BOARD_SVG_LAYERS, "--page-size-mode", "2",
+             "--exclude-drawing-sheet", "--mode-single", pcb_path], timeout)
+        if rc is None:
+            return None, None, "pcb export svg: %s" % log
+        if rc != 0:
+            return None, None, "pcb export svg exit %s: %s" % (rc, (log or "").strip()[-160:])
+        if not Path(tmp.name).exists() or Path(tmp.name).stat().st_size == 0:
+            return None, None, "pcb export svg produced an empty file"
+        renderer = QSvgRenderer(tmp.name)
+        if not renderer.isValid():
+            return None, None, "pcb export svg output was not renderable"
+        default = renderer.defaultSize()
+        vw, vh = default.width(), default.height()
+        if vw <= 0 or vh <= 0:
+            vw = vh = max_px
+        if vw >= vh:
+            tw, th = max_px, max(int(round(max_px * vh / vw)), 1)
+        else:
+            tw, th = max(int(round(max_px * vw / vh)), 1), max_px
+        img = QImage(tw, th, QImage.Format_ARGB32)
+        img.fill(BG)
+        p = QPainter(img)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        renderer.render(p)
+        p.end()
+        if img.isNull():
+            return None, None, "svg rasterisation produced a null image"
+        return img, _qimage_to_png(img), ""
+    except Exception as e:
+        return None, None, "pcb export svg error: %s" % e
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except Exception:
+            pass
+
+
+def _qimage_to_png(img: QImage) -> Optional[bytes]:
+    """Serialise a QImage to PNG bytes (None if the write handler fails)."""
+    try:
+        from PyQt5.QtCore import QBuffer, QByteArray
+        ba = QByteArray()
+        buf = QBuffer(ba)
+        buf.open(QBuffer.WriteOnly)
+        ok = img.save(buf, "PNG")
+        buf.close()
+        return bytes(ba) if ok else None
+    except Exception:
+        return None
+
+
+def render_board_image(kicad_pcb_path, max_px: int = 1600, side: str = "top",
+                       method: str = "auto",
+                       timeout: Optional[float] = None) -> "BoardRenderResult":
+    """Render a whole ``.kicad_pcb`` to an image via the installed kicad-cli.
+
+    Returns a :class:`BoardRenderResult`: truthy with ``.image`` (a QImage) on
+    success, falsy with an explicit ``.reason`` on failure (CLI missing, bad
+    file, timeout, non-zero exit). Never raises for the ordinary failure modes.
+
+    ``method`` selects the strategy: "auto" (default) tries the 3D ``pcb
+    render`` first and falls back to the 2D ``pcb export svg`` rasteriser;
+    "render" or "svg" force one. ``max_px`` caps the longest image side (the
+    other side follows the board aspect ratio). ``side`` is passed to
+    ``pcb render`` (top/bottom/left/right/front/back)."""
+    if timeout is None:
+        timeout = _BOARD_RENDER_TIMEOUT
+    pcb = Path(kicad_pcb_path)
+    if not pcb.exists():
+        return BoardRenderResult(reason="board file not found: %s" % pcb)
+    if pcb.suffix.lower() != ".kicad_pcb":
+        return BoardRenderResult(reason="not a .kicad_pcb file: %s" % pcb)
+    cli = find_board_render_cli()
+    if not cli:
+        return BoardRenderResult(
+            reason="kicad-cli not found (install KiCad or set KICAD_BIN)")
+    try:
+        px = max(64, min(int(max_px), 8192))
+    except (TypeError, ValueError):
+        px = 1600
+    order = {"render": ("render",), "svg": ("svg",)}.get(
+        method, ("render", "svg"))
+    reasons = []
+    for m in order:
+        if m == "render":
+            img, data, why = _render_board_png(cli, str(pcb), px, side, timeout)
+        else:
+            img, data, why = _render_board_svg(cli, str(pcb), px, timeout)
+        if img is not None and not img.isNull():
+            return BoardRenderResult(image=img, png_bytes=data, method=m)
+        reasons.append("%s (%s)" % (why, m))
+    return BoardRenderResult(reason="; ".join(reasons) or "board render failed")

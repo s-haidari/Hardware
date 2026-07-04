@@ -152,24 +152,56 @@ CONFIG_PATH = REPO_ROOT / "tools" / "config.json"
 # -----------------------------
 # Utilities / logging
 # -----------------------------
-def load_config() -> Dict[str, str]:
-    # Always start from paths derived from this script's own location, so the
-    # app works regardless of which machine/user/clone it runs from. config.json
-    # may override Downloads/PythonExe, but only if the override is genuinely
-    # writable (a stale path to another user's folder is ignored, not honored).
-    cfg = derive_paths(REPO_ROOT)
+def load_config(config_path: Optional[Path] = None) -> Dict[str, str]:
+    # A persisted RepoRoot (written by save_repo_root/change_path) wins when it
+    # is present AND genuinely usable (exists + writable); otherwise we derive
+    # every path from this script's/exe's own location, so the app still works
+    # regardless of which machine/user/clone it runs from. config.json may also
+    # override Downloads/PythonExe, but a Downloads override is honored only if
+    # it is genuinely writable (a stale path to another user's folder is
+    # ignored, not honored). config_path defaults to the module CONFIG_PATH;
+    # it is a seam so tests (and any future multi-root caller) can point the
+    # loader at an arbitrary config file. Backward compatible: existing
+    # callers keep calling load_config() with no arguments.
+    path = Path(config_path) if config_path is not None else CONFIG_PATH
+
+    data: Dict = {}
     try:
-        if CONFIG_PATH.exists():
-            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        if path.exists():
+            with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            dl = data.get("Downloads")
-            if dl and Path(dl).resolve() != Path(cfg["Downloads"]).resolve() and _can_write_dir(Path(dl)):
-                cfg["Downloads"] = str(Path(dl))
-            if data.get("PythonExe"):
-                cfg["PythonExe"] = data["PythonExe"]
+            if not isinstance(data, dict):
+                data = {}
     except Exception as e:
         print(f"WARNING: failed to read config.json: {e}")
-   
+        data = {}
+
+    # Honor a persisted RepoRoot only when it resolves to a real, writable
+    # directory. A stale path (another machine/user, deleted checkout) is
+    # ignored so the app falls back to the portable exe/script derivation
+    # instead of pointing the whole app at a folder that does not exist.
+    root = REPO_ROOT
+    persisted_root = data.get("RepoRoot")
+    if persisted_root:
+        pr = Path(persisted_root)
+        try:
+            usable = pr.exists() and pr.is_dir() and _can_write_dir(pr)
+        except Exception:
+            usable = False
+        if usable:
+            root = pr
+
+    cfg = derive_paths(root)
+
+    try:
+        dl = data.get("Downloads")
+        if dl and Path(dl).resolve() != Path(cfg["Downloads"]).resolve() and _can_write_dir(Path(dl)):
+            cfg["Downloads"] = str(Path(dl))
+        if data.get("PythonExe"):
+            cfg["PythonExe"] = data["PythonExe"]
+    except Exception as e:
+        print(f"WARNING: failed to apply config.json overrides: {e}")
+
     # Ensure directories exist
     for key in ("RepoRoot", "Downloads", "Libs", "FootprintLib", "ModelLib", "MiscDir"):
         p = Path(cfg[key])
@@ -193,6 +225,63 @@ def save_config(cfg: Dict[str, str]):
             json.dump(cfg, f, indent=2)
     except Exception as e:
         print(f"WARNING: failed to write config.json: {e}")
+
+
+def save_repo_root(cfg: Dict[str, str], new_root, config_path: Optional[Path] = None) -> bool:
+    """Persist a new RepoRoot into config.json so it survives an app restart.
+
+    Audit gap (medium): change_path re-derived every path from the new root and
+    called save_config(), but the OLD load_config() ignored the persisted
+    RepoRoot and always re-derived it from the exe/script location — so a user's
+    root change was silently reverted on the next launch. This writes RepoRoot
+    into config.json (creating the file, or updating it in place while
+    preserving every other key) after validating that new_root exists and is a
+    writable directory. Returns True on success, False if the root is
+    invalid/not writable or the write failed.
+
+    Pure persistence + validation only: it also updates cfg["RepoRoot"] in
+    memory for immediate consistency, but it does NOT re-derive the other paths,
+    restart the watcher, or touch the log. The UI layer that wires this should
+    call derive_paths(new_root) to rebuild the rest of cfg (exactly as
+    change_path already does) and refresh any live views/watchers.
+
+    config_path defaults to the module CONFIG_PATH; it is a test/injection seam.
+    """
+    root = Path(new_root)
+    # Validate BEFORE writing: never persist a root that would break the app.
+    try:
+        if not (root.exists() and root.is_dir()):
+            return False
+        if not _can_write_dir(root):
+            return False
+    except Exception:
+        return False
+
+    path = Path(config_path) if config_path is not None else CONFIG_PATH
+
+    # Update-in-place: preserve any other keys already in config.json.
+    data: Dict = {}
+    if path.exists():
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                data = loaded
+        except Exception:
+            data = {}
+
+    data["RepoRoot"] = str(root)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        print(f"WARNING: failed to persist RepoRoot: {e}")
+        return False
+
+    if isinstance(cfg, dict):
+        cfg["RepoRoot"] = str(root)
+    return True
 
 
 class UILog(QObject):
@@ -704,6 +793,78 @@ def associate_parts_from_cfg(cfg: Dict[str, str], overrides: Optional[dict] = No
                    if p.suffix.lower() in (".step", ".stp", ".wrl")] if mdl_dir.exists() else []
     return associate_parts(symbol_text, footprints, model_files,
                            overrides if overrides is not None else load_group_overrides(cfg))
+
+
+def scan_library_grouped(cfg: Dict[str, str], overrides: Optional[dict] = None) -> List[dict]:
+    """One row per logical part for the future grouped library view.
+
+    Built on associate_parts_from_cfg() (which links symbol -> footprint ->
+    model by KiCad's own explicit references, with a name-match fallback), then
+    annotated with presence/health flags computed against what is ACTUALLY on
+    disk in the configured library paths. Each returned dict:
+
+      name          best human label: the first symbol name if the part has
+                    any symbols, else the footprint stem.
+      footprint     footprint stem the part is keyed on, or None (ungrouped
+                    symbols with no Footprint property).
+      symbols       list of symbol names in this part.
+      model         basename of the linked 3D model, or None.
+      model_source  how the model link was found: 'override' | 'reference'
+                    (footprint's own (model …) line) | 'name-match' | None.
+      has_symbol    the part has at least one symbol.
+      has_footprint the footprint the part references exists as a real
+                    .kicad_mod file on disk (a symbol that references a missing
+                    footprint is False here, and flagged dangling below).
+      has_model     the linked model exists as a real file on disk.
+      dangling      True if a symbol references a footprint that is NOT present
+                    on disk, OR the footprint references a model file that is
+                    NOT present on disk. (Ungrouped symbols with no footprint
+                    reference at all are missing-but-not-dangling: has_footprint
+                    is False, dangling stays False.)
+
+    Pure-ish: reads the configured SymbolLib/FootprintLib/ModelLib paths, writes
+    nothing. Safe to call for a preview.
+    """
+    groups = associate_parts_from_cfg(cfg, overrides)
+
+    # What actually exists on disk, so we can tell a real link from a dangling
+    # reference to a footprint/model that was never (or no longer) installed.
+    fp_dir = Path(cfg["FootprintLib"])
+    fp_stems = {p.stem for p in fp_dir.glob("*.kicad_mod")} if fp_dir.exists() else set()
+    mdl_dir = Path(cfg["ModelLib"])
+    model_names = {p.name for p in mdl_dir.glob("*")
+                   if p.suffix.lower() in (".step", ".stp", ".wrl")} if mdl_dir.exists() else set()
+
+    rows: List[dict] = []
+    for g in groups:
+        fp = g.get("footprint")
+        symbols = list(g.get("symbols") or [])
+        model = g.get("model")
+
+        has_symbol = bool(symbols)
+        has_footprint = fp is not None and fp in fp_stems
+        has_model = model is not None and model in model_names
+
+        # A symbol pointing at a footprint that has no .kicad_mod file, or a
+        # footprint whose (model …) line points at a missing file, is dangling.
+        symbol_refs_missing_fp = has_symbol and fp is not None and fp not in fp_stems
+        footprint_refs_missing_model = model is not None and model not in model_names
+        dangling = symbol_refs_missing_fp or footprint_refs_missing_model
+
+        name = symbols[0] if symbols else fp
+
+        rows.append({
+            "name": name,
+            "footprint": fp,
+            "symbols": symbols,
+            "model": model,
+            "model_source": g.get("model_source"),
+            "has_symbol": has_symbol,
+            "has_footprint": has_footprint,
+            "has_model": has_model,
+            "dangling": dangling,
+        })
+    return rows
 
 
 def repair_library(cfg: Dict[str, str], log: UILog) -> Dict[str, int]:

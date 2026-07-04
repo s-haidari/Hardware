@@ -206,6 +206,142 @@ class ProjectSettings:
     Grid: {self.pcb_grid}"""
 
 # ═══════════════════════════════════════════════════════════════════
+# EXTENDED BOARD/SCHEMATIC SETUP COVERAGE (mm-native, KiCad-real keys)
+# ═══════════════════════════════════════════════════════════════════
+# Everything below expands .kicad_pro coverage beyond the flat mils-based
+# ProjectSettings above. It is *additive*: values are mm-native (KiCad's own
+# unit) so they never drift through the 0.1-mil grid, and every write targets a
+# key confirmed against a real KiCad-written .kicad_pro. Load is preserve-by-
+# default (an absent key stays absent — no manufactured defaults) and save is a
+# deep-merge (untouched keys are left exactly as KiCad wrote them).
+
+# Valid values for a DRC/ERC rule severity (board.design_settings.rule_severities
+# and erc.rule_severities are both name -> one of these strings).
+SEVERITY_LEVELS = ("error", "warning", "ignore")
+
+# Curated DRC rule IDs surfaced by the settings UI. Every ID here was verified
+# present in a real KiCad-written board.design_settings.rule_severities map.
+# (The full map has ~60 IDs; save preserves any not listed here.)
+DRC_RULE_IDS = (
+    "clearance", "creepage", "track_width", "annular_width", "connection_width",
+    "hole_clearance", "hole_to_hole", "holes_co_located", "copper_edge_clearance",
+    "courtyards_overlap", "missing_courtyard", "malformed_courtyard",
+    "silk_overlap", "silk_over_copper", "silk_edge_clearance",
+    "starved_thermal", "via_dangling", "track_dangling", "unconnected_items",
+    "shorting_items", "isolated_copper", "copper_sliver", "invalid_outline",
+    "item_on_disabled_layer", "items_not_allowed", "unresolved_variable",
+    "text_height", "text_thickness", "drill_out_of_range",
+    "microvia_drill_out_of_range", "diff_pair_uncoupled_length_too_long",
+    "length_out_of_range", "skew_out_of_range", "too_many_vias",
+    "footprint_type_mismatch", "footprint_symbol_mismatch",
+    "lib_footprint_mismatch", "lib_footprint_issues", "duplicate_footprints",
+    "extra_footprint", "missing_footprint", "net_conflict", "zones_intersect",
+)
+
+# Curated ERC rule IDs surfaced by the settings UI. Every ID here was verified
+# present in a real KiCad-written erc.rule_severities map.
+ERC_RULE_IDS = (
+    "pin_not_connected", "pin_not_driven", "power_pin_not_driven",
+    "missing_power_pin", "missing_input_pin", "missing_bidi_pin", "pin_to_pin",
+    "no_connect_connected", "no_connect_dangling", "label_dangling",
+    "wire_dangling", "unannotated", "duplicate_reference", "similar_labels",
+    "multiple_net_names", "hier_label_mismatch", "bus_to_bus_conflict",
+    "bus_to_net_conflict", "net_not_bus_member", "lib_symbol_issues",
+    "lib_symbol_mismatch", "different_unit_net", "unit_value_mismatch",
+    "unresolved_variable", "endpoint_off_grid", "extra_units", "missing_unit",
+    "undefined_netclass", "simulation_model_issue", "single_global_label",
+)
+
+# ERC pin-conflict matrix (erc.pin_map) is a 12x12 grid of severity ints. The
+# 12 electrical pin types, in KiCad's stored row/column order. These labels are
+# UI hints only — the file stores an index-addressed matrix, so the labels are
+# never written and cannot corrupt the file.
+ERC_PIN_TYPES = (
+    "input", "output", "bidirectional", "tri_state", "passive", "free",
+    "unspecified", "power_in", "power_out", "open_collector", "open_emitter",
+    "no_connect",
+)
+ERC_PIN_MAP_SIZE = 12
+# erc.pin_map / DRC severity ints: 0 = OK, 1 = warning, 2 = error (KiCad
+# PIN_ERROR). 3 is tolerated on read (KiCad's "unconnected" sentinel).
+ERC_PIN_MAP_LEVELS = {0: "ok", 1: "warning", 2: "error"}
+
+
+def _opt_float(value):
+    """float(value) for a real number, else None.
+
+    Distinguishes 'key absent / non-numeric' (None) from a genuine ``0.0`` so
+    the masked-missing-key problem is avoided: load never turns an absent key
+    into a manufactured default. ``bool`` is rejected (it is an ``int``)."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def _clean_mm(value: float) -> float:
+    """Normalise a millimetre value to KiCad's nanometre resolution (1e-6 mm)
+    without ever routing it through the mils grid. ``0.2`` stays ``0.2`` — no
+    ``0.2007`` drift — because we only strip float noise beyond 6 decimals."""
+    return round(float(value), 6)
+
+
+@dataclass
+class ViaDimension:
+    """One row of the predefined via table (board.design_settings.via_dimensions).
+    Both values are millimetres (KiCad-native)."""
+    diameter: float = 0.0
+    drill: float = 0.0
+
+    def to_kicad_dict(self) -> dict:
+        return {"diameter": _clean_mm(self.diameter), "drill": _clean_mm(self.drill)}
+
+
+@dataclass
+class DiffPairDimension:
+    """One row of the predefined differential-pair table
+    (board.design_settings.diff_pair_dimensions). All values millimetres."""
+    width: float = 0.0
+    gap: float = 0.0
+    via_gap: float = 0.0
+
+    def to_kicad_dict(self) -> dict:
+        # KiCad stores the keys as gap/via_gap/width — order is irrelevant in
+        # JSON but the key names must match exactly.
+        return {
+            "gap": _clean_mm(self.gap),
+            "via_gap": _clean_mm(self.via_gap),
+            "width": _clean_mm(self.width),
+        }
+
+
+@dataclass
+class DefaultNetClassSettings:
+    """Editable routing values for the *Default* net class
+    (net_settings.classes[name=="Default"]) — the entry NetClassManager.load
+    skips, so it was previously uneditable. All values are millimetres; ``None``
+    means 'not managed', so a save leaves that key exactly as KiCad wrote it."""
+    clearance: Optional[float] = None
+    track_width: Optional[float] = None
+    via_diameter: Optional[float] = None
+    via_drill: Optional[float] = None
+    microvia_diameter: Optional[float] = None
+    microvia_drill: Optional[float] = None
+
+    def managed_items(self):
+        """(kicad_key, mm_value) pairs for every field that is not None."""
+        for key in ("clearance", "track_width", "via_diameter", "via_drill",
+                    "microvia_diameter", "microvia_drill"):
+            val = getattr(self, key)
+            if val is not None:
+                yield key, float(val)
+
+    def is_managed(self) -> bool:
+        return any(True for _ in self.managed_items())
+
+
+# ═══════════════════════════════════════════════════════════════════
 # PROJECT SETTINGS MANAGER
 # ═══════════════════════════════════════════════════════════════════
 class ProjectSettingsManager:
@@ -213,6 +349,25 @@ class ProjectSettingsManager:
 
     def __init__(self):
         self.settings = ProjectSettings()
+
+        # ── Extended (mm-native, preserve-by-default) managed state ──────────
+        # All start empty / None meaning "not managed": save_to_project and
+        # save_extended write a structure ONLY when it holds managed values, so
+        # a fresh manager never manufactures defaults into a project file.
+        self.drc_severities: Dict[str, str] = {}          # rule_id -> level
+        self.erc_severities: Dict[str, str] = {}          # rule_id -> level
+        self.text_variables: Dict[str, str] = {}          # {VAR} -> value
+        self.track_widths: List[float] = []               # mm (KiCad-native)
+        self.via_dimensions: List[ViaDimension] = []      # mm
+        self.diff_pair_dimensions: List[DiffPairDimension] = []  # mm
+        self.erc_pin_map: List[List[int]] = []            # 12x12 severity ints
+        self.erc_exclusions: List[str] = []               # KiCad-serialised strings
+        self.default_netclass = DefaultNetClassSettings()  # editable Default class
+
+        # Masked-missing-key fix: record which extended structures were actually
+        # present in the loaded file (vs. absent). Lets callers tell a genuine
+        # empty list/default from "key was never there", and keeps verify honest.
+        self._present: set = set()
 
     def check_project_locked(self, project_file: Path) -> bool:
         """Check if the project is currently open in KiCad.
@@ -480,6 +635,12 @@ class ProjectSettingsManager:
             design["solder_mask_clearance"] = round(mils_to_mm(self.settings.solder_mask_clearance), 4)
             design["solder_paste_margin"] = round(mils_to_mm(self.settings.solder_paste_margin), 4)
 
+            # ═══ EXTENDED COVERAGE (DRC/ERC severities, size tables, text vars,
+            # editable Default net class) — deep-merged, preserve-by-default. A
+            # no-op unless the caller populated the extended managed state, so
+            # backward-compatible for callers that only set the flat settings. ═══
+            self._apply_extended(data)
+
             # Optional backup: copy the ORIGINAL project file to <file>.kicad_pro.bak
             # BEFORE the destructive atomic replace, so the sync is undoable. The GUI
             # promises "A .bak is written next to each" and passes backup=True.
@@ -594,7 +755,439 @@ class ProjectSettingsManager:
         if not near(default_nc.get("via_drill"), mils_to_mm(self.settings.default_via_drill), 0.001):
             mismatches.append(f"Default.via_drill={default_nc.get('via_drill')} "
                               f"(wanted {round(mils_to_mm(self.settings.default_via_drill), 4)})")
+
+        # Full-field verify: also confirm every EXTENDED managed value landed on
+        # the key KiCad actually reads. No-op (adds nothing) when the extended
+        # state is empty, so the existing flat-settings verify is unchanged.
+        mismatches.extend(self._collect_extended_mismatches(data))
         return (len(mismatches) == 0), mismatches
+
+    # ═══════════════════════════════════════════════════════════════════
+    # EXTENDED COVERAGE — public API (mm-native, preserve-by-default)
+    # ═══════════════════════════════════════════════════════════════════
+    def load_extended(self, project_file: Path) -> bool:
+        """Read the extended Board/Schematic-Setup coverage from a .kicad_pro:
+        DRC + ERC rule severities, ERC pin-conflict matrix + exclusions, project
+        text variables, the predefined track-width / via / diff-pair tables, and
+        the editable Default net class. Values are kept mm-native (no mils grid).
+
+        Preserve-by-default / masked-missing-key: only keys actually present are
+        captured, and ``self._present`` records which top-level structures
+        existed so an absent key is never mistaken for a manufactured default."""
+        try:
+            data = json.loads(Path(project_file).read_text(encoding='utf-8'))
+        except Exception as e:
+            print(f"Error loading extended settings {project_file}: {e}")
+            return False
+
+        self._present = set()
+        ds = data.get("board", {}).get("design_settings", {})
+        erc = data.get("erc", {})
+
+        # DRC severities — capture only curated IDs that are actually present.
+        self.drc_severities = {}
+        rs = ds.get("rule_severities")
+        if isinstance(rs, dict):
+            self._present.add("board.rule_severities")
+            for rid in DRC_RULE_IDS:
+                val = rs.get(rid)
+                if isinstance(val, str):
+                    self.drc_severities[rid] = val
+
+        # ERC severities — same treatment.
+        self.erc_severities = {}
+        ers = erc.get("rule_severities")
+        if isinstance(ers, dict):
+            self._present.add("erc.rule_severities")
+            for rid in ERC_RULE_IDS:
+                val = ers.get(rid)
+                if isinstance(val, str):
+                    self.erc_severities[rid] = val
+
+        # ERC pin-conflict matrix (12x12 severity ints).
+        self.erc_pin_map = []
+        pm = erc.get("pin_map")
+        if isinstance(pm, list) and pm and all(isinstance(r, list) for r in pm):
+            self._present.add("erc.pin_map")
+            self.erc_pin_map = [[int(x) for x in row] for row in pm]
+
+        # ERC exclusions (opaque KiCad-serialised strings — preserved verbatim).
+        self.erc_exclusions = []
+        ex = erc.get("erc_exclusions")
+        if isinstance(ex, list):
+            self._present.add("erc.erc_exclusions")
+            self.erc_exclusions = [x for x in ex if isinstance(x, str)]
+
+        # Project text variables ({VAR} map at the .kicad_pro top level).
+        self.text_variables = {}
+        tv = data.get("text_variables")
+        if isinstance(tv, dict):
+            self._present.add("text_variables")
+            self.text_variables = {str(k): v for k, v in tv.items()}
+
+        # Predefined size tables (all mm-native).
+        self.track_widths = []
+        tw = ds.get("track_widths")
+        if isinstance(tw, list):
+            self._present.add("track_widths")
+            self.track_widths = [float(x) for x in tw
+                                 if isinstance(x, (int, float)) and not isinstance(x, bool)]
+
+        self.via_dimensions = []
+        vd = ds.get("via_dimensions")
+        if isinstance(vd, list):
+            self._present.add("via_dimensions")
+            for v in vd:
+                if isinstance(v, dict):
+                    self.via_dimensions.append(ViaDimension(
+                        float(v.get("diameter", 0.0) or 0.0),
+                        float(v.get("drill", 0.0) or 0.0)))
+
+        self.diff_pair_dimensions = []
+        dp = ds.get("diff_pair_dimensions")
+        if isinstance(dp, list):
+            self._present.add("diff_pair_dimensions")
+            for v in dp:
+                if isinstance(v, dict):
+                    self.diff_pair_dimensions.append(DiffPairDimension(
+                        float(v.get("width", 0.0) or 0.0),
+                        float(v.get("gap", 0.0) or 0.0),
+                        float(v.get("via_gap", 0.0) or 0.0)))
+
+        # Editable Default net class — Optional/None fields distinguish an absent
+        # key from a genuine 0.0 value.
+        dnc = self._find_default_netclass(data)
+        if dnc:
+            self._present.add("default_netclass")
+        self.default_netclass = DefaultNetClassSettings(
+            clearance=_opt_float(dnc.get("clearance")),
+            track_width=_opt_float(dnc.get("track_width")),
+            via_diameter=_opt_float(dnc.get("via_diameter")),
+            via_drill=_opt_float(dnc.get("via_drill")),
+            microvia_diameter=_opt_float(dnc.get("microvia_diameter")),
+            microvia_drill=_opt_float(dnc.get("microvia_drill")),
+        )
+        return True
+
+    def was_present(self, structure: str) -> bool:
+        """True if `structure` (e.g. 'text_variables', 'board.rule_severities',
+        'via_dimensions', 'default_netclass') existed in the file at load time.
+        Lets a UI show 'inherited/absent' distinctly from a managed empty value."""
+        return structure in self._present
+
+    # ── mutators the UI calls (all validate against KiCad-real values) ───────
+    def set_drc_severity(self, rule: str, level: str):
+        """Manage one board DRC rule severity. `level` in error|warning|ignore."""
+        if level not in SEVERITY_LEVELS:
+            raise ValueError(f"severity must be one of {SEVERITY_LEVELS}, got {level!r}")
+        if rule not in DRC_RULE_IDS:
+            raise ValueError(f"unknown DRC rule id {rule!r}")
+        self.drc_severities[rule] = level
+
+    def set_erc_severity(self, rule: str, level: str):
+        """Manage one ERC rule severity. `level` in error|warning|ignore."""
+        if level not in SEVERITY_LEVELS:
+            raise ValueError(f"severity must be one of {SEVERITY_LEVELS}, got {level!r}")
+        if rule not in ERC_RULE_IDS:
+            raise ValueError(f"unknown ERC rule id {rule!r}")
+        self.erc_severities[rule] = level
+
+    def set_text_variable(self, name: str, value: str):
+        """Set/replace one project text variable ({name} -> value)."""
+        self.text_variables[str(name)] = str(value)
+
+    def remove_text_variable(self, name: str):
+        """Remove a managed text variable (note: save deep-merges, so this only
+        drops it from what THIS manager writes; a key already in the file is not
+        deleted unless you also clear it in the file)."""
+        self.text_variables.pop(str(name), None)
+
+    def set_default_netclass(self, clearance=None, track_width=None,
+                             via_diameter=None, via_drill=None,
+                             microvia_diameter=None, microvia_drill=None):
+        """Edit the Default net class (millimetres). Any argument left None keeps
+        that field unmanaged (KiCad's existing value is preserved on save)."""
+        d = self.default_netclass
+        if clearance is not None:
+            d.clearance = float(clearance)
+        if track_width is not None:
+            d.track_width = float(track_width)
+        if via_diameter is not None:
+            d.via_diameter = float(via_diameter)
+        if via_drill is not None:
+            d.via_drill = float(via_drill)
+        if microvia_diameter is not None:
+            d.microvia_diameter = float(microvia_diameter)
+        if microvia_drill is not None:
+            d.microvia_drill = float(microvia_drill)
+
+    def set_track_widths(self, widths_mm, ensure_netclass_default: bool = True):
+        """Replace the predefined track-width table (millimetres). KiCad keeps a
+        leading 0.0 meaning 'use the net-class width'; ensure_netclass_default
+        prepends it when missing."""
+        vals = [float(w) for w in widths_mm]
+        if ensure_netclass_default and (not vals or vals[0] != 0.0):
+            vals = [0.0] + [v for v in vals if v != 0.0]
+        self.track_widths = vals
+
+    def set_via_dimensions(self, vias, ensure_netclass_default: bool = True):
+        """Replace the predefined via table. `vias` items are ViaDimension or
+        (diameter_mm, drill_mm) tuples. A leading all-zero row (='use net class')
+        is prepended when ensure_netclass_default and absent."""
+        out = []
+        for v in vias:
+            if isinstance(v, ViaDimension):
+                out.append(ViaDimension(v.diameter, v.drill))
+            else:
+                d, dr = v
+                out.append(ViaDimension(float(d), float(dr)))
+        if ensure_netclass_default and not any(x.diameter == 0.0 and x.drill == 0.0 for x in out):
+            out.insert(0, ViaDimension(0.0, 0.0))
+        self.via_dimensions = out
+
+    def set_diff_pair_dimensions(self, pairs, ensure_netclass_default: bool = True):
+        """Replace the predefined diff-pair table. `pairs` items are
+        DiffPairDimension or (width_mm, gap_mm, via_gap_mm) tuples."""
+        out = []
+        for p in pairs:
+            if isinstance(p, DiffPairDimension):
+                out.append(DiffPairDimension(p.width, p.gap, p.via_gap))
+            else:
+                w, g, vg = p
+                out.append(DiffPairDimension(float(w), float(g), float(vg)))
+        if ensure_netclass_default and not any(
+                x.width == 0.0 and x.gap == 0.0 and x.via_gap == 0.0 for x in out):
+            out.insert(0, DiffPairDimension(0.0, 0.0, 0.0))
+        self.diff_pair_dimensions = out
+
+    def ensure_erc_pin_map(self):
+        """Seed a 12x12 all-OK ERC pin matrix if none is managed yet, so a UI can
+        edit individual cells. Returns the live matrix."""
+        if not self.erc_pin_map:
+            self.erc_pin_map = [[0] * ERC_PIN_MAP_SIZE for _ in range(ERC_PIN_MAP_SIZE)]
+        return self.erc_pin_map
+
+    def set_erc_pin_map_entry(self, i: int, j: int, severity: int,
+                              symmetric: bool = True):
+        """Set one ERC pin-conflict cell (0=OK, 1=warning, 2=error). The matrix
+        is conceptually symmetric in KiCad, so both [i][j] and [j][i] are set
+        unless symmetric=False."""
+        if not (0 <= i < ERC_PIN_MAP_SIZE and 0 <= j < ERC_PIN_MAP_SIZE):
+            raise ValueError(f"pin index out of range 0..{ERC_PIN_MAP_SIZE - 1}")
+        if not (0 <= int(severity) <= 3):
+            raise ValueError("severity must be 0=OK, 1=warning, 2=error")
+        self.ensure_erc_pin_map()
+        self.erc_pin_map[i][j] = int(severity)
+        if symmetric:
+            self.erc_pin_map[j][i] = int(severity)
+
+    def set_erc_exclusions(self, exclusions):
+        """Manage the ERC exclusion list (KiCad-serialised strings, preserved
+        verbatim — the tool does not synthesise exclusion strings)."""
+        self.erc_exclusions = [str(x) for x in exclusions]
+
+    # ── save / apply / verify ────────────────────────────────────────────────
+    def _apply_extended(self, data: dict):
+        """Deep-merge the extended managed state into `data` (a parsed .kicad_pro).
+        Preserve-by-default: only structures that hold managed values are touched,
+        and within a severity map only the managed rule IDs are updated — every
+        other key KiCad wrote is left exactly as-is."""
+        # Board DRC severities.
+        if self.drc_severities:
+            ds = data.setdefault("board", {}).setdefault("design_settings", {})
+            rs = ds.setdefault("rule_severities", {})
+            for rid, level in self.drc_severities.items():
+                rs[rid] = level
+
+        # ERC severities.
+        if self.erc_severities:
+            ers = data.setdefault("erc", {}).setdefault("rule_severities", {})
+            for rid, level in self.erc_severities.items():
+                ers[rid] = level
+
+        # ERC pin-conflict matrix (whole matrix replaced when managed).
+        if self.erc_pin_map:
+            data.setdefault("erc", {})["pin_map"] = [
+                [int(x) for x in row] for row in self.erc_pin_map]
+
+        # ERC exclusions: only rewrite if we hold values or the key was loaded
+        # (so we round-trip an existing list without clobbering an absent one).
+        if self.erc_exclusions or ("erc.erc_exclusions" in self._present):
+            data.setdefault("erc", {})["erc_exclusions"] = list(self.erc_exclusions)
+
+        # Project text variables.
+        if self.text_variables:
+            tv = data.setdefault("text_variables", {})
+            for k, v in self.text_variables.items():
+                tv[k] = v
+
+        # Predefined size tables (mm-native — written through _clean_mm, never
+        # the mils grid, so 0.2 stays 0.2).
+        ds_for_tables = None
+        if self.track_widths or ("track_widths" in self._present):
+            ds_for_tables = data.setdefault("board", {}).setdefault("design_settings", {})
+            ds_for_tables["track_widths"] = [_clean_mm(w) for w in self.track_widths]
+        if self.via_dimensions or ("via_dimensions" in self._present):
+            ds_for_tables = ds_for_tables or data.setdefault("board", {}).setdefault("design_settings", {})
+            ds_for_tables["via_dimensions"] = [v.to_kicad_dict() for v in self.via_dimensions]
+        if self.diff_pair_dimensions or ("diff_pair_dimensions" in self._present):
+            ds_for_tables = ds_for_tables or data.setdefault("board", {}).setdefault("design_settings", {})
+            ds_for_tables["diff_pair_dimensions"] = [
+                d.to_kicad_dict() for d in self.diff_pair_dimensions]
+
+        # Editable Default net class — skip-if-unchanged so a value that already
+        # round-trips to the same mm is NOT rewritten (no drift, no churn).
+        if self.default_netclass.is_managed():
+            default_nc = self._ensure_default_netclass(data)
+            for key, want_mm in self.default_netclass.managed_items():
+                self._set_mm_if_changed(default_nc, key, want_mm)
+
+    @staticmethod
+    def _mm_equal(a, b, tol: float = 1e-9) -> bool:
+        try:
+            return abs(float(a) - float(b)) <= tol
+        except (TypeError, ValueError):
+            return False
+
+    def _set_mm_if_changed(self, container: dict, key: str, want_mm: float,
+                           tol: float = 1e-9) -> bool:
+        """Write `want_mm` into container[key] only if it differs from what is
+        already there (native-mm compare). Returns True if it wrote. Skipping an
+        unchanged value avoids the 0.1-mil-grid drift the audit flagged and
+        avoids rewriting a byte-identical value on a no-op sync."""
+        if key in container and self._mm_equal(container.get(key), want_mm, tol):
+            return False
+        container[key] = _clean_mm(want_mm)
+        return True
+
+    def save_extended(self, project_file: Path, backup: bool = False) -> bool:
+        """Write ONLY the extended managed state to a .kicad_pro (deep-merged,
+        preserve-by-default, atomic). Use this for a pure DRC/ERC/size-table/
+        text-var/Default-class sync without touching the flat drawing settings.
+        (save_to_project also applies the extended state, for a combined sync.)"""
+        try:
+            p = Path(project_file)
+            if self.check_project_locked(p):
+                print(f"⚠️  {p.name} appears to be open (lock file exists)")
+
+            data = json.loads(p.read_text(encoding='utf-8'))
+            self._apply_extended(data)
+
+            if backup and p.exists():
+                try:
+                    shutil.copy2(str(p), str(p.parent / (p.name + '.bak')))
+                except Exception as e:
+                    print(f"⚠️  Could not write backup for {p.name}: {e}")
+
+            json_content = json.dumps(data, indent=2)
+            tmp_path = p.parent / (p.stem + '.kicad_pro.tmp')
+            try:
+                tmp_path.write_text(json_content, encoding='utf-8')
+                os.replace(str(tmp_path), str(p))
+            except Exception:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+                raise
+
+            self._clear_project_cache(p)
+            return True
+        except Exception as e:
+            print(f"❌ Error saving extended settings {project_file}: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def _collect_extended_mismatches(self, data: dict) -> List[str]:
+        """Return a list of human-readable mismatches for every EXTENDED managed
+        value that did NOT land in `data`. Empty when nothing extended is managed
+        (so it never perturbs the flat-settings verify)."""
+        out: List[str] = []
+        ds = data.get("board", {}).get("design_settings", {})
+        erc = data.get("erc", {})
+
+        rs = ds.get("rule_severities", {}) if isinstance(ds.get("rule_severities"), dict) else {}
+        for rid, level in self.drc_severities.items():
+            if rs.get(rid) != level:
+                out.append(f"board.rule_severities.{rid}={rs.get(rid)} (wanted {level})")
+
+        ers = erc.get("rule_severities", {}) if isinstance(erc.get("rule_severities"), dict) else {}
+        for rid, level in self.erc_severities.items():
+            if ers.get(rid) != level:
+                out.append(f"erc.rule_severities.{rid}={ers.get(rid)} (wanted {level})")
+
+        if self.erc_pin_map:
+            want = [[int(x) for x in row] for row in self.erc_pin_map]
+            if erc.get("pin_map") != want:
+                out.append("erc.pin_map mismatch")
+
+        if self.erc_exclusions or ("erc.erc_exclusions" in self._present):
+            if list(erc.get("erc_exclusions", [])) != list(self.erc_exclusions):
+                out.append("erc.erc_exclusions mismatch")
+
+        tv = data.get("text_variables", {})
+        tv = tv if isinstance(tv, dict) else {}
+        for k, v in self.text_variables.items():
+            if tv.get(k) != v:
+                out.append(f"text_variables.{k}={tv.get(k)} (wanted {v})")
+
+        if self.track_widths or ("track_widths" in self._present):
+            got = ds.get("track_widths", [])
+            want = [_clean_mm(w) for w in self.track_widths]
+            if not (isinstance(got, list) and len(got) == len(want)
+                    and all(self._mm_equal(a, b) for a, b in zip(got, want))):
+                out.append(f"track_widths={got} (wanted {want})")
+
+        if self.via_dimensions or ("via_dimensions" in self._present):
+            got = ds.get("via_dimensions", [])
+            want = [v.to_kicad_dict() for v in self.via_dimensions]
+            if not self._via_tables_equal(got, want):
+                out.append(f"via_dimensions={got} (wanted {want})")
+
+        if self.diff_pair_dimensions or ("diff_pair_dimensions" in self._present):
+            got = ds.get("diff_pair_dimensions", [])
+            want = [d.to_kicad_dict() for d in self.diff_pair_dimensions]
+            if not self._dp_tables_equal(got, want):
+                out.append(f"diff_pair_dimensions={got} (wanted {want})")
+
+        if self.default_netclass.is_managed():
+            default_nc = self._find_default_netclass(data)
+            for key, want_mm in self.default_netclass.managed_items():
+                if not self._mm_equal(default_nc.get(key), want_mm):
+                    out.append(f"Default.{key}={default_nc.get(key)} (wanted {_clean_mm(want_mm)})")
+        return out
+
+    def _via_tables_equal(self, got, want) -> bool:
+        if not isinstance(got, list) or len(got) != len(want):
+            return False
+        for g, w in zip(got, want):
+            if not isinstance(g, dict):
+                return False
+            if not (self._mm_equal(g.get("diameter"), w["diameter"])
+                    and self._mm_equal(g.get("drill"), w["drill"])):
+                return False
+        return True
+
+    def _dp_tables_equal(self, got, want) -> bool:
+        if not isinstance(got, list) or len(got) != len(want):
+            return False
+        for g, w in zip(got, want):
+            if not isinstance(g, dict):
+                return False
+            if not (self._mm_equal(g.get("width"), w["width"])
+                    and self._mm_equal(g.get("gap"), w["gap"])
+                    and self._mm_equal(g.get("via_gap"), w["via_gap"])):
+                return False
+        return True
+
+    def verify_extended(self, project_file: Path):
+        """Re-read `project_file` and confirm every extended managed value landed
+        on the real KiCad key. Returns (ok, mismatches)."""
+        try:
+            data = json.loads(Path(project_file).read_text(encoding='utf-8'))
+        except Exception as e:
+            return False, [f"re-read failed: {e}"]
+        mism = self._collect_extended_mismatches(data)
+        return (len(mism) == 0), mism
 
     def _clear_local_cache(self, project_file: Path) -> List[str]:
         """Delete ONLY this project's sibling cache/lock files (.kicad_prl, .lck).
