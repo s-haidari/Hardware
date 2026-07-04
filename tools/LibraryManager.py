@@ -1523,6 +1523,7 @@ class PreviewView(QWidget):
 # CardWidget lives in the shared design system (tools/ui_widgets.py) so every
 # tab builds the same card chrome.
 from ui_widgets import CardWidget  # noqa: F401
+import ui_widgets as uw
 
 # -----------------------------
 # Flow layout (wraps its widgets to new rows as width shrinks)
@@ -2351,12 +2352,16 @@ class LibraryManagerWindow(QMainWindow):
 
         layout.addLayout(filter_block)
        
-        # Summary label
-        self.lbl_summary = QLabel("Library: 0 items")
-        summary_font = self.lbl_summary.font()
-        summary_font.setPointSize(8)
-        self.lbl_summary.setFont(summary_font)
-        layout.addWidget(self.lbl_summary)
+        # Library stats as an instrument readout band (matches the other tabs)
+        self.lib_readout = uw.ReadoutBand([
+            ("total", "Items", None),
+            ("symbols", "Symbols", ui_theme.cat("service")),
+            ("footprints", "Footprints", ui_theme.cat("lane")),
+            ("models", "Models", ui_theme.cat("core")),
+            ("duplicates", "Duplicates", ui_theme.cat("must")),
+        ])
+        self.lib_readout.set_identity("Library", "shared KiCad parts")
+        layout.addWidget(self.lib_readout)
        
         # Action buttons — a 2-column grid with equal widths at any window size.
         # The odd 5th button spans both columns to keep an even box.
@@ -2906,6 +2911,8 @@ class LibraryManagerWindow(QMainWindow):
         self._restyle()
         if hasattr(self, "drop_zone"):
             self.drop_zone.restyle()
+        if hasattr(self, "lib_readout"):
+            self.lib_readout.restyle()
         if hasattr(self, "preview"):
             self.preview.update()
         if hasattr(self, "central"):
@@ -3136,16 +3143,13 @@ class LibraryManagerWindow(QMainWindow):
             for r in rows:
                 self.tree.addTopLevelItem(self._make_tree_item(r, dup_bg))
 
-        # Update summary label (call out duplicates when present)
+        # Update the library readout band
         s = self.summary
-        dup = s.get("duplicates", 0)
-        dup_txt = f", Duplicates: {dup}" if dup else ""
-        self.lbl_summary.setText(
-            f"Library: {s.get('total', 0)} items "
-            f"(Symbols: {s.get('symbols', 0)}, "
-            f"Footprints: {s.get('footprints', 0)}, "
-            f"Models: {s.get('models', 0)}{dup_txt})"
-        )
+        self.lib_readout.set("total", s.get("total", 0))
+        self.lib_readout.set("symbols", s.get("symbols", 0))
+        self.lib_readout.set("footprints", s.get("footprints", 0))
+        self.lib_readout.set("models", s.get("models", 0))
+        self.lib_readout.set("duplicates", s.get("duplicates", 0))
    
     def on_tree_open(self):
         """Open the selected item(s) with their default app."""
