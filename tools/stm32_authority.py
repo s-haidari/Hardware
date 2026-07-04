@@ -605,6 +605,37 @@ ADG714_SWITCH_PINS = {n: (f"S{n}", f"D{n}") for n in range(1, 9)}
 ZIF_SOCKET = {"LQFP64": "Yamaichi IC51-0644-807", "LQFP100": "Yamaichi IC51-1004-809"}
 CONNECTOR = {"parent": "Samtec QSH-060-01-L-D-A", "card": "Samtec QTH-060-03-L-D-A",
              "contacts": 240, "pitch_mm": 0.5, "stack_mm": 11.03, "amp_per_contact": 2}
+
+# Reference designators, verbatim from the build cards (7B / 7C headings).
+SOCKET_REFDES = {"LQFP64": "J_SOCKET64_1", "LQFP100": "XU_TGT100_1"}
+EDGE_REFDES = {"LQFP64": "J_EDGE64_1", "LQFP100": "J_EDGE_L100_1"}
+CELL_REFDES_FMT = {"LQFP64": "U_SW_64_{n}", "LQFP100": "U_SW_L100_{n}"}
+SERIES_R_REFDES = {"LQFP100": "R_IO_LANE"}   # 33 R 0402, one per IO-capable lane (7C);
+                                             # 7B routes its non-switched pins direct.
+
+# Lane naming policy, per card:
+#   7B (LQFP64):  numbered lanes exist ONLY for switched pins, sequential in
+#                 ascending socket order (pin 1 -> CARD_LANE_001, pin 13 -> _002 ...).
+#   7C (LQFP100): EVERY socket pin has a lane numbered by its socket pin
+#                 (CARD_LANE_001..100), riding a 33 R series resistor.
+LANE_POLICY = {"LQFP64": "sequential", "LQFP100": "by_pin"}
+
+
+def lane_contact(lane_num: int) -> str:
+    """The parent-receptacle contact a numbered CARD_LANE lands on. The row split
+    is verbatim from the frozen Connector Contract Rev B (lanes 001..060 on the
+    left connector's even row 2..120; lanes 061..120 on the right connector's odd
+    row 1..119); the in-row order is ascending, so lane N maps to LA even 2N or
+    RA odd 2(N-60)-1."""
+    if 1 <= lane_num <= 60:
+        return f"LA-{2 * lane_num}"
+    if 61 <= lane_num <= 120:
+        return f"RA-{2 * (lane_num - 60) - 1}"
+    return ""
+
+
+def cell_refdes(package: str, cell: int) -> str:
+    return CELL_REFDES_FMT.get(package, "U_SW_{n}").format(n=cell)
 # ADG714 physical pin number for each S/D terminal (S = source, faces socket; D = drain, faces rail).
 ADG714_TERMINAL_PIN = {"S1": 5, "D1": 6, "S2": 7, "D2": 8, "S3": 9, "D3": 10, "S4": 11,
                        "D4": 12, "D5": 13, "S5": 14, "D6": 15, "S6": 16, "D7": 17, "S7": 18,
@@ -660,6 +691,8 @@ def socket_connections(authority: dict) -> list:
     the middle component (switch for switched pins, a 33-ohm series resistor for GPIO
     lanes, or a direct link for fixed power and debug/service), the destination net and
     its category, and the connector contact."""
+    pkg = authority["package"]
+    policy = LANE_POLICY.get(pkg, "sequential")
     out = []
     for p in sorted(authority["positions"], key=lambda p: p["position"]):
         pin = p["position"]
@@ -667,19 +700,29 @@ def socket_connections(authority: dict) -> list:
         service = [n for n in p.get("breakout", {}).get("service_nets", []) if n]
         if p["assignment"].get("channels"):
             dest, kind = p["assignment"]["adg714"]["destination"], "switch"
+            contact = _dest_contact(dest)
         elif service:
             dest, kind = service[0], "direct"
+            contact = _dest_contact(dest)
         else:
             net = p["assignment"].get("net") or p["assignment"].get("destination") or ""
             if net in _NET_CATEGORY:
                 dest, kind = net, "direct"          # fixed power / ground rail
+                contact = _dest_contact(dest)
+            elif policy == "by_pin":
+                # 7C: every IO-capable pin owns its pin-numbered lane, riding a
+                # 33 R series resistor to the frozen Connector Contract lane row.
+                dest, kind = f"CARD_LANE_{pin:03d}", "resistor"
+                contact = lane_contact(pin)
             else:
-                # Plain GPIO rides the generic, unnumbered lane — numbered
-                # CARD_LANE_nnn nets belong exclusively to switched pins (7B).
-                dest, kind = "CARD_LANE", "resistor"
+                # 7B: non-switched pins route DIRECT (no series resistor); the
+                # single-role lane assignment is not numbered on this card.
+                dest, kind = "CARD_LANE", "direct"
+                contact = "Lane Row"
         cat = _NET_CATEGORY.get(dest, "lane")
         out.append({"pin": pin, "name": name, "kind": kind, "dest": dest,
-                    "category": cat, "contact": _dest_contact(dest)})
+                    "category": cat, "contact": contact,
+                    "socket_refdes": SOCKET_REFDES.get(pkg, "J_SOCKET")})
     return out
 
 
@@ -693,17 +736,25 @@ def card_wiring(authority: dict) -> dict:
     zif = ZIF_SOCKET.get(pkg, "IC51 ZIF socket")
     pinname = {p["position"]: (list(p["pin_names"])[0] if p["pin_names"] else "")
                for p in authority["positions"]}
-    # Numbered lanes are per switched PIN, not per channel: a pin's branches share
-    # its socket trace, so they parallel onto one lane. Must-switch pins ascending
-    # take CARD_LANE_001.., then osc-optional pins with channels continue the run
-    # (LQFP64: 001..011 per Card 7B; LQFP100: 001..043 then 044..046). Plain GPIO
-    # rides the generic, unnumbered CARD_LANE (numbered lanes are switch-only).
-    must = [p["position"] for p in sorted(authority["positions"], key=lambda p: p["position"])
-            if p["switch_class"] == db.SWITCH_MUST]
-    osc_wired = [p["position"] for p in sorted(authority["positions"], key=lambda p: p["position"])
-                 if p["switch_class"] == db.SWITCH_OSC_OPTIONAL
-                 and p["assignment"].get("channels")]
-    lane_of = {pin: f"CARD_LANE_{i:03d}" for i, pin in enumerate(must + osc_wired, start=1)}
+    # Lanes follow the card's own policy (LANE_POLICY):
+    #   sequential (7B): numbered lanes ONLY for switched pins, ascending socket
+    #     order (pin 1 -> CARD_LANE_001, pin 13 -> _002, ...); other pins unlaned.
+    #   by_pin (7C): every socket pin owns CARD_LANE_{pin:03d} on the frozen
+    #     Connector Contract lane rows.
+    # A pin's branches share its socket trace, so they share one lane.
+    policy = LANE_POLICY.get(pkg, "sequential")
+    if policy == "by_pin":
+        lane_of = {p["position"]: f"CARD_LANE_{p['position']:03d}"
+                   for p in authority["positions"]}
+        lane_num_of = {p["position"]: p["position"] for p in authority["positions"]}
+    else:
+        must = [p["position"] for p in sorted(authority["positions"], key=lambda p: p["position"])
+                if p["switch_class"] == db.SWITCH_MUST]
+        osc_wired = [p["position"] for p in sorted(authority["positions"], key=lambda p: p["position"])
+                     if p["switch_class"] == db.SWITCH_OSC_OPTIONAL
+                     and p["assignment"].get("channels")]
+        lane_of = {pin: f"CARD_LANE_{i:03d}" for i, pin in enumerate(must + osc_wired, start=1)}
+        lane_num_of = {pin: i for i, pin in enumerate(must + osc_wired, start=1)}
     channels, spares, groups = [], [], defaultdict(list)
     cells = adg714_cell_map(authority)
     for cell in cells:
@@ -721,13 +772,17 @@ def card_wiring(authority: dict) -> dict:
                 d_to = "GND (solid ground plane)"
             else:
                 d_to = f"{rail} (local 2.2uF cap at the socket)"
+            ln = lane_num_of.get(sw["position"])
             channels.append({
-                "cell": cell["cell"], "channel": sw["channel"],
+                "cell": cell["cell"], "cell_refdes": cell_refdes(pkg, cell["cell"]),
+                "channel": sw["channel"],
                 "s_pin": sw["s_pin"], "s_pin_num": ADG714_TERMINAL_PIN.get(sw["s_pin"]),
                 "d_pin": sw["d_pin"], "d_pin_num": ADG714_TERMINAL_PIN.get(sw["d_pin"]),
                 "socket_pin": sw["position"], "socket_name": name,
+                "socket_refdes": SOCKET_REFDES.get(pkg, "J_SOCKET"),
                 "rail": rail, "connector_contacts": contacts,
                 "card_lane": lane_of.get(sw["position"], "CARD_LANE"),
+                "lane_contact": lane_contact(ln) if ln else "",
                 "s_connects_to": f"socket pin {sw['position']} ({name}) via {zif}",
                 "d_connects_to": d_to,
             })
@@ -742,6 +797,10 @@ def card_wiring(authority: dict) -> dict:
              "note": "DIN into cell 1; each cell DOUT into the next cell DIN; last cell DOUT "
                      "back to the controller (LA-13). SCLK/SYNC_N/RESET_N broadcast to all cells."}
     return {"package": pkg, "zif_socket": zif, "connector": CONNECTOR,
+            "socket_refdes": SOCKET_REFDES.get(pkg, "J_SOCKET"),
+            "edge_refdes": EDGE_REFDES.get(pkg, "J_EDGE"),
+            "lane_policy": policy,
+            "series_r_refdes": SERIES_R_REFDES.get(pkg, ""),
             "bus": [{"signal": s, "adg714_pin": p, "connector_contact": c, "controller": m}
                     for s, p, c, m in ADG714_BUS],
             "cells": len(cells), "channels": channels, "spare_channels": spares,

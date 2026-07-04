@@ -337,16 +337,34 @@ class AuthorityTests(unittest.TestCase):
         w = auth.card_wiring(a)
         self.assertEqual(len(w["spare_channels"]), 5)
         self.assertTrue(w["exclusive_groups"])                    # one-hot groups present
-        # lanes: per switched pin — must pins keep 001..043; osc pins append
-        musts = sorted({c["socket_pin"] for c in w["channels"]
-                        if c["socket_pin"] not in (9, 12, 13)})
-        first = next(c for c in w["channels"] if c["socket_pin"] == musts[0])
-        self.assertEqual(first["card_lane"], "CARD_LANE_001")
+        # 7C lane policy: every pin owns its pin-numbered lane on the frozen
+        # Connector Contract rows (001..060 -> LA even 2N; 061..120 -> RA odd)
+        self.assertEqual(w["lane_policy"], "by_pin")
         osc12 = next(c for c in w["channels"] if c["socket_pin"] == 12)
-        self.assertEqual(osc12["card_lane"], "CARD_LANE_045")     # 043 must + osc 9,12,13
+        self.assertEqual(osc12["card_lane"], "CARD_LANE_012")
+        self.assertEqual(osc12["lane_contact"], "LA-24")          # even row, 2 x 12
+        self.assertEqual(osc12["cell_refdes"], "U_SW_L100_2")     # ascending-pin packing
+        self.assertEqual(w["socket_refdes"], "XU_TGT100_1")
+        self.assertEqual(w["edge_refdes"], "J_EDGE_L100_1")
         # a pin's branches share ONE lane
         p19 = {c["card_lane"] for c in w["channels"] if c["socket_pin"] == 19}
-        self.assertEqual(len(p19), 1)
+        self.assertEqual(p19, {"CARD_LANE_019"})
+        # plain GPIO on 7C rides its numbered lane through the 33 R series R
+        sc = {c["pin"]: c for c in auth.socket_connections(a)}
+        gpio = sc[15]                                             # PC0 — plain IO
+        self.assertEqual((gpio["kind"], gpio["dest"], gpio["contact"]),
+                         ("resistor", "CARD_LANE_015", "LA-30"))
+        # 7B keeps its own card policy: sequential switch-only lanes (pin 13 ->
+        # CARD_LANE_002 per the build card) and DIRECT non-switched routes
+        a64 = auth.build(self.conn, "LQFP64")
+        w64 = auth.card_wiring(a64)
+        self.assertEqual(w64["lane_policy"], "sequential")
+        c13 = next(c for c in w64["channels"] if c["socket_pin"] == 13)
+        self.assertEqual(c13["card_lane"], "CARD_LANE_002")
+        self.assertEqual(c13["cell_refdes"], "U_SW_64_1")
+        sc64 = {c["pin"]: c for c in auth.socket_connections(a64)}
+        self.assertEqual(sc64[2]["kind"], "direct")               # no series R on 7B
+        self.assertEqual(sc64[2]["dest"], "CARD_LANE")
 
     def test_claims_files_and_drift_gate(self):
         """The checked-in claims files pass the drift gate, and a wrong claim FAILS
@@ -464,12 +482,17 @@ class AuthorityTests(unittest.TestCase):
         w._select(1)
         self.assertEqual(w.conn_list._sel, 1)                        # selection follows the map
         self.assertEqual(w.pin_map.selected, 1)
-        # the fabric spells out the exact vault wiring for a switched pin
+        # the fabric spells out the exact vault wiring for a switched pin,
+        # at refdes level (socket refdes, cell refdes, receptacle contact)
         row = w.conn_list._rows[1]
-        html_paths = " ".join(lbl.text() for lbl in row._paths)
-        self.assertIn("VBAT_TGT", html_paths)                        # delivered rail
-        self.assertIn("LA-33", html_paths)                           # connector contact
-        self.assertIn("CARD_LANE_001", html_paths)                   # default lane path too
+        text = " ".join(lbl.text() for lbl, _r, _c in row._cells)
+        self.assertIn("VBAT_TGT", text)                              # delivered rail
+        self.assertIn("J_CARD1_LA 33", text)                         # receptacle contact
+        self.assertIn("CARD_LANE_001", text)                         # default lane path too
+        self.assertIn("J_SOCKET64_1", w.conn_list.chain.text())     # chain header refdes
+        self.assertIn("J_EDGE64_1", w.conn_list.chain.text())
+        self.assertIn("U_SW_64_1", text)                             # cell refdes
+        self.assertIn("Source S1 Pin 5", text)                       # terminal pins
         w.conn_list.filter_combo.setCurrentText("Switched")
         self.assertEqual(len(w.conn_list._rows), 11)                 # filter to switched pins only
         w.conn_list.sort_combo.setCurrentText("Destination")

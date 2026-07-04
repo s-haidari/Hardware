@@ -17,7 +17,7 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox, QLineEdit,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QSizePolicy,
     QFileDialog, QMessageBox, QApplication, QSplitter, QStackedWidget,
-    QFrame, QScrollArea, QTextBrowser,
+    QFrame, QScrollArea, QTextBrowser, QGridLayout,
 )
 
 # Theme-swappable surface colours, derived from the shared design system
@@ -136,7 +136,9 @@ def _pin_detail_html(p: dict) -> str:
     adg_t = None
     if adg:
         s_pin, d_pin = sauth.ADG714_SWITCH_PINS[adg["channel"]]
-        adg_t = f"cell {adg['cell']} · SW{adg['channel']} ({s_pin}/{d_pin})"
+        adg_t = (f"Cell {adg['cell']} · Channel {adg['channel']} "
+                 f"({s_pin} Pin {sauth.ADG714_TERMINAL_PIN[s_pin]} → "
+                 f"{d_pin} Pin {sauth.ADG714_TERMINAL_PIN[d_pin]})")
     dest = p["assignment"].get("destination") or p["assignment"].get("net") or ""
     el = p.get("electrical", {}) or {}
     why = sauth.switch_rationale(p)
@@ -355,44 +357,77 @@ _CAT_LABEL = [("All", None), ("Switched", "switch"), ("Power", "power"), ("Analo
               ("GPIO Lanes", "lane")]
 
 
+def _fmt_contact(c: str) -> str:
+    """'LA-33' -> 'J_CARD1_LA 33' — the full parent-receptacle identity."""
+    if c.startswith("LA-"):
+        return f"J_CARD1_LA {c[3:]}"
+    if c.startswith("RA-"):
+        return f"J_CARD1_RA {c[3:]}"
+    return c
+
+
 def _pin_branches(a: dict, pos: int, cw: dict = None):
-    """The physical connection branches of one socket pin — shared by the focus panel,
-    the wiring band, and the connections fabric so they never diverge. Returns
-    (conn, kind, name, pcol, branches), where branches is a list of
-    (caption, [(title, sub, colour-or-None)]); colour None marks a neutral intermediate
-    node, a colour marks a delivered destination. A switched pin has two branches (its
-    ADG714 channel to a rail, and its default 33 ohm IO lane); others have one. Pass a
-    precomputed card_wiring() as cw to avoid rebuilding it per pin."""
+    """Every physical path of one socket pin, at refdes-level specificity (the
+    vault's Cards 7B/7C wiring). Returns (conn, kind, name, pcol, branches);
+    each branch is a dict of aligned table cells:
+      caption   — SWITCHED ROLE / IO LANE / DIRECT
+      frm/frm2  — socket endpoint: refdes + pin
+      via/via2  — the component in the path: switch cell channel with Source/
+                  Drain terminal pins, the 33 R series resistor, or nothing
+      to/to2    — the delivered net + its parent-receptacle contact
+      color     — the destination's net-category colour
+    Pass a precomputed card_wiring() as cw to avoid rebuilding it per pin."""
     conn = next((c for c in sauth.socket_connections(a) if c["pin"] == pos), None)
     p = next((x for x in a["positions"] if x["position"] == pos), None)
     kind = conn["kind"] if conn else "direct"
     name = next(iter(p["pin_names"]), "") if (p and p["pin_names"]) else ""
     pcol = _CAT_COLOR.get(conn["category"], "#4c8df0") if conn else _MUT
+    cw = cw or sauth.card_wiring(a)
     branches = []
     if kind == "switch":
-        cw = cw or sauth.card_wiring(a)
         chans = [x for x in cw["channels"] if x["socket_pin"] == pos]
         many = len(chans) > 1                 # mutually-exclusive branches (one-hot)
         for bi, c in enumerate(chans, start=1):
-            rail_sub = ("Contact " + " / ".join(c["connector_contacts"])) if c["connector_contacts"] \
-                else ("Ground Plane" if c["rail"] == "GND" else "Local Cap")
-            cap = f"SWITCHED ROLE {bi} OF {len(chans)}" if many else "SWITCHED ROLE"
-            branches.append((cap, [
-                (f"ADG714 Cell {c['cell']} · Channel {c['channel']}",
-                 f"Source {c['s_pin']} Pin {c['s_pin_num']} · Drain {c['d_pin']} Pin {c['d_pin_num']}", None),
-                (c["rail"], rail_sub, _CAT_COLOR.get(sauth._NET_CATEGORY.get(c["rail"], "lane"), pcol))]))
+            to2 = (" / ".join(_fmt_contact(x) for x in c["connector_contacts"])
+                   if c["connector_contacts"]
+                   else ("Ground Plane" if c["rail"] == "GND" else "Local 2.2 µF Cap"))
+            branches.append({
+                "caption": f"SWITCHED ROLE {bi}/{len(chans)}" if many else "SWITCHED ROLE",
+                "via": f"{c['cell_refdes']} · Channel {c['channel']}",
+                "via2": f"Source {c['s_pin']} Pin {c['s_pin_num']} → Drain {c['d_pin']} Pin {c['d_pin_num']}",
+                "to": c["rail"], "to2": to2,
+                "color": _CAT_COLOR.get(sauth._NET_CATEGORY.get(c["rail"], "lane"), pcol),
+            })
         if chans:
-            branches.append(("DEFAULT IO LANE", [
-                ("33 Ω Series Resistor", "", None),
-                (chans[0]["card_lane"], "Lane Row", _CAT_COLOR["lane"])]))
+            c0 = chans[0]
+            rname = cw.get("series_r_refdes", "")
+            branches.append({
+                "caption": "DEFAULT IO LANE",
+                "via": f"{rname} · 33 Ω Series" if rname else "Direct Route",
+                "via2": "" if rname else "No series resistor on this card",
+                "to": c0["card_lane"],
+                "to2": _fmt_contact(c0["lane_contact"]) if c0.get("lane_contact") else "Lane Row",
+                "color": _CAT_COLOR["lane"],
+            })
     elif kind == "resistor":
-        branches.append(("IO LANE", [
-            ("33 Ω Series Resistor", "", None),
-            (conn["dest"], "Lane Row", _CAT_COLOR["lane"])]))
+        rname = cw.get("series_r_refdes", "R_IO_LANE")
+        branches.append({
+            "caption": "IO LANE",
+            "via": f"{rname} · 33 Ω Series", "via2": "",
+            "to": conn["dest"], "to2": _fmt_contact(conn["contact"]),
+            "color": _CAT_COLOR["lane"],
+        })
     else:
-        branches.append(("DIRECT", [
-            (conn["dest"] if conn else "",
-             f"Contact {conn['contact']}" if (conn and conn["contact"]) else "Hardwired", pcol)]))
+        lane_dest = conn and conn["dest"] == "CARD_LANE"
+        branches.append({
+            "caption": "DIRECT",
+            "via": "Direct Route", "via2": "",
+            "to": conn["dest"] if conn else "",
+            "to2": (_fmt_contact(conn["contact"])
+                    if (conn and conn["contact"] and not lane_dest) else
+                    ("Lane Row" if lane_dest else "Hardwired")),
+            "color": pcol,
+        })
     return conn, kind, name, pcol, branches
 
 
@@ -628,60 +663,109 @@ class _MiniStat(QFrame):
 
 
 class ConnectionRow(QFrame):
-    """One clickable pin card showing EVERY physical path the socket pin has, from its
-    ZIF contact to the parent connector: a switched pin shows both its ADG714 channel
-    path (with the real Source/Drain terminal pins) and its default 33 ohm lane; other
-    pins show their single path. Clicking emits the pin so the map/band follow along."""
+    """One pin of the wiring table: pin + name in a fixed left column, then one
+    aligned row per physical path — FROM (socket refdes · pin), VIA (switch cell
+    channel with Source/Drain terminals, or the series resistor), TO (net) and
+    the parent-receptacle CONTACT right-aligned. Fixed column widths keep every
+    row in the fabric lined up like a datasheet table; the category colour lives
+    only in the left bar and the destination net."""
     clicked = pyqtSignal(int)
+    W_PIN, W_KIND, W_VIA, W_TO = 64, 104, 330, 150
 
     def __init__(self, pin, name, category, branches, parent=None):
         super().__init__(parent)
         self.pin = pin
         self._name = name
         self._category = category
-        self._branches = branches
         self._selected = False
         self.setObjectName("connRow")
         self.setCursor(Qt.PointingHandCursor)
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(12, 7, 12, 8)
-        lay.setSpacing(3)
-        self._head = QLabel(); self._head.setTextFormat(Qt.RichText)
-        lay.addWidget(self._head)
-        self._paths = []
-        for _cap, _stops in branches:
-            lbl = QLabel(); lbl.setTextFormat(Qt.RichText); lbl.setWordWrap(True)
-            lay.addWidget(lbl)
-            self._paths.append(lbl)
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(12, 6, 12, 7)
+        outer.setSpacing(10)
+        # left column: pin number (mono) over name
+        idbox = QVBoxLayout()
+        idbox.setSpacing(0)
+        self._pin_lbl = QLabel(str(pin))
+        pf = QFont(_SVG_MONO.split(",")[0].strip("'"))
+        pf.setPointSizeF(10.5)
+        pf.setWeight(QFont.DemiBold)
+        self._pin_lbl.setFont(pf)
+        self._name_lbl = QLabel(name)
+        nf = QFont(_SVG_FONT.split(",")[0])
+        nf.setPointSizeF(8.5)
+        nf.setBold(True)
+        self._name_lbl.setFont(nf)
+        idbox.addWidget(self._pin_lbl)
+        idbox.addWidget(self._name_lbl)
+        idbox.addStretch()
+        idw = QWidget()
+        idw.setLayout(idbox)
+        idw.setFixedWidth(self.W_PIN)
+        outer.addWidget(idw)
+        # right column: one aligned grid row per path
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(3)
+        grid.setColumnMinimumWidth(0, self.W_KIND)
+        grid.setColumnMinimumWidth(1, self.W_VIA)
+        grid.setColumnMinimumWidth(2, self.W_TO)
+        grid.setColumnStretch(3, 1)
+        self._cells = []                      # (label, role) for restyle
+        for r, br in enumerate(branches):
+            self._add_cell(grid, r, 0, br["caption"], "kind")
+            via = br["via"] + (f"   ({br['via2']})" if br["via2"] else "")
+            self._add_cell(grid, r, 1, via, "via")
+            self._add_cell(grid, r, 2, br["to"], "net", color=br["color"])
+            self._add_cell(grid, r, 3, br["to2"], "contact")
+        gw = QWidget()
+        gw.setLayout(grid)
+        outer.addWidget(gw, 1)
         self.restyle()
 
-    def _chain_html(self, caption, stops, pcol):
-        arrow = f"<span style='color:{_LINE}'> &#8594; </span>"
-        parts = [f"<span style='color:{_MUT}'>ZIF Socket</span>"]
-        for i, (title, sub, color) in enumerate(stops):
-            if i == len(stops) - 1:                       # destination: coloured net + contact
-                parts.append(f"{arrow}<span style='color:{color or pcol};font-weight:700'>"
-                             f"{html.escape(title)}</span>"
-                             f"<span style='color:{_MUT}'> &#183; {html.escape(sub)}</span>")
-            else:                                         # component (switch / resistor)
-                detail = f"<span style='color:{_MUT}'> ({html.escape(sub)})</span>" if sub else ""
-                parts.append(f"{arrow}<span style='color:{_TXT}'>{html.escape(title)}</span>{detail}")
-        cap = (f"<span style='color:#a2a2a8;font-weight:700;font-size:8pt;"
-               f"letter-spacing:0.6px'>{caption}</span> &nbsp; ")
-        return f"<span style='font-size:9pt'>{cap}{''.join(parts)}</span>"
+    def _add_cell(self, grid, r, c, text, role, color=None):
+        lbl = QLabel(text)
+        if role in ("mono", "contact", "net"):
+            f = QFont(_SVG_MONO.split(",")[0].strip("'"))
+            f.setPointSizeF(8.5)
+            if role == "net":
+                f.setWeight(QFont.DemiBold)
+            lbl.setFont(f)
+        elif role == "kind":
+            f = QFont(_SVG_FONT.split(",")[0])
+            f.setPointSizeF(7.0)
+            f.setBold(True)
+            f.setLetterSpacing(QFont.AbsoluteSpacing, 0.8)
+            lbl.setFont(f)
+        else:
+            f = QFont(_SVG_FONT.split(",")[0])
+            f.setPointSizeF(8.5)
+            lbl.setFont(f)
+        if role == "contact":
+            lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        grid.addWidget(lbl, r, c)
+        self._cells.append((lbl, role, color))
+        return lbl
 
     def restyle(self):
-        col = _CAT_COLOR.get(self._category, "#4c8df0")   # bar + destination only
-        border = col if self._selected else "transparent"
+        col = _CAT_COLOR.get(self._category, "#4c8df0")
+        bg = _CARD if self._selected else "transparent"
         self.setStyleSheet(
-            f"#connRow{{background:{_CARD};border:1px solid {border};"
-            f"border-left:3px solid {col};border-radius:4px;}}"
-            f"#connRow:hover{{background:{_PANEL};}}")
-        self._head.setText(
-            f"<span style='color:{_MUT};font-family:JetBrains Mono;font-weight:700'>{self.pin}</span>"
-            f"&nbsp;&nbsp;&nbsp;<span style='color:{_TXT};font-weight:700'>{html.escape(self._name)}</span>")
-        for lbl, (cap, stops) in zip(self._paths, self._branches):
-            lbl.setText(self._chain_html(cap, stops, col))
+            f"#connRow{{background:{bg};border:none;"
+            f"border-left:3px solid {col};border-bottom:1px solid {_LINE};}}"
+            f"#connRow:hover{{background:{_CARD};}}")
+        self._pin_lbl.setStyleSheet(f"color:{_MUT};")
+        self._name_lbl.setStyleSheet(f"color:{_TXT};")
+        for lbl, role, ccol in self._cells:
+            if role == "kind":
+                lbl.setStyleSheet(f"color:{'#a2a2a8' if not self._selected else _TXT};")
+            elif role == "net":
+                lbl.setStyleSheet(f"color:{ccol or col};")
+            elif role in ("contact", "via"):
+                lbl.setStyleSheet(f"color:{_MUT};")
+            else:
+                lbl.setStyleSheet(f"color:{_TXT};")
 
     def set_selected(self, sel):
         if sel != self._selected:
@@ -727,6 +811,12 @@ class ConnectionsList(QWidget):
         self.count = QLabel(""); self.count.setObjectName("connCount")
         bar.addWidget(self.count)
         root.addLayout(bar)
+        # the physical chain, stated ONCE for the whole table (refdes level)
+        self.chain = QLabel("")
+        cf = QFont(_SVG_MONO.split(",")[0].strip("'"))
+        cf.setPointSizeF(8.0)
+        self.chain.setFont(cf)
+        root.addWidget(self.chain)
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -742,6 +832,15 @@ class ConnectionsList(QWidget):
 
     def set_authority(self, a):
         self._authority = a
+        if a is not None:
+            cw = sauth.card_wiring(a)
+            lane_note = ("every pin owns CARD_LANE_(pin) via R_IO_LANE 33 Ω"
+                         if cw["lane_policy"] == "by_pin"
+                         else "numbered lanes are switch-only; other pins route direct")
+            self.chain.setText(
+                f"{cw['socket_refdes']} ({cw['zif_socket']})  →  "
+                f"{cw['edge_refdes']} ({cw['connector']['card']})  →  "
+                f"J_CARD1_LA / J_CARD1_RA ({cw['connector']['parent']})   ·   {lane_note}")
         self._rebuild()
 
     def _haystacks(self):
@@ -814,6 +913,8 @@ class ConnectionsList(QWidget):
             self._scroll.ensureWidgetVisible(r, 0, 40)
 
     def _style_scroll(self):
+        if hasattr(self, "chain"):
+            self.chain.setStyleSheet(f"color:{_MUT};")
         self._scroll.setStyleSheet(f"#connScroll{{border:none;background:{_PANEL};}}")
         self._inner.setStyleSheet(f"#connInner{{background:{_PANEL};}}")
         self.count.setStyleSheet(f"color:{_MUT};font-size:10px;font-weight:700;")
@@ -968,8 +1069,11 @@ class Stm32PinsWidget(QWidget):
         return page
 
     def _style_browsers(self):
+        # explicit family: the shell's QTextEdit QSS rule would otherwise put
+        # these browsers in the log's mono font
         css = (f"QTextBrowser{{background:{_CARD};color:{_TXT};border:1px solid {_LINE};"
-               f"border-radius:6px;padding:10px;}}")
+               f"border-radius:6px;padding:10px;"
+               f"font-family:'Geist','Inter','Segoe UI';font-size:9pt;}}")
         for wdg in (getattr(self, "pin_detail", None), getattr(self, "cells_view", None)):
             if wdg is not None:
                 wdg.setStyleSheet(css)
