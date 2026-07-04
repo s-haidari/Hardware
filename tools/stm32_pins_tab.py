@@ -250,6 +250,7 @@ class _KeyValuePanel(QScrollArea):
             it = self._grid.takeAt(0)
             w = it.widget()
             if w is not None:
+                w.setParent(None)     # stop painting immediately (deleteLater is async)
                 w.deleteLater()
         fam = _SVG_FONT.split(",")[0]
         for r, (k, v) in enumerate(rows):
