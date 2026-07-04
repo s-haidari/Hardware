@@ -736,7 +736,7 @@ class Stm32PinsWidget(QWidget):
         super().__init__(parent)
         self.ctx = ctx                          # shell services (ui_shell.TabContext)
         self.db_path = sdb.default_db_path()
-        self.source = sdb.default_cubemx_source()
+        self.source = sdb.default_cubemx_source() or self._saved_source()
         self.authority: dict | None = None
         self._building = False
 
@@ -946,7 +946,17 @@ class Stm32PinsWidget(QWidget):
     def _pick_source(self):
         d = QFileDialog.getExistingDirectory(self, "Select the CubeMX 'mcu' XML folder",
                                              str(self.source or ""))
+        if d:
+            # remember the choice so the next launch doesn't re-ask
+            from PyQt5.QtCore import QSettings
+            QSettings("NETDECK", "KiCadManager").setValue("stm32/cubemx_source", d)
         return d or None
+
+    @staticmethod
+    def _saved_source():
+        from PyQt5.QtCore import QSettings
+        saved = QSettings("NETDECK", "KiCadManager").value("stm32/cubemx_source", "")
+        return Path(saved) if saved and Path(saved).exists() else None
 
     def build_database(self):
         src = self.source or self._pick_source()

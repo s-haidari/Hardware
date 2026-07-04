@@ -431,16 +431,9 @@ def remove_symbols_by_indices(symbol_lib_path: Path, expected: Dict[int, str],
 
 
 def find_kicad_dir() -> Optional[Path]:
-    """Locate KiCad's bin directory (highest version), or None if not installed."""
-    env = os.environ.get("KICAD_BIN")
-    if env and Path(env).exists():
-        return Path(env)
-    import glob as _glob
-    hits: List[str] = []
-    for pat in (r"C:\Program Files\KiCad\*\bin", r"C:\Program Files (x86)\KiCad\*\bin"):
-        hits += _glob.glob(pat)
-    hits.sort()
-    return Path(hits[-1]) if hits else None
+    """KiCad's bin directory — delegates to the shared locator."""
+    from kicad_paths import find_kicad_bin
+    return find_kicad_bin()
 
 
 # ---------------------------------------------------------------------------
@@ -1544,61 +1537,9 @@ class PreviewView(QWidget):
             self.update()
 
 
-class CardWidget(QFrame):
-    def __init__(self, title: str = "", parent=None):
-        super().__init__(parent)
-        self.setObjectName("card")
-        self.setFrameShape(QFrame.StyledPanel)
-        self.setFrameShadow(QFrame.Raised)
-
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(6)
-
-        self.title_lbl = QLabel(title)
-        self.title_lbl.setObjectName("cardTitle")
-        f = self.title_lbl.font()
-        f.setPointSize(9)
-        f.setBold(True)
-        self.title_lbl.setFont(f)
-        # Title area: label on left, optional widget on right (for tab bars etc.)
-        title_container = QWidget()
-        title_layout = QHBoxLayout(title_container)
-        title_layout.setContentsMargins(0, 0, 0, 0)
-        title_layout.setSpacing(6)
-        if title:
-            title_layout.addWidget(self.title_lbl)
-        else:
-            # hide label area when title empty, keeping layout for right-side widgets
-            self.title_lbl.setVisible(False)
-            title_layout.addWidget(self.title_lbl)
-        title_layout.addStretch()
-        # container for right-side title widgets
-        self._title_right = QWidget()
-        self._title_right_layout = QHBoxLayout(self._title_right)
-        self._title_right_layout.setContentsMargins(0, 0, 0, 0)
-        self._title_right_layout.setSpacing(0)
-        title_layout.addWidget(self._title_right)
-        outer.addWidget(title_container)
-
-        self.content = QWidget()
-        self.content_layout = QVBoxLayout(self.content)
-        self.content_layout.setContentsMargins(8, 6, 8, 8)
-        self.content_layout.setSpacing(6)
-        outer.addWidget(self.content)
-
-    def contentLayout(self):
-        return self.content_layout
-
-    def set_title_widget(self, widget: QWidget):
-        """Place a widget on the right side of the title area (e.g. tab bar)."""
-        # remove existing widgets
-        for i in reversed(range(self._title_right_layout.count())):
-            item = self._title_right_layout.takeAt(i)
-            w = item.widget()
-            if w:
-                w.setParent(None)
-        self._title_right_layout.addWidget(widget)
+# CardWidget lives in the shared design system (tools/ui_widgets.py) so every
+# tab builds the same card chrome.
+from ui_widgets import CardWidget  # noqa: F401
 
 # -----------------------------
 # Flow layout (wraps its widgets to new rows as width shrinks)

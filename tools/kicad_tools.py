@@ -208,16 +208,9 @@ class KiCadToolsWidget(QWidget):
         self.rescan()
 
     def _card(self, title: str):
-        """A titled card matching the library manager's cards (styled app-wide
-        via the QFrame#card / QLabel#cardTitle stylesheet rules)."""
-        frame = QFrame(); frame.setObjectName("card")
-        v = QVBoxLayout(frame); v.setContentsMargins(0, 0, 0, 0); v.setSpacing(0)
-        lbl = QLabel(title); lbl.setObjectName("cardTitle")
-        v.addWidget(lbl)
-        body = QWidget()
-        bl = QVBoxLayout(body); bl.setContentsMargins(8, 6, 8, 8); bl.setSpacing(6)
-        v.addWidget(body)
-        return frame, bl
+        """A titled card — the shared chrome from ui_widgets."""
+        from ui_widgets import make_card
+        return make_card(title)
 
     # ---------- helpers ----------
     def log(self, msg: str):
@@ -722,12 +715,6 @@ class KiCadToolsWidget(QWidget):
 
 
 def wiz_find_kicad_cli() -> Optional[str]:
-    """Locate kicad-cli.exe next to a KICAD install, or on PATH."""
-    import glob as _glob
-    for pat in (r"C:\Program Files\KiCad\*\bin\kicad-cli.exe",
-                r"C:\Program Files (x86)\KiCad\*\bin\kicad-cli.exe"):
-        hits = sorted(_glob.glob(pat))
-        if hits:
-            return hits[-1]
-    from shutil import which
-    return which("kicad-cli")
+    """kicad-cli path — delegates to the shared locator."""
+    from kicad_paths import find_kicad_cli
+    return find_kicad_cli()
