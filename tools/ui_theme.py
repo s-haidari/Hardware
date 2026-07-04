@@ -101,6 +101,56 @@ def tc(key: str, fallback: str = "#888888") -> str:
     return _ACTIVE.get(key, fallback)
 
 
+# ── Design tokens (Fluent-grounded) ──────────────────────────────────────────
+# The single source the QFluentWidgets bridge + kit widgets read. 4px spacing
+# ramp; a semantic type ramp (role → point-size, weight); a small radius scale;
+# and desaturated semantic status — the ONLY sanctioned hue besides the neutral
+# ACCENT. See docs/design/2026-07-04-app-design-overhaul.md §3.
+SPACING = {"xs": 4, "s": 8, "m": 12, "l": 16, "xl": 24, "xxl": 32, "xxxl": 48}
+
+RADIUS = {"control": 4, "card": 6, "pill": 999, "pin": 2}
+
+# role → (point size, weight name). UI prose = Geist; data/identifiers = mono.
+TYPE = {
+    "display":  (20, "demibold"),
+    "title":    (15, "demibold"),
+    "subtitle": (12, "semibold"),
+    "body":     (10, "normal"),
+    "caption":  (8.5, "normal"),
+    "overline": (8, "semibold"),
+    "data":     (9.5, "medium"),
+}
+
+# desaturated semantic status (dark, light) — real state only (ok/warn/err).
+STATUS = {
+    "ok":   ("#6f8f6a", "#4a7a44"),
+    "warn": ("#b8964a", "#8a6a2a"),
+    "err":  ("#b96a63", "#9a4a44"),
+}
+
+# one soft shadow, for true overlays only (menus, callouts, dialogs).
+ELEVATION_OVERLAY = "0 6px 16px rgba(0,0,0,0.28)"
+
+
+def sp(name: str, fallback: int = 8) -> int:
+    """A step from the 4px spacing ramp."""
+    return SPACING.get(name, fallback)
+
+
+def radius(name: str, fallback: int = 4) -> int:
+    return RADIUS.get(name, fallback)
+
+
+def type_role(name: str):
+    """(point_size, weight_name) for a type-ramp role."""
+    return TYPE.get(name, TYPE["body"])
+
+
+def status(kind: str) -> str:
+    """A desaturated semantic colour ('ok'|'warn'|'err') for the active theme."""
+    return STATUS.get(kind, STATUS["ok"])[0 if is_dark() else 1]
+
+
 # ── Fonts ────────────────────────────────────────────────────────────────────
 UI_FONT_STACK = ("Geist", "Inter", "Segoe UI Variable Text", "Segoe UI")
 MONO_FONT_STACK = ("JetBrains Mono", "Cascadia Mono", "Consolas")
