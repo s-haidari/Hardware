@@ -557,13 +557,14 @@ def _conn_icon2(cx, cy, col):
     return "".join(o)
 
 
-def _pin_branches(a: dict, pos: int):
-    """The physical connection branches of one socket pin — shared by the focus panel
-    and the wiring band so the two never diverge. Returns
+def _pin_branches(a: dict, pos: int, cw: dict = None):
+    """The physical connection branches of one socket pin — shared by the focus panel,
+    the wiring band, and the connections fabric so they never diverge. Returns
     (conn, kind, name, pcol, branches), where branches is a list of
     (caption, [(title, sub, colour-or-None)]); colour None marks a neutral intermediate
     node, a colour marks a delivered destination. A switched pin has two branches (its
-    ADG714 channel to a rail, and its default 33 ohm IO lane); others have one."""
+    ADG714 channel to a rail, and its default 33 ohm IO lane); others have one. Pass a
+    precomputed card_wiring() as cw to avoid rebuilding it per pin."""
     conn = next((c for c in sauth.socket_connections(a) if c["pin"] == pos), None)
     p = next((x for x in a["positions"] if x["position"] == pos), None)
     kind = conn["kind"] if conn else "direct"
@@ -571,7 +572,8 @@ def _pin_branches(a: dict, pos: int):
     pcol = _CAT_COLOR.get(conn["category"], "#4c8df0") if conn else _MUT
     branches = []
     if kind == "switch":
-        c = next((x for x in sauth.card_wiring(a)["channels"] if x["socket_pin"] == pos), None)
+        cw = cw or sauth.card_wiring(a)
+        c = next((x for x in cw["channels"] if x["socket_pin"] == pos), None)
         if c:
             rail_sub = ("Contact " + " / ".join(c["connector_contacts"])) if c["connector_contacts"] \
                 else ("Ground Plane" if c["rail"] == "GND" else "Local Cap")
@@ -1123,52 +1125,60 @@ class _BandSvg(QSvgWidget):
 
 
 class ConnectionRow(QFrame):
-    """One clickable connection: [pin number + name] -> [path component chip] ->
-    [destination net + connector contact], coloured by destination category. Clicking
-    emits the pin so the map and focus panel follow along."""
+    """One clickable pin card showing EVERY physical path the socket pin has, from its
+    ZIF contact to the parent connector: a switched pin shows both its ADG714 channel
+    path (with the real Source/Drain terminal pins) and its default 33 ohm lane; other
+    pins show their single path. Clicking emits the pin so the map/band follow along."""
     clicked = pyqtSignal(int)
-    _KIND = {"switch": "Switch", "resistor": "33 Ω", "direct": "Direct"}
 
-    def __init__(self, rec, parent=None):
+    def __init__(self, pin, name, category, branches, parent=None):
         super().__init__(parent)
-        self.pin = rec["pin"]
-        self._rec = rec
+        self.pin = pin
+        self._name = name
+        self._category = category
+        self._branches = branches
         self._selected = False
         self.setObjectName("connRow")
         self.setCursor(Qt.PointingHandCursor)
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(11, 6, 11, 6)
-        lay.setSpacing(9)
-        self._left = QLabel(); self._left.setTextFormat(Qt.RichText)
-        self._left.setFixedWidth(118)                    # same width every row, so chips align
-        self._chip = QLabel(self._KIND.get(rec["kind"], rec["kind"]))
-        self._chip.setObjectName("connChip")
-        self._chip.setAlignment(Qt.AlignCenter)
-        self._chip.setFixedWidth(64)
-        self._right = QLabel(); self._right.setTextFormat(Qt.RichText)
-        self._right.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self._right.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        lay.addWidget(self._left)
-        lay.addWidget(self._chip)
-        lay.addWidget(self._right, 1)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(12, 7, 12, 8)
+        lay.setSpacing(3)
+        self._head = QLabel(); self._head.setTextFormat(Qt.RichText)
+        lay.addWidget(self._head)
+        self._paths = []
+        for _cap, _stops in branches:
+            lbl = QLabel(); lbl.setTextFormat(Qt.RichText); lbl.setWordWrap(True)
+            lay.addWidget(lbl)
+            self._paths.append(lbl)
         self.restyle()
 
+    def _chain_html(self, caption, stops, pcol):
+        arrow = f"<span style='color:{_LINE}'> &#8594; </span>"
+        parts = [f"<span style='color:{_MUT}'>ZIF Socket</span>"]
+        for i, (title, sub, color) in enumerate(stops):
+            if i == len(stops) - 1:                       # destination: coloured net + contact
+                parts.append(f"{arrow}<span style='color:{color or pcol};font-weight:700'>"
+                             f"{html.escape(title)}</span>"
+                             f"<span style='color:{_MUT}'> &#183; {html.escape(sub)}</span>")
+            else:                                         # component (switch / resistor)
+                parts.append(f"{arrow}<span style='color:{_TXT}'>{html.escape(title)}</span>"
+                             f"<span style='color:{_MUT}'> ({html.escape(sub)})</span>")
+        cap = (f"<span style='color:#a2a2a8;font-weight:700;font-size:8pt;"
+               f"letter-spacing:0.6px'>{caption}</span> &nbsp; ")
+        return f"<span style='font-size:9pt'>{cap}{''.join(parts)}</span>"
+
     def restyle(self):
-        rec = self._rec
-        col = _CAT_COLOR.get(rec["category"], "#4c8df0")     # used only on the bar + destination
+        col = _CAT_COLOR.get(self._category, "#4c8df0")   # bar + destination only
         border = col if self._selected else "transparent"
         self.setStyleSheet(
             f"#connRow{{background:{_CARD};border:1px solid {border};"
             f"border-left:3px solid {col};border-radius:8px;}}"
-            f"#connRow:hover{{background:{_PANEL};}}"
-            f"#connChip{{color:{_MUT};border:1px solid {_LINE};border-radius:9px;"
-            f"padding:1px 2px;font-size:9px;font-weight:700;}}")
-        self._left.setText(
+            f"#connRow:hover{{background:{_PANEL};}}")
+        self._head.setText(
             f"<span style='color:{_MUT};font-family:JetBrains Mono;font-weight:700'>{self.pin}</span>"
-            f"&nbsp;&nbsp;&nbsp;<span style='color:{_TXT};font-weight:600'>{html.escape(rec['name'])}</span>")
-        self._right.setText(
-            f"<span style='color:{col};font-weight:700'>{html.escape(rec['dest'])}</span>"
-            f"&nbsp;&nbsp;<span style='color:{_MUT}'>{html.escape(rec['contact'])}</span>")
+            f"&nbsp;&nbsp;&nbsp;<span style='color:{_TXT};font-weight:700'>{html.escape(self._name)}</span>")
+        for lbl, (cap, stops) in zip(self._paths, self._branches):
+            lbl.setText(self._chain_html(cap, stops, col))
 
     def set_selected(self, sel):
         if sel != self._selected:
@@ -1254,8 +1264,11 @@ class ConnectionsList(QWidget):
         self._clear()
         conns = self._records()
         self.count.setText(f"{len(conns)} pins")
+        a = self._authority
+        cw = sauth.card_wiring(a) if a else None          # built once, reused per pin
         for rec in conns:
-            row = ConnectionRow(rec)
+            _c, _k, name, _pc, branches = _pin_branches(a, rec["pin"], cw)
+            row = ConnectionRow(rec["pin"], rec["name"], rec["category"], branches)
             row.clicked.connect(self.pinClicked)
             row.set_selected(rec["pin"] == self._sel)
             self._vl.insertWidget(self._vl.count() - 1, row)
