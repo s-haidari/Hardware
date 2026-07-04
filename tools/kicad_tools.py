@@ -269,7 +269,7 @@ class KiCadToolsWidget(QWidget):
         # readout band: project counts
         self.readout = uw.ReadoutBand([
             ("projects", "Projects", None),
-            ("selected", "Selected", ui_theme.tc("ACCENT")),
+            ("selected", "Selected", "ACCENT"),   # token key → re-resolves on theme toggle
         ])
         self.readout.set_identity("KiCad Tools", "schematic + PCB batch operations")
         main.addWidget(self.readout)
