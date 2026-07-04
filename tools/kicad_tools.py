@@ -398,6 +398,20 @@ class KiCadToolsWidget(QWidget):
                 self.log("  No matching changes.")
             elif apply:
                 self.log("Applied. Backups (.bak) created next to modified files.")
+            # JSON audit trail (same records + location the CLI wizard writes)
+            if changes:
+                try:
+                    import json as _json
+                    from datetime import datetime as _dt
+                    wiz.LOG_DIR.mkdir(parents=True, exist_ok=True)
+                    stamp = _dt.now().strftime("%Y%m%d_%H%M%S")
+                    audit = wiz.LOG_DIR / f"{stamp}_{'applied' if apply else 'preview'}.json"
+                    audit.write_text(_json.dumps(
+                        [{"type": t, "old": o, "new": n, "file": str(f)}
+                         for (t, o, n, f) in changes], indent=2), encoding="utf-8")
+                    self.log(f"Audit log: {audit}")
+                except Exception as e:
+                    self.log(f"Audit log failed: {e}")
 
         self._run_heavy("Applying rename…" if apply else "Previewing rename…", work)
 

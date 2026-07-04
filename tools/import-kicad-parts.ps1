@@ -9,7 +9,11 @@ param(
     [string]$FootprintLib = (Join-Path (Split-Path -Parent $PSScriptRoot) "libs\MyFootprints.pretty"),
     [string]$ModelLib     = (Join-Path (Split-Path -Parent $PSScriptRoot) "libs\My3DModels"),
     [string]$MiscDir      = (Join-Path (Split-Path -Parent $PSScriptRoot) "misc"),
-    [string]$PythonExe    = "python"
+    # Prefer the repo venv (has the app's merge core deps); fall back to PATH.
+    [string]$PythonExe    = $(
+        $venvPy = Join-Path (Split-Path -Parent $PSScriptRoot) ".venv\Scripts\python.exe"
+        if (Test-Path -LiteralPath $venvPy) { $venvPy } else { "python" }
+    )
 )
 
 # --- Optional: self-elevate if not admin -----------------------------------

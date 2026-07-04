@@ -16,7 +16,7 @@ Features:
 - Drag-and-drop ZIPs into a Drop Zone to copy into downloads/
 - Scrollable "Library Contents" panel on the right with Search, Filter, Open, Delete
 - Dark theme styling
-- Optional file watcher (requires 'watchdog')
+- Downloads file watcher (QFileSystemWatcher — no extra dependency)
 - Live log panel with scrollbar
 
 Author: You
@@ -58,26 +58,6 @@ try:
 except Exception:
     HAVE_QTSVG = False
 
-# -----------------------------
-# Optional watcher (robust handling)
-# -----------------------------
-try:
-    from watchdog.observers import Observer
-    from watchdog.events import FileSystemEventHandler
-    HAVE_WATCHDOG = True
-except Exception:
-    HAVE_WATCHDOG = False
-
-    # Runtime stubs
-    class Observer:
-        def __init__(self, *_, **__): pass
-        def schedule(self, *_, **__): raise RuntimeError("watchdog is not installed")
-        def start(self): raise RuntimeError("watchdog is not installed")
-        def stop(self): pass
-        def join(self, timeout: Optional[float] = None): pass
-
-    class FileSystemEventHandler:
-        def __init__(self, *_, **__): pass
 
 # -----------------------------
 # Subprocess helper (no flashing console windows on Windows)
@@ -1020,57 +1000,60 @@ def commit_and_push(cfg: Dict[str, str], log: UILog):
 # -----------------------------
 # Watcher (optional)
 # -----------------------------
-if HAVE_WATCHDOG:
-    class ZipHandler(FileSystemEventHandler):
-        def __init__(self, cfg: Dict[str, str], log: UILog):
-            super().__init__()
-            self.cfg = cfg
-            self.log = log
-
-        def on_created(self, event):
-            if event.is_directory:
-                return
-            p = Path(event.src_path)
-            if p.suffix.lower() == ".zip":
-                process_zip(p, self.cfg, self.log)
-
-        def on_modified(self, event):
-            if event.is_directory:
-                return
-            p = Path(event.src_path)
-            if p.suffix.lower() == ".zip":
-                process_zip(p, self.cfg, self.log)
-else:
-    class ZipHandler:
-        def __init__(self, *_, **__):
-            raise RuntimeError("Watcher unavailable: install 'watchdog' (pip install watchdog)")
-
 class WatchController:
+    """Watches the Downloads folder for new/updated part zips and processes them.
+    Built on QFileSystemWatcher — no third-party dependency. Partially-written
+    zips are handled by process_zip's own wait_file_ready settle check, and a
+    short debounce collapses the burst of change events one download produces.
+    Processing runs on a daemon thread (UILog is thread-safe), matching the old
+    watchdog behaviour."""
+
     def __init__(self, cfg: Dict[str, str], log: UILog):
         self.cfg = cfg
         self.log = log
-        self.observer: Optional[Observer] = None
+        self._watcher = None
+        self._timer = None
+        self._seen: Dict[str, float] = {}
 
     def start(self):
-        if not HAVE_WATCHDOG:
-            self.log.write("Watcher unavailable: install 'watchdog' (pip install watchdog)")
-            return
-        if self.observer:
+        from PyQt5.QtCore import QFileSystemWatcher, QTimer
+        if self._watcher:
             self.stop()
-        handler = ZipHandler(self.cfg, self.log)
-        self.observer = Observer()
-        self.observer.schedule(handler, self.cfg["Downloads"], recursive=False)
-        self.observer.start()
+        downloads = str(self.cfg["Downloads"])
+        self._watcher = QFileSystemWatcher([downloads])
+        self._timer = QTimer()
+        self._timer.setSingleShot(True)
+        self._timer.setInterval(750)          # debounce change-event bursts
+        self._timer.timeout.connect(self._scan)
+        self._watcher.directoryChanged.connect(lambda _p: self._timer.start())
+        # baseline: never re-process zips already sitting in Downloads
+        for z in Path(downloads).glob("*.zip"):
+            try:
+                self._seen[str(z)] = z.stat().st_mtime
+            except OSError:
+                pass
         self.log.write("Watcher started")
 
-    def stop(self):
-        if self.observer:
+    def _scan(self):
+        for z in sorted(Path(self.cfg["Downloads"]).glob("*.zip")):
             try:
-                self.observer.stop()
-                self.observer.join(timeout=3)
-            except Exception:
-                pass
-            self.observer = None
+                mtime = z.stat().st_mtime
+            except OSError:
+                continue
+            if self._seen.get(str(z)) == mtime:
+                continue
+            self._seen[str(z)] = mtime
+            threading.Thread(target=process_zip, args=(z, self.cfg, self.log),
+                             daemon=True).start()
+
+    def stop(self):
+        if self._timer:
+            self._timer.stop()
+            self._timer.deleteLater()
+            self._timer = None
+        if self._watcher:
+            self._watcher.deleteLater()
+            self._watcher = None
         self.log.write("Watcher stopped")
 
 
