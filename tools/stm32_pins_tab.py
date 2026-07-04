@@ -219,6 +219,16 @@ def _default_vault_authority_dir():
     return (brain / "Wiki" / "Datasets" / "STM32 Pinout Authority") if brain.is_dir() else None
 
 
+def _vault_authority_dirs():
+    """Both authority homes: the registered dataset folder (Wiki/Datasets/) and the
+    spec's data/ location. Save-to-Vault writes the same files to each so citations
+    against either path resolve."""
+    brain = Path.home() / "Documents" / "Obsidian" / "Brain"
+    if not brain.is_dir():
+        return []
+    return [brain / "Wiki" / "Datasets" / "STM32 Pinout Authority", brain / "data"]
+
+
 # ── QFP pin-map geometry (pure — shared by the Qt widget AND the SVG export, so
 #    the live widget and any preview render pixel-for-pixel identically) ──────
 def pin_map_geometry(positions: list, w: float, h: float, margin: float = 46) -> dict:
@@ -1158,24 +1168,41 @@ class Stm32PinsWidget(QWidget):
         if not self.db_path.exists():
             QMessageBox.information(self, "Generate → Vault", "Build the database first.")
             return
-        vdir = _default_vault_authority_dir()
-        if vdir is None:
+        vdirs = _vault_authority_dirs()
+        if not vdirs:
             out = QFileDialog.getExistingDirectory(self, "Brain vault not found, choose an output folder")
             if not out:
                 return
-            vdir = Path(out)
+            vdirs = [Path(out)]
         conn = sdb.connect(self.db_path)
         try:
-            written = [sauth.write_authority(conn, pkg, vdir) for pkg in ("LQFP64", "LQFP100")]
+            written = [sauth.write_authority(conn, pkg, vdir)
+                       for vdir in vdirs for pkg in ("LQFP64", "LQFP100")]
+            # Drift gate at save time: a vault copy that contradicts the build
+            # cards' claims must never land silently.
+            claims_dir = Path(__file__).resolve().parent / "claims"
+            claim_files = sorted(claims_dir.glob("claims_*.yaml"))
+            lint_ok, lint_lines = (True, [])
+            if claim_files:
+                lint_ok, lint_lines = sauth.run_lint(conn, claim_files)
         except Exception as e:
             QMessageBox.warning(self, "Generate → Vault", f"Failed:\n{e}")
             return
         finally:
             conn.close()
         n = sum(len(w["files"]) for w in written)
-        self.status.setText(f"Wrote {n} pin-data files into the vault: {vdir}")
+        dests = " and ".join(str(v) for v in vdirs)
+        if not lint_ok:
+            drift = "\n".join(ln for ln in lint_lines if "DRIFT" in ln)
+            QMessageBox.warning(
+                self, "Generate → Vault",
+                f"Wrote {n} files, but the drift gate found card/authority "
+                f"mismatches:\n\n{drift}\n\nFix the build cards or the claims files.")
+        self.status.setText(
+            f"Wrote {n} pin-data files to {dests}. "
+            + ("Drift gate: all claims match." if lint_ok else "DRIFT DETECTED — see warning."))
         try:
-            os.startfile(str(vdir))  # noqa: S606
+            os.startfile(str(vdirs[0]))  # noqa: S606
         except Exception:
             pass
 

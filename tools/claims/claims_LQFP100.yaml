@@ -1,0 +1,11 @@
+# Build Card 7C (LQFP100 Switch Fabric) assertions, checked against the generated
+# authority by the drift gate (tools/stm32_authority.py --lint). Encodes the
+# spec-locked dual cell counts (2026-06-30): Card 7F cites the minimum, Card 7C
+# cites the as-built paralleled bank.
+package: LQFP100
+claims:
+  positions_total: 100
+  must_switch_count: 43
+  osc_optional_count: 3
+  adg714_cells: 8            # as built (Card 7C: 59 channels across 8 cells)
+  adg714_cells_min: 6        # minimum (Card 7F: ceil(43 / 8))

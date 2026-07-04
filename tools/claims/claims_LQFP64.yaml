@@ -1,0 +1,16 @@
+# Build Card 7B (LQFP64 Switch Fabric) assertions, checked against the generated
+# authority by the drift gate (tools/stm32_authority.py --lint). A mismatch fails
+# the run — this is the enforcement half of the pinout-authority spec.
+package: LQFP64
+claims:
+  positions_total: 64
+  must_switch_count: 11
+  osc_optional_count: 2
+  adg714_cells: 2            # as built (Card 7B: U_SW_64_1 / U_SW_64_2)
+  adg714_cells_min: 2
+  swdio_pos: 46              # PA13 -> SWDIO_PARENT (Cards 7B + 5E)
+  swclk_pos: 49              # PA14 -> SWCLK_PARENT
+  swo_pos: 55                # PB3  -> SWO_PARENT
+  tdi_pos: 50                # PA15 -> TDI_PARENT
+  ntrst_pos: 56              # PB4  -> NTRST_PARENT
+  nrst_pos: 7                # NRST -> SERVICE_NRST (contact LA-7)

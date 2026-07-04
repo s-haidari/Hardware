@@ -348,6 +348,22 @@ class AuthorityTests(unittest.TestCase):
         p19 = {c["card_lane"] for c in w["channels"] if c["socket_pin"] == 19}
         self.assertEqual(len(p19), 1)
 
+    def test_claims_files_and_drift_gate(self):
+        """The checked-in claims files pass the drift gate, and a wrong claim FAILS
+        it — the enforcement half of the pinout-authority spec."""
+        claims_dir = Path(__file__).resolve().parent.parent / "tools" / "claims"
+        files = sorted(claims_dir.glob("claims_*.yaml"))
+        self.assertEqual(len(files), 2)
+        ok, lines = auth.run_lint(self.conn, files)
+        self.assertTrue(ok, "\n".join(lines))
+        self.assertTrue(any("adg714_cells: claimed 8, actual 8" in ln for ln in lines))
+        # a deliberately wrong claim must be caught
+        bad = Path(tempfile.mkdtemp()) / "claims_bad.yaml"
+        bad.write_text("package: LQFP100\nclaims:\n  adg714_cells: 6\n", encoding="utf-8")
+        ok2, lines2 = auth.run_lint(self.conn, [bad])
+        self.assertFalse(ok2)
+        self.assertTrue(any("DRIFT" in ln for ln in lines2))
+
     def test_locked_constants_and_provenance(self):
         """Pin the vault-locked wiring constants and the manifest's DB provenance."""
         self.assertEqual(auth.ADG714_TERMINAL_PIN["S1"], 5)
