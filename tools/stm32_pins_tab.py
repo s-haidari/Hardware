@@ -37,10 +37,26 @@ _PANEL = _CARD = _TXT = _MUT = _LINE = _BODY = ""
 _T_MUST = _T_OSC = _T_FIXED = _T_SEL = ""
 
 
+_SWITCH_COLOR: dict = {}
+_BREAKOUT_COLOR = ""
+_CAT_COLOR: dict = {}
+
+
 def _refresh_tones():
     t = ui_theme.theme()
     global _T_MUST, _T_OSC, _T_FIXED, _T_SEL
     _T_MUST, _T_OSC, _T_FIXED, _T_SEL = t["FG"], t["FG_DIM"], t["DOT_IDLE"], t["ACCENT"]
+
+
+def _refresh_palette():
+    """Rebuild the GRAYSCALE colour dicts from the active tones so the pin map,
+    diagram, legend and table are all grayscale AND theme-aware (needs stm32_db).
+    Net category is no longer a hue — it is shown as an inline text tag."""
+    global _SWITCH_COLOR, _BREAKOUT_COLOR, _CAT_COLOR
+    _SWITCH_COLOR = {sdb.SWITCH_MUST: _T_MUST, sdb.SWITCH_OSC_OPTIONAL: _T_OSC,
+                     sdb.SWITCH_NONE: _T_FIXED}
+    _BREAKOUT_COLOR = _MUT                       # subtle grey marker, not a hue
+    _CAT_COLOR = {k: _MUT for k in ("power", "analog", "ground", "core", "service", "lane")}
 
 
 def set_tab_theme(dark: bool):
@@ -53,12 +69,17 @@ def set_tab_theme(dark: bool):
     _LINE = t["BORDER"]        # hairlines
     _BODY = t["IN_BG"]         # the package body fill
     _refresh_tones()
+    try:
+        _refresh_palette()     # skipped on the import-time call before stm32_db loads
+    except NameError:
+        pass
 
 
 set_tab_theme(False)   # light is the app default
 
 import stm32_db as sdb
 import stm32_authority as sauth
+_refresh_palette()   # stm32_db now imported — build the grayscale colour dicts
 
 # Icons come from the shared design system (no import back into the shell).
 from ui_theme import (lucide_icon, LUCIDE_NEUTRAL, LUCIDE_BLUE,  # noqa: F401
@@ -71,14 +92,6 @@ from ui_theme import (lucide_icon, LUCIDE_NEUTRAL, LUCIDE_BLUE,  # noqa: F401
 _COLS = ["Pin", "Side", "Pin Name(s)", "Role Set", "Switch",
          "Destination", "Peripherals", "Breakout", "VDD (V)"]
 
-# All type colour comes from the one shared categorical palette (ui_theme.CATEGORY).
-_BREAKOUT_COLOR = ui_theme.cat("breakout")
-
-_SWITCH_COLOR = {
-    sdb.SWITCH_MUST: ui_theme.cat("must"),
-    sdb.SWITCH_OSC_OPTIONAL: ui_theme.cat("osc"),
-    sdb.SWITCH_NONE: ui_theme.cat("fixed"),
-}
 _SWITCH_LABEL = {
     sdb.SWITCH_MUST: "Must-Switch",
     sdb.SWITCH_OSC_OPTIONAL: "Oscillator (Optional)",
@@ -153,56 +166,58 @@ def _pin_search_haystack(p: dict) -> str:
     return " ".join(str(v) for v in parts).lower()
 
 
+def expandNet(s: str) -> str:
+    """Un-abbreviate a generated net name for display: VBAT_TGT → VBAT_TARGET,
+    SERVICE_OSC_IN → SERVICE_OSCILLATOR_IN."""
+    s = (s or "").replace("_TGT", "_TARGET")
+    return s.replace("_OSC_IN", "_OSCILLATOR_IN").replace("_OSC_OUT", "_OSCILLATOR_OUT")
+
+
+_CAT_WORD = {"power": "Power", "analog": "Analog", "ground": "Ground",
+             "core": "Core", "service": "Service", "lane": "Card Lane"}
+
+
 def _pin_detail_html(p: dict) -> str:
-    """Full detail for one socket position (pure — unit-testable)."""
+    """Pin detail — Title Case, no redundant rows (the delivered net + ADG714 wiring
+    live in the signal-path diagram; the switch class is in the header), un-abbreviated
+    nets. Pure / unit-testable."""
     fv = p.get("five_v")
     if fv is None:
-        fvt = "n/a (non-GPIO)"
+        fvt = "N/A (non-GPIO)"
     elif fv["tolerant"]:
-        fvt = "5V-Tolerant" + (" (except in oscillator mode)" if fv.get("caveat") == "osc-mode" else "")
+        fvt = "Yes (Except In Oscillator Mode)" if fv.get("caveat") == "osc-mode" else "Yes"
     elif any(fv["by_family"].values()):
-        fam = ", ".join(f"{k.replace('STM32', '')}={'5V' if v else '3V3'}"
-                        for k, v in fv["by_family"].items())
-        fvt = f"part-dependent ({fam})"
+        fvt = "Part-Dependent"
     else:
-        fvt = "3.3V-only"
+        fvt = "No"
     bk = p.get("breakout", {})
-    bnets = ", ".join(bk.get("service_nets", [])) or ""
-    adg = p["assignment"].get("adg714")
-    adg_t = None
-    if adg:
-        s_pin, d_pin = sauth.ADG714_SWITCH_PINS[adg["channel"]]
-        adg_t = (f"Cell {adg['cell']} · Channel {adg['channel']} "
-                 f"({s_pin} Pin {sauth.ADG714_TERMINAL_PIN[s_pin]} → "
-                 f"{d_pin} Pin {sauth.ADG714_TERMINAL_PIN[d_pin]})")
-    dest = p["assignment"].get("destination") or p["assignment"].get("net") or ""
+    bnets = ", ".join(expandNet(n) for n in bk.get("service_nets", [])) or ""
     el = p.get("electrical", {}) or {}
     why = sauth.switch_rationale(p)
+    dest = p["assignment"].get("destination") or p["assignment"].get("net") or ""
+    cat = _CAT_WORD.get(sauth._NET_CATEGORY.get(dest, "lane"), "Card Lane")
     rows = [
-        ("Name(s)", _counts(p["pin_names"])),
+        ("Pin Names", _counts(p["pin_names"])),
         ("Roles", _counts(p["role_set"])),
-        ("Switch", _SWITCH_LABEL.get(p['switch_class'], p['switch_class'])),
+        ("Category", cat),
     ]
     if why:
-        rows.append(("Why", why))
-    if adg_t:
-        rows.append(("ADG714", adg_t))
-    rows.append(("Destination", dest))
-    rows += [
-        ("Breakout", bnets + (" · TRACE" if bk.get("trace") else "")),
-        ("Via", bk.get("via", "")),
-        ("Tags", _tag_summary(p["tags"]) or ""),
-        ("5V", fvt),
-        ("Bootloader", ", ".join(p["tags"].get("bootloader_periph", [])) or ""),
-        ("Peripherals", ", ".join(p.get("peripherals", [])) or ""),
-        ("VDD", _fmt_rng(el.get("vdd_range_v"))),
-    ]
+        rows.append(("Why It Switches", why))
+    if p.get("peripherals"):
+        rows.append(("Peripherals", ", ".join(p["peripherals"])))
+    if bnets or bk.get("trace"):
+        rows.append(("Breakout", bnets + (" · Trace" if bk.get("trace") else "")))
+    tagsum = _tag_summary(p["tags"])
+    if tagsum:
+        rows.append(("Tags", tagsum))
+    boot = ", ".join(p["tags"].get("bootloader_periph", []))
+    if boot:
+        rows.append(("Bootloader", boot))
+    rows += [("5V Tolerant", fvt), ("Supply Voltage", _fmt_rng(el.get("vdd_range_v")))]
     body = "".join(
-        f"<tr><td style='color:{_MUT};padding-right:8px;vertical-align:top'>{k}</td>"
-        f"<td>{_esc(v)}</td></tr>" for k, v in rows)
-    return (f"<h3 style='margin:2px 0'>Pin {p['position']} "
-            f"<span style='color:{_MUT}'>({p.get('side', '')})</span></h3>"
-            f"<table>{body}</table>")
+        f"<tr><td style='color:{_MUT};padding-right:16px;vertical-align:top;"
+        f"white-space:nowrap'>{k}</td><td>{_esc(v)}</td></tr>" for k, v in rows)
+    return f"<table cellspacing='0' cellpadding='2'>{body}</table>"
 
 
 def _summary_html(a: dict) -> str:
@@ -386,9 +401,6 @@ _SVG_FONT = "Geist,Inter,'Segoe UI',system-ui,Arial"
 _SVG_MONO = "'JetBrains Mono',Consolas,monospace"
 
 
-_CAT_COLOR = {"power": ui_theme.cat("power"), "analog": ui_theme.cat("osc"),
-              "ground": ui_theme.cat("ground"), "core": ui_theme.cat("core"),
-              "service": ui_theme.cat("service"), "lane": ui_theme.cat("lane")}
 _CAT_LABEL = [("All", None), ("Switched", "switch"), ("Power", "power"), ("Analog", "analog"),
               ("Ground", "ground"), ("Core VCAP", "core"), ("Debug & Service", "service"),
               ("GPIO Lanes", "lane")]
@@ -578,7 +590,8 @@ class PinMapWidget(QWidget):
                 qp.drawRoundedRect(QRectF(x - 1.5, y - 1.5, pw + 3, ph + 3), 2, 2)
             if pos in self.highlight:
                 qp.setBrush(Qt.NoBrush)
-                qp.setPen(QPen(QColor(ui_theme.cat("fivev")), 2.5))
+                pen = QPen(QColor(_TXT), 1.6); pen.setStyle(Qt.DashLine)   # dashed FG ring
+                qp.setPen(pen)
                 qp.drawRoundedRect(QRectF(x - 3.5, y - 3.5, pw + 7, ph + 7), 3, 3)
             if pos == self.selected:
                 qp.setBrush(Qt.NoBrush)
@@ -794,7 +807,7 @@ class ConnectionDiagram(QWidget):
             p.setFont(net_f); p.setPen(QColor(col))
             fm = QFontMetricsF(net_f)
             p.drawText(QRectF(dx + 12, ry + 24, dw - 22, 16), Qt.AlignLeft | Qt.AlignVCenter,
-                       fm.elidedText(br["to"], Qt.ElideRight, dw - 22))
+                       fm.elidedText(expandNet(br["to"]), Qt.ElideRight, dw - 22))
             label(dx + 12, ry + 40, dw - 22, sub_f, _MUT, br.get("to2") or "")
 
         if n > 1 and any(b["caption"].startswith("SWITCHED") for b in branches):
@@ -859,7 +872,7 @@ class ConnectionRow(QFrame):
             self._add_cell(grid, r, 0, br["caption"], "kind")
             via = br["via"] + (f"   ({br['via2']})" if br["via2"] else "")
             self._add_cell(grid, r, 1, via, "via")
-            self._add_cell(grid, r, 2, br["to"], "net", color=br["color"])
+            self._add_cell(grid, r, 2, expandNet(br["to"]), "net", color=br["color"])
             self._add_cell(grid, r, 3, br["to2"], "contact")
         gw = QWidget()
         gw.setLayout(grid)
@@ -1113,7 +1126,7 @@ class Stm32PinsWidget(QWidget):
             ("osc", "Oscillator", _SWITCH_COLOR[sdb.SWITCH_OSC_OPTIONAL]),
             ("fixed", "Fixed", None),
             ("breakout", "Breakout", _BREAKOUT_COLOR),
-            ("fivev", "5V-Tolerant", ui_theme.cat("fivev")),
+            ("fivev", "5V-Tolerant", None),
             ("io", "Per-Pin I/O", None),
             ("vdda", "VDDA (V)", None),
         ])
@@ -1210,12 +1223,15 @@ class Stm32PinsWidget(QWidget):
         return page
 
     def _pin_legend(self):
-        """A compact colour key for the pin/net-type palette."""
+        """Grayscale key: the switch-class luminance ramp (must-switch brightest →
+        fixed faint) plus the selection and breakout marks. Net category is shown as
+        an inline text tag, never a colour."""
         items = [
-            ("must", "Must-switch"), ("osc", "Oscillator"), ("fixed", "Fixed"),
-            ("breakout", "Breakout"), ("fivev", "5V-tolerant"),
-            ("power", "Power rail"), ("ground", "Ground"), ("lane", "IO lane"),
-            ("core", "Core cap"), ("service", "Service"),
+            ("Must-Switch", _T_MUST, "fill"),
+            ("Oscillator", _T_OSC, "fill"),
+            ("Fixed", _T_FIXED, "fill"),
+            ("Selected", _T_SEL, "ring"),
+            ("Breakout", _MUT, "dash"),
         ]
         w = QWidget()
         g = QGridLayout(w)
@@ -1223,13 +1239,18 @@ class Stm32PinsWidget(QWidget):
         g.setHorizontalSpacing(14)
         g.setVerticalSpacing(5)
         self._legend_dots = []
-        for i, (key, label) in enumerate(items):
-            row, col = divmod(i, 2)
+        for i, (label, col, kind) in enumerate(items):
+            row, cc = divmod(i, 2)
             cell = QHBoxLayout()
             cell.setSpacing(7)
             dot = QFrame()
-            dot.setFixedSize(9, 9)
-            dot.setStyleSheet(f"background:{ui_theme.cat(key)};border-radius:4px;")
+            dot.setFixedSize(11, 11)
+            if kind == "ring":
+                dot.setStyleSheet(f"background:transparent;border:2px solid {col};border-radius:3px;")
+            elif kind == "dash":
+                dot.setStyleSheet(f"background:transparent;border:1px dashed {col};border-radius:2px;")
+            else:
+                dot.setStyleSheet(f"background:{col};border-radius:2px;")
             self._legend_dots.append(dot)
             lbl = QLabel(label)
             lbl.setFont(QFont(_SVG_FONT.split(",")[0], 8))
@@ -1238,7 +1259,7 @@ class Stm32PinsWidget(QWidget):
             cell.addStretch(1)
             holder = QWidget()
             holder.setLayout(cell)
-            g.addWidget(holder, row, col)
+            g.addWidget(holder, row, cc)
         return w
 
     def _build_cells_page(self):
