@@ -41,11 +41,11 @@ from PyQt5.QtWidgets import (
     QPushButton, QLabel, QTextEdit, QTreeWidget, QTreeWidgetItem, QLineEdit,
     QListWidget, QListWidgetItem, QAbstractItemView, QTabBar, QStackedWidget,
     QComboBox, QCheckBox, QGroupBox, QFileDialog, QMessageBox, QInputDialog,
-    QHeaderView, QFrame, QScrollArea, QSizePolicy, QSplitter, QStyle,
-    QToolButton, QMenu, QProgressBar, QStatusBar, QSlider, QLayout, QTabWidget
+    QHeaderView, QFrame, QScrollArea, QSizePolicy, QSplitter,
+    QToolButton, QMenu, QProgressBar, QStatusBar, QSlider, QLayout
 )
 from PyQt5.QtCore import (
-    Qt, QTimer, pyqtSignal, QThread, QMimeData, QUrl, QObject, QSettings,
+    Qt, QTimer, pyqtSignal, QObject, QSettings,
     QRect, QSize, QPoint
 )
 from PyQt5.QtGui import (
@@ -134,22 +134,6 @@ def load_bundled_fonts() -> bool:
     except Exception:
         pass
     return loaded
-
-
-def gray_icon(style, sp, size: int = 16) -> QIcon:
-    """Return a desaturated (grayscale) version of a Qt standard icon so every
-    button glyph shares one neutral, monochrome style instead of the colorful
-    native shell icons."""
-    pm = style.standardIcon(sp).pixmap(size, size)
-    img = pm.toImage().convertToFormat(QImage.Format_ARGB32)
-    for y in range(img.height()):
-        for x in range(img.width()):
-            c = img.pixelColor(x, y)
-            if c.alpha() == 0:
-                continue
-            g = int(0.299 * c.red() + 0.587 * c.green() + 0.114 * c.blue())
-            img.setPixelColor(x, y, QColor(g, g, g, c.alpha()))
-    return QIcon(QPixmap.fromImage(img))
 
 
 # ---------------------------------------------------------------------------
@@ -1416,6 +1400,16 @@ def filter_rows(rows: List[Dict[str, object]], query: str, type_filter: str,
     return out
 
 
+# The active theme colour dict, published by the main window's _apply_theme so the
+# custom-painted widgets below (DropZone, PreviewView) can follow the theme instead
+# of hardcoding dark colours.
+_UI_THEME: dict = {}
+
+
+def _tc(key, fallback):
+    return _UI_THEME.get(key, fallback)
+
+
 # -----------------------------
 # Custom Drop Zone Widget
 # -----------------------------
@@ -1449,7 +1443,6 @@ class DropZone(QFrame):
         # Label inside dashed box
         self.label = QLabel("Drop ZIP Files Here")
         self.label.setAlignment(Qt.AlignCenter)
-        self.label.setStyleSheet("font-size: 10pt; color: #808088; background: transparent;")
         inner.addStretch()
         inner.addWidget(self.label)
 
@@ -1461,10 +1454,8 @@ class DropZone(QFrame):
 
         layout.addWidget(self.dash_box)
 
-        # Styles for dashed box (will be used/changed on hover)
-        self.default_style = "QFrame#dashBox { border: 1px dashed #6a6a72; border-radius: 8px; background: transparent; }"
-        self.hover_style = "QFrame#dashBox { border: 1px dashed #90909a; border-radius: 8px; background: rgba(128,128,128,0.10); }"
-        self.dash_box.setStyleSheet(self.default_style)
+        # Dashed-box + label styles, built from the active theme (re-applied on switch)
+        self.restyle()
 
         # Hook dash_box event handlers to forward to parent signals
         def _dash_dragEnterEvent(event):
@@ -1489,7 +1480,18 @@ class DropZone(QFrame):
         self.dash_box.dragEnterEvent = _dash_dragEnterEvent
         self.dash_box.dragLeaveEvent = _dash_dragLeaveEvent
         self.dash_box.dropEvent = _dash_dropEvent
-   
+
+    def restyle(self):
+        """Build the dashed-box and label styles from the active theme. Uses FG_DIM
+        for the dashed border so the drop zone stays visible in both themes."""
+        edge = _tc("FG_DIM", "#6a6a72")
+        self.default_style = (f"QFrame#dashBox {{ border: 1px dashed {edge}; "
+                              f"border-radius: 8px; background: transparent; }}")
+        self.hover_style = (f"QFrame#dashBox {{ border: 1px dashed {_tc('FG', '#90909a')}; "
+                            f"border-radius: 8px; background: rgba(128,128,128,0.10); }}")
+        self.dash_box.setStyleSheet(self.default_style)
+        self.label.setStyleSheet(f"font-size: 10pt; color: {edge}; background: transparent;")
+
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
@@ -1553,8 +1555,8 @@ class PreviewView(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
         r = self.rect().adjusted(1, 1, -1, -1)
-        p.setPen(QPen(QColor("#33333a"), 1))
-        p.setBrush(QBrush(QColor("#151517")))
+        p.setPen(QPen(QColor(_tc("BORDER", "#33333a")), 1))
+        p.setBrush(QBrush(QColor(_tc("LOG_BG", "#151517"))))
         p.drawRoundedRect(r, 10, 10)
         p.setClipRect(r)
         if self._mesh is not None:
@@ -1563,7 +1565,7 @@ class PreviewView(QWidget):
                 fp_render.paint_mesh(p, self.width(), self.height(),
                                      self._mesh[0], self._mesh[1],
                                      self._rx, self._ry, self._zoom)
-                p.setPen(QColor("#90909a"))
+                p.setPen(QColor(_tc("FG_DIM", "#90909a")))
                 p.drawText(self.rect().adjusted(0, 0, -12, -8),
                            Qt.AlignRight | Qt.AlignBottom, "Drag to rotate · scroll to zoom")
             except Exception:
@@ -1573,7 +1575,7 @@ class PreviewView(QWidget):
             y = (self.height() - self._pixmap.height()) // 2
             p.drawPixmap(x, y, self._pixmap)
         else:
-            p.setPen(QColor("#b8b8c0"))
+            p.setPen(QColor(_tc("SEC_FG", "#b8b8c0")))
             p.drawText(self.rect(), Qt.AlignCenter, self._text)
         p.end()
 
@@ -1895,20 +1897,6 @@ class LibraryManagerWindow(QMainWindow):
         self.stm32_widget = Stm32PinsWidget(self)
         return self.stm32_widget
 
-    def create_header(self) -> CardWidget:
-        """Create header with repo info"""
-        card = CardWidget("")
-        card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        layout = card.contentLayout()
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(2)
-
-        # Header is intentionally minimal; control buttons moved into the Workflow area
-        h = QHBoxLayout()
-        h.addStretch()
-        layout.addLayout(h)
-
-        return card
 
     # -------------------------------------------------------------------
     # Header bar + status bar + feedback
@@ -2146,7 +2134,7 @@ class LibraryManagerWindow(QMainWindow):
         """Fix every placed part's footprint + 3D-model links across the whole
         shared library, and register the libs + ${MY3DMODELS} in KiCad."""
         reply = QMessageBox.question(
-            self, "Repair Footprints and Models in KICAD",
+            self, "Repair Footprints and Models in KiCad",
             "Rewrite every symbol's footprint to MyFootprints:<name>, add the "
             "${MY3DMODELS}/<file> 3D-model line to each footprint (best-name "
             "match), and register the libraries + ${MY3DMODELS} in KiCad?\n\n"
@@ -2293,31 +2281,6 @@ class LibraryManagerWindow(QMainWindow):
             except Exception as e:
                 self.log_signal.emit(f"Periodic auto-pull failed: {e}")
         self._spawn(_pull)
-    def create_drop_zone(self) -> CardWidget:
-        """Create drag-and-drop zone"""
-        card = CardWidget("Drop Zone")
-        card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        layout = card.contentLayout()
-        layout.setContentsMargins(8, 6, 8, 6)
-        layout.setSpacing(6)
-
-        # Custom drop zone widget
-        self.drop_zone = DropZone()
-        self.drop_zone.setMinimumHeight(48)
-        self.drop_zone.setMaximumHeight(70)
-        self.drop_zone.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.drop_zone.files_dropped.connect(self.handle_dropped_files)
-        layout.addWidget(self.drop_zone)
-
-        # Wire the drop zone's internal checkbox to window state
-        try:
-            self.drop_zone.chk_process.stateChanged.connect(lambda s: setattr(self, 'process_on_drop', bool(s)))
-            # initialize state from the widget
-            self.process_on_drop = bool(self.drop_zone.chk_process.isChecked())
-        except Exception:
-            # Fallback: keep existing default
-            pass
-        return card
    
     def create_workflow(self) -> CardWidget:
         """Workflow column, grouped by purpose: Import / Sync / Maintenance,
@@ -2373,10 +2336,10 @@ class LibraryManagerWindow(QMainWindow):
 
         # ── Maintenance: library-wide fixes ────────────────────────────────
         section("Maintenance")
-        add_btn("Repair Footprints and Models in KICAD", self.do_repair_library, "wrench", LUCIDE_AMBER)
+        add_btn("Repair Footprints and Models in KiCad", self.do_repair_library, "wrench", LUCIDE_AMBER)
         add_btn("Remove Duplicates", self.on_remove_duplicates, "copy-x", LUCIDE_NEUTRAL)
         add_btn("Export Catalog", self.do_export_catalog, "package", LUCIDE_NEUTRAL)
-        add_btn("Register Libs in KiCad", self.do_register_kicad, "link-2", LUCIDE_NEUTRAL)
+        add_btn("Register Libraries in KiCad", self.do_register_kicad, "link-2", LUCIDE_NEUTRAL)
 
         # ── More… (rarely used) ────────────────────────────────────────────
         adv_menu = QMenu(card)
@@ -2531,7 +2494,7 @@ class LibraryManagerWindow(QMainWindow):
         actions = [
             ("Refresh", ("refresh-cw", LUCIDE_NEUTRAL), self.refresh_library),
             ("Open", ("folder-open", LUCIDE_NEUTRAL), self.on_tree_open),
-            ("Open in KICAD", ("external-link", LUCIDE_NEUTRAL), self.open_in_kicad),
+            ("Open in KiCad", ("external-link", LUCIDE_NEUTRAL), self.open_in_kicad),
             ("Delete", ("trash-2", LUCIDE_RED), self.on_tree_delete),
         ]
         for i, (label, (icon_name, icon_color), cb) in enumerate(actions):
@@ -2666,7 +2629,6 @@ class LibraryManagerWindow(QMainWindow):
             self.preview_info.setText(f"{name}  ·  symbol in {path.name}  ·  {date}")
    
     
-   
     def create_log_panel(self) -> CardWidget:
         """Create log panel"""
         # Use empty title so we can place the Log/Activity tab bar in the title area
@@ -3073,10 +3035,16 @@ class LibraryManagerWindow(QMainWindow):
         self.setStyleSheet(self._build_qss(self._theme))
 
     def _apply_theme(self, dark: bool):
+        global _UI_THEME
         self._is_dark = dark
         self._theme = self._DARK_COLORS if dark else self._LIGHT_COLORS
+        _UI_THEME = self._theme               # publish for the custom-painted widgets
         self.setPalette(self._theme_palette(self._theme))
         self._restyle()
+        if hasattr(self, "drop_zone"):
+            self.drop_zone.restyle()
+        if hasattr(self, "preview"):
+            self.preview.update()
         if hasattr(self, "central"):
             self.central.setStyleSheet("")   # background now comes from #rootCentral
         # sun in dark mode (click -> light), moon in light mode (click -> dark)
@@ -3101,11 +3069,6 @@ class LibraryManagerWindow(QMainWindow):
             except Exception:
                 pass
 
-    def apply_dark_theme(self):
-        self._apply_theme(True)
-
-    def apply_light_theme(self):
-        self._apply_theme(False)
 
     def toggle_theme(self):
         self._apply_theme(not self._is_dark)
@@ -3180,20 +3143,6 @@ class LibraryManagerWindow(QMainWindow):
         self.update_format_btn_text()
         self.on_filter_change()
 
-    def on_format_all_toggled(self, checked: bool):
-        # Toggle all checkboxes
-        for lbl, act in self.format_checks.items():
-            act.blockSignals(True)
-            act.setChecked(checked)
-            act.blockSignals(False)
-
-        if checked:
-            self.format_filters = set(self.format_checks.keys())
-        else:
-            self.format_filters = set()
-
-        self.update_format_btn_text()
-        self.on_filter_change()
 
     def update_format_btn_text(self):
         if not hasattr(self, 'format_filters'):
@@ -3217,7 +3166,7 @@ class LibraryManagerWindow(QMainWindow):
         file type). Symbols open the shared .kicad_sym in the Symbol Editor."""
         items = self.tree.selectedItems()
         if not items:
-            QMessageBox.information(self, "Open in KICAD", "No item selected.")
+            QMessageBox.information(self, "Open in KiCad", "No item selected.")
             return
         # distinct targets (all symbols share one .kicad_sym -> open it once)
         targets = []
@@ -3230,23 +3179,23 @@ class LibraryManagerWindow(QMainWindow):
                 targets.append(target)
         if len(targets) > 8:
             if QMessageBox.question(
-                self, "Open in KICAD",
-                f"Open {len(targets)} items in KICAD?",
+                self, "Open in KiCad",
+                f"Open {len(targets)} items in KiCad?",
                 QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
                 return
         if find_kicad_dir() is None:
             QMessageBox.warning(
-                self, "Open in KICAD",
+                self, "Open in KiCad",
                 "KiCad does not appear to be installed under Program Files.\n"
                 "Opening with the default associated app instead."
             )
         for target in targets:
             if not target.exists():
-                self.log.write(f"Open in KICAD: missing {target.name}")
+                self.log.write(f"Open in KiCad: missing {target.name}")
                 continue
             try:
                 os.startfile(str(target))   # KiCad registers .kicad_mod/.kicad_sym/.step
-                self.log.write(f"Open in KICAD: {target.name}")
+                self.log.write(f"Open in KiCad: {target.name}")
             except Exception as e:
                 self.log.write(f"Open in KiCad failed for {target.name}: {e}")
 

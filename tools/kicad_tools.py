@@ -12,7 +12,6 @@ these operate on whatever **KiCad projects folder** you point them at — projec
 are discovered generically (any folder containing a .kicad_pro, ignoring
 .history). The reusable cores are vendored as nd_*.py (pure stdlib).
 """
-import os
 import sys
 import subprocess
 from pathlib import Path
@@ -23,29 +22,15 @@ from PyQt5.QtWidgets import (
     QComboBox, QCheckBox, QListWidget, QListWidgetItem, QPlainTextEdit, QTabWidget,
     QTableWidget, QTableWidgetItem, QFormLayout, QDoubleSpinBox, QFileDialog,
     QMessageBox, QAbstractItemView, QHeaderView, QSizePolicy, QApplication,
-    QColorDialog, QScrollArea, QToolButton, QMenu, QWidgetAction, QStyle
+    QColorDialog, QScrollArea, QToolButton, QMenu, QWidgetAction
 )
-from PyQt5.QtGui import QColor, QIcon, QImage, QPixmap, QPainter
+from PyQt5.QtGui import QColor, QIcon, QPixmap, QPainter
 from PyQt5.QtCore import Qt
 try:
     from PyQt5.QtSvg import QSvgRenderer
     _HAVE_QTSVG = True
 except Exception:
     _HAVE_QTSVG = False
-
-
-def _gray_icon(style, sp, size: int = 16) -> QIcon:
-    """Desaturated standard icon so all glyphs share one neutral style."""
-    pm = style.standardIcon(sp).pixmap(size, size)
-    img = pm.toImage().convertToFormat(QImage.Format_ARGB32)
-    for y in range(img.height()):
-        for x in range(img.width()):
-            c = img.pixelColor(x, y)
-            if c.alpha() == 0:
-                continue
-            g = int(0.299 * c.red() + 0.587 * c.green() + 0.114 * c.blue())
-            img.setPixelColor(x, y, QColor(g, g, g, c.alpha()))
-    return QIcon(QPixmap.fromImage(img))
 
 
 # Lucide icons (MIT), tinted — matches the main window. SVGs bundled in tools/lucide/.
@@ -168,7 +153,7 @@ class KiCadToolsWidget(QWidget):
             ("min_microvia_diameter", "Min µVia Diameter"),
             ("min_microvia_drill", "Min µVia Drill"),
             ("min_copper_edge_clearance", "Min Copper-to-Edge"),
-            ("min_silk_clearance", "Min Silk Clearance"),
+            ("min_silk_clearance", "Min Silkscreen Clearance"),
         ]),
         ("Solder Mask / Paste", [
             ("solder_mask_clearance", "Mask Clearance"),
@@ -187,7 +172,6 @@ class KiCadToolsWidget(QWidget):
         # --- Projects card: folder + a compact multi-select dropdown ---
         pcard, pl = self._card("KiCad Projects")
         top = QHBoxLayout()
-        st = self.style()
         top.addWidget(QLabel("Folder:"))
         self.dir_edit = QLineEdit(projects_dir or "")
         top.addWidget(self.dir_edit, 1)
@@ -317,7 +301,7 @@ class KiCadToolsWidget(QWidget):
         self.op_combo.currentIndexChanged.connect(self._op_changed)
         form.addRow("Operation:", self.op_combo)
 
-        self.tag_edit = QLineEdit(); self.tag_edit.setPlaceholderText("E.g.  SH-   or   CG-")
+        self.tag_edit = QLineEdit(); self.tag_edit.setPlaceholderText("E.g. SH- or CG-")
         self.find_edit = QLineEdit(); self.find_edit.setPlaceholderText("Find text")
         self.repl_edit = QLineEdit(); self.repl_edit.setPlaceholderText("Replace with")
         form.addRow("Tag:", self.tag_edit)
@@ -328,7 +312,8 @@ class KiCadToolsWidget(QWidget):
 
         scope_box = QFrame(); scope_box.setObjectName("card")
         sb = QVBoxLayout(scope_box); sb.setContentsMargins(10, 8, 10, 8); sb.setSpacing(4)
-        sb.addWidget(QLabel("Scope"))
+        _scope_title = QLabel("Scope"); _scope_title.setObjectName("cardTitle")
+        sb.addWidget(_scope_title)
         self.chk_sch_labels = QCheckBox("Schematic Labels / Nets"); self.chk_sch_labels.setChecked(True)
         self.chk_sch_refs = QCheckBox("Schematic References"); self.chk_sch_refs.setChecked(True)
         self.chk_pcb_refs = QCheckBox("PCB References"); self.chk_pcb_refs.setChecked(True)
@@ -337,11 +322,10 @@ class KiCadToolsWidget(QWidget):
 
         v.addStretch(1)
 
-        st = self.style()
         btns = QHBoxLayout()
         b_prev = QPushButton("Preview"); b_prev.setIcon(_lucide("list-checks", _LU_NEUTRAL))
         b_prev.clicked.connect(lambda: self._run_rename(apply=False))
-        b_apply = QPushButton("Apply  (Creates .bak)"); b_apply.setIcon(_lucide("pencil", _LU_GREEN))
+        b_apply = QPushButton("Apply (Creates .bak)"); b_apply.setIcon(_lucide("pencil", _LU_GREEN))
         b_apply.clicked.connect(lambda: self._run_rename(apply=True))
         b_erc = QPushButton("Run ERC"); b_erc.setIcon(_lucide("play", _LU_GREEN))
         b_erc.clicked.connect(self._run_erc)
@@ -448,7 +432,6 @@ class KiCadToolsWidget(QWidget):
     # ============================================================ NET CLASSES
     def _build_netclass_tab(self) -> QWidget:
         w = QWidget(); v = QVBoxLayout(w); v.setSpacing(8)
-        st = self.style()
         bar = QHBoxLayout(); bar.setSpacing(6)
         for label, icon_name, icon_color, fn in [
             ("Load Vault Standard", "folder-open", _LU_NEUTRAL, self._nc_load_template),
@@ -655,7 +638,6 @@ class KiCadToolsWidget(QWidget):
 
     # ========================================================= PROJECT SETTINGS
     def _build_settings_tab(self) -> QWidget:
-        st = self.style()
         outer = QWidget(); ov = QVBoxLayout(outer)
         bar = QHBoxLayout()
         b_load = QPushButton("Load from Project"); b_load.setIcon(_lucide("folder", _LU_NEUTRAL))

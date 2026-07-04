@@ -16,7 +16,7 @@ from PyQt5.QtGui import QColor, QBrush, QPainter, QPen, QFont, QFontMetricsF
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox, QLineEdit,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QSizePolicy,
-    QFileDialog, QMessageBox, QApplication, QSplitter, QTextEdit, QStackedWidget,
+    QFileDialog, QMessageBox, QApplication, QSplitter, QStackedWidget,
     QFrame, QScrollArea,
 )
 
@@ -96,17 +96,6 @@ def _numlist(nums, per: int = 6) -> str:
     return " &nbsp;&nbsp;".join(f"<span style='white-space:nowrap'>{g}</span>" for g in groups)
 
 
-def _5v_suffix(five_v) -> str:
-    """Compact 5V-tolerance token for the Tags cell."""
-    if not five_v:
-        return ""
-    if five_v["tolerant"]:
-        return " · 5V-Tolerant" + (" (not as oscillator)" if five_v.get("caveat") == "osc-mode" else "")
-    if any(five_v["by_family"].values()):
-        return " · 5V (part-dependent)"
-    return " · 3.3V only"
-
-
 def _tag_summary(tags: dict) -> str:
     out = []
     if tags.get("is_debug"):
@@ -138,7 +127,7 @@ def _pin_detail_html(p: dict) -> str:
     if fv is None:
         fvt = "n/a (non-GPIO)"
     elif fv["tolerant"]:
-        fvt = "5V-Tolerant" + (" (except in osc mode)" if fv.get("caveat") == "osc-mode" else "")
+        fvt = "5V-Tolerant" + (" (except in oscillator mode)" if fv.get("caveat") == "osc-mode" else "")
     elif any(fv["by_family"].values()):
         fam = ", ".join(f"{k.replace('STM32', '')}={'5V' if v else '3V3'}"
                         for k, v in fv["by_family"].items())
@@ -198,7 +187,7 @@ def _summary_html(a: dict) -> str:
     lists_html = (
         "<p><b>Pin lists (socket #):</b></p><table cellspacing='0'>"
         + _row("Must-Switch", _SWITCH_COLOR[sdb.SWITCH_MUST], cats["must_switch"])
-        + _row("Oscillator (optional)", _SWITCH_COLOR[sdb.SWITCH_OSC_OPTIONAL], cats["osc_optional"])
+        + _row("Oscillator (Optional)", _SWITCH_COLOR[sdb.SWITCH_OSC_OPTIONAL], cats["osc_optional"])
         + _row("Breakout", _BREAKOUT_COLOR, cats["breakout"])
         + _row("5V all-parts", _MUT, cats["five_v_all_parts"])
         + _row("Never 5V", _MUT, cats["five_v_never"])
@@ -283,7 +272,7 @@ def pin_map_svg(authority: dict, w: int = 460, h: int = 460, selected=None) -> s
     bl, bt, bw, bh = g["body"]
     s = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" '
          f'font-family="Inter,Segoe UI,Arial,sans-serif"><rect width="{w}" height="{h}" fill="{_PANEL}"/>',
-         f'<rect x="{bl}" y="{bt}" width="{bw}" height="{bh}" rx="8" fill="#1c1c1f" '
+         f'<rect x="{bl}" y="{bt}" width="{bw}" height="{bh}" rx="8" fill="{_BODY}" '
          f'stroke="{_LINE}" stroke-width="1.5"/>',
          f'<text x="{bl+bw/2}" y="{bt+bh/2}" fill="{_MUT}" text-anchor="middle" '
          f'font-size="12">{html.escape(authority["package"])}</text>']
@@ -296,7 +285,7 @@ def pin_map_svg(authority: dict, w: int = 460, h: int = 460, selected=None) -> s
                      f'fill="none" stroke="{_BREAKOUT_COLOR}" stroke-width="2"/>')
         if pin["pos"] == selected:
             s.append(f'<rect x="{x-3}" y="{y-3}" width="{pwd+6}" height="{ph+6}" rx="4" '
-                     f'fill="none" stroke="#ffffff" stroke-width="2"/>')
+                     f'fill="none" stroke="{_TXT}" stroke-width="2"/>')
     s.append("</svg>")
     return "".join(s)
 
@@ -337,11 +326,11 @@ def _pin_branches(a: dict, pos: int, cw: dict = None):
                  f"Source {c['s_pin']} Pin {c['s_pin_num']} · Drain {c['d_pin']} Pin {c['d_pin_num']}", None),
                 (c["rail"], rail_sub, pcol)]))
             branches.append(("DEFAULT IO LANE", [
-                ("33 Ω Series Resistor", "R_IO", None),
+                ("33 Ω Series Resistor", "", None),
                 (c["card_lane"], "Lane Row", _CAT_COLOR["lane"])]))
     elif kind == "resistor":
         branches.append(("IO LANE", [
-            ("33 Ω Series Resistor", "R_IO", None),
+            ("33 Ω Series Resistor", "", None),
             (conn["dest"], "Lane Row", _CAT_COLOR["lane"])]))
     else:
         branches.append(("DIRECT", [
@@ -602,8 +591,8 @@ class ConnectionRow(QFrame):
                              f"{html.escape(title)}</span>"
                              f"<span style='color:{_MUT}'> &#183; {html.escape(sub)}</span>")
             else:                                         # component (switch / resistor)
-                parts.append(f"{arrow}<span style='color:{_TXT}'>{html.escape(title)}</span>"
-                             f"<span style='color:{_MUT}'> ({html.escape(sub)})</span>")
+                detail = f"<span style='color:{_MUT}'> ({html.escape(sub)})</span>" if sub else ""
+                parts.append(f"{arrow}<span style='color:{_TXT}'>{html.escape(title)}</span>{detail}")
         cap = (f"<span style='color:#a2a2a8;font-weight:700;font-size:8pt;"
                f"letter-spacing:0.6px'>{caption}</span> &nbsp; ")
         return f"<span style='font-size:9pt'>{cap}{''.join(parts)}</span>"
@@ -853,7 +842,7 @@ class Stm32PinsWidget(QWidget):
         frow = QHBoxLayout()
         frow.addWidget(QLabel("Show:"))
         self.filter_combo = QComboBox()
-        self.filter_combo.addItems(["All", "Must Switch", "Oscillator", "Fixed",
+        self.filter_combo.addItems(["All", "Must-Switch", "Oscillator", "Fixed",
                                     "Breakout", "5V-Tolerant", "Never 5V"])
         self.filter_combo.currentTextChanged.connect(self._apply_filter)
         frow.addWidget(self.filter_combo)
@@ -1057,7 +1046,7 @@ class Stm32PinsWidget(QWidget):
         periph = self.periph_combo.currentText()
         periph = None if periph in ("", "Any Peripheral") else periph
         want_class = {
-            "Must Switch": sdb.SWITCH_MUST,
+            "Must-Switch": sdb.SWITCH_MUST,
             "Oscillator": sdb.SWITCH_OSC_OPTIONAL,
             "Fixed": sdb.SWITCH_NONE,
         }.get(want)
@@ -1129,7 +1118,7 @@ class Stm32PinsWidget(QWidget):
             return
         cats = sauth.category_lists(self.authority)
         lines = [f"{self.authority['package']} pin lists (socket #):"]
-        for key, lab in [("must_switch", "Must-Switch"), ("osc_optional", "Osc-Optional"),
+        for key, lab in [("must_switch", "Must-Switch"), ("osc_optional", "Oscillator (Optional)"),
                          ("fixed", "Fixed"), ("breakout", "Breakout"),
                          ("five_v_all_parts", "5V all-parts"), ("five_v_never", "Never 5V")]:
             nums = cats[key]
