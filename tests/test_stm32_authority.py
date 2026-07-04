@@ -508,7 +508,7 @@ class AuthorityTests(unittest.TestCase):
         # at refdes level (socket refdes, cell refdes, receptacle contact)
         row = w.conn_list._rows[1]
         text = " ".join(lbl.text() for lbl, _r, _c in row._cells)
-        self.assertIn("VBAT_TGT", text)                              # delivered rail
+        self.assertIn("VBAT_TARGET", text)                           # delivered rail (display-expanded)
         self.assertIn("J_CARD1_LA 33", text)                         # receptacle contact
         self.assertIn("CARD_LANE_001", text)                         # default lane path too
         self.assertIn("J_SOCKET64_1", w.conn_list.chain.text())     # chain header refdes
