@@ -477,7 +477,7 @@ class AuthorityTests(unittest.TestCase):
             self.assertTrue(w.pin_map.highlight)                      # peripheral -> highlight
         # Map view: the pin map beside the full connection fabric (one card per pin,
         # every physical path shown, category-filterable and re-sortable).
-        w.view_combo.setCurrentText("Map")
+        w.rail.select("map")
         self.assertEqual(len(w.conn_list._rows), 64)                 # every socket pin listed
         w._select(1)
         self.assertEqual(w.conn_list._sel, 1)                        # selection follows the map

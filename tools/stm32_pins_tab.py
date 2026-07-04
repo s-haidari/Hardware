@@ -26,13 +26,14 @@ from PyQt5.QtWidgets import (
 # reassigns these; the SVG generators and paintEvents read them at call time,
 # so a swap + refresh is enough.
 import ui_theme
+import ui_widgets as uw
 
 _PANEL = _CARD = _TXT = _MUT = _LINE = _BODY = ""
 
 
 def set_tab_theme(dark: bool):
     global _PANEL, _CARD, _TXT, _MUT, _LINE, _BODY
-    t = ui_theme.DARK_COLORS if dark else ui_theme.LIGHT_COLORS
+    t = ui_theme.set_theme(dark)   # publish active theme for the shared kit widgets too
     _PANEL = t["MAIN_BG"]      # panel background
     _CARD = t["CARD_BG"]       # card surfaces
     _TXT = t["FG"]             # primary text
@@ -619,48 +620,6 @@ class PinMapWidget(QWidget):
             self.pinClicked.emit(pin["pos"])
 
 
-class _MiniStat(QFrame):
-    """One instrument readout: a mono value over a small uppercase label, with a
-    whisper-volume colour tick between them for the categories that carry one.
-    No box — the readout band rules stats apart with hairlines, like the fascia
-    of a bench meter."""
-    def __init__(self, label, accent=None, parent=None):
-        super().__init__(parent)
-        self.setObjectName("miniStat")
-        self._accent = accent
-        self.setMinimumWidth(86)
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(14, 3, 14, 5)
-        lay.setSpacing(2)
-        self._v = QLabel("–")
-        vf = QFont(_SVG_MONO.split(",")[0].strip("'"))
-        vf.setPointSizeF(11.5)
-        vf.setWeight(QFont.DemiBold)
-        self._v.setFont(vf)
-        self._tick = QFrame()
-        self._tick.setFixedSize(12, 2)
-        self._l = QLabel(label.upper())
-        lf = QFont(_SVG_FONT.split(",")[0])
-        lf.setPointSizeF(6.5)
-        lf.setBold(True)
-        lf.setLetterSpacing(QFont.AbsoluteSpacing, 1.1)
-        self._l.setFont(lf)
-        lay.addWidget(self._v)
-        lay.addWidget(self._tick)
-        lay.addWidget(self._l)
-        self.restyle()
-
-    def restyle(self):
-        self.setStyleSheet("#miniStat{background:transparent;}")
-        self._v.setStyleSheet(f"color:{_TXT};")
-        self._tick.setStyleSheet(
-            f"background:{self._accent or 'transparent'};border:none;")
-        self._tick.setVisible(bool(self._accent))
-        self._l.setStyleSheet(f"color:{_MUT};")
-
-    def set(self, value):
-        self._v.setText(str(value))
-
 
 class ConnectionRow(QFrame):
     """One pin of the wiring table: pin + name in a fixed left column, then one
@@ -934,88 +893,76 @@ class Stm32PinsWidget(QWidget):
         self._building = False
 
         root = QVBoxLayout(self)
-        root.setSpacing(8)
+        root.setContentsMargins(16, 12, 16, 12)
+        root.setSpacing(10)
 
-        # ── controls ───────────────────────────────────────────────
-        bar = QHBoxLayout()
-        bar.setSpacing(6)
-        bar.addWidget(QLabel("Package:"))
+        # ── toolbar: package selector on the left, actions on the right ──
+        bar = uw.toolbar_row()
+        pkg_lbl = QLabel("Package")
+        pkg_lbl.setStyleSheet("font-weight:600;")
+        bar.addWidget(pkg_lbl)
         self.pkg_combo = QComboBox()
         self.pkg_combo.addItems(["LQFP64", "LQFP100"])   # vault export set (default)
         self.pkg_combo.currentTextChanged.connect(lambda p: self.load(p))
         self._packages_populated = False
         bar.addWidget(self.pkg_combo)
-
-        self.btn_build = QPushButton("Build Database")
-        self.btn_build.setIcon(lucide_icon("wrench", LUCIDE_AMBER))
+        bar.addStretch()
+        self.btn_build = uw.button("Build Database", "default", lucide_icon("wrench", LUCIDE_AMBER))
         self.btn_build.clicked.connect(self.build_database)
         bar.addWidget(self.btn_build)
-
-        self.btn_gen = QPushButton("Export Pin Data")
-        self.btn_gen.setIcon(lucide_icon("save", LUCIDE_GREEN))
+        self.btn_gen = uw.button("Export Pin Data", "default", lucide_icon("save", LUCIDE_GREEN))
         self.btn_gen.clicked.connect(self.generate)
         bar.addWidget(self.btn_gen)
-
-        self.btn_vault = QPushButton("Save to Vault")
-        self.btn_vault.setIcon(lucide_icon("file-up", LUCIDE_GREEN))
+        self.btn_vault = uw.button("Save to Vault", "primary", lucide_icon("file-up", LUCIDE_GREEN))
         self.btn_vault.setToolTip("Write the pin data into the Obsidian Brain vault")
         self.btn_vault.clicked.connect(self.generate_to_vault)
         bar.addWidget(self.btn_vault)
-        bar.addStretch()
-
-        bar.addWidget(QLabel("View:"))
-        self.view_combo = QComboBox()
-        self.view_combo.addItems(["Map", "Table", "Cells"])
-        self.view_combo.currentIndexChanged.connect(lambda i: self.stack.setCurrentIndex(i))
-        bar.addWidget(self.view_combo)
         root.addLayout(bar)
 
         self.status = QLabel("")
         self.status.setObjectName("headerStatus")
         root.addWidget(self.status)
 
-        # ── top strip: package identity + compact stat cards (no wall of text) ──
-        self._readout = QFrame()
-        self._readout.setObjectName("readout")
-        strip = QHBoxLayout(self._readout)
-        strip.setContentsMargins(0, 0, 0, 4)
-        strip.setSpacing(0)
-        self.pkg_name = QLabel("")
-        self.pkg_sub = QLabel("")
-        idbox = QVBoxLayout()
-        idbox.setContentsMargins(2, 3, 18, 3)
-        idbox.setSpacing(0)
-        idbox.addWidget(self.pkg_name)
-        idbox.addWidget(self.pkg_sub)
-        strip.addLayout(idbox)
-        self._stats = {}
-        self._seps = []
-        for key, label, accent in [
-                ("must", "Must-Switch", _SWITCH_COLOR[sdb.SWITCH_MUST]),
-                ("osc", "Oscillator", _SWITCH_COLOR[sdb.SWITCH_OSC_OPTIONAL]),
-                ("fixed", "Fixed", None),
-                ("breakout", "Breakout", _BREAKOUT_COLOR),
-                ("fivev", "5V-Tolerant", "#24b196"),
-                ("io", "Per-Pin I/O", None),
-                ("vdda", "VDDA (V)", None)]:
-            sep = QFrame()
-            sep.setFixedWidth(1)
-            self._seps.append(sep)
-            strip.addWidget(sep)
-            b = _MiniStat(label, accent)
-            self._stats[key] = b
-            strip.addWidget(b)
-        strip.addStretch()
-        root.addWidget(self._readout)
-        self._restyle_strip()
+        # ── readout band (shared instrument fascia) ──
+        self.readout = uw.ReadoutBand([
+            ("must", "Must-Switch", _SWITCH_COLOR[sdb.SWITCH_MUST]),
+            ("osc", "Oscillator", _SWITCH_COLOR[sdb.SWITCH_OSC_OPTIONAL]),
+            ("fixed", "Fixed", None),
+            ("breakout", "Breakout", _BREAKOUT_COLOR),
+            ("fivev", "5V-Tolerant", "#24b196"),
+            ("io", "Per-Pin I/O", None),
+            ("vdda", "VDDA (V)", None),
+        ])
+        root.addWidget(self.readout)
 
-        # ── stacked views: Overview | Table | Connections ──
+        # ── body: left rail (views) beside the stacked view ──
         self._sel_pos = None
         self.stack = QStackedWidget()
         self.stack.addWidget(self._build_overview_page())
         self.stack.addWidget(self._build_table_page())
         self.stack.addWidget(self._build_cells_page())
-        root.addWidget(self.stack, 1)
+        self._view_index = {"map": 0, "table": 1, "cells": 2}
+
+        self.rail = uw.Rail(150)
+        self.rail.add_group("View")
+        self.rail.add_item("map", "Map")
+        self.rail.add_item("table", "Table")
+        self.rail.add_item("cells", "Cells")
+        self.rail.selected.connect(lambda k: self.stack.setCurrentIndex(self._view_index[k]))
+        self._railwrap = QWidget()
+        rwl = QVBoxLayout(self._railwrap)
+        rwl.setContentsMargins(0, 0, 12, 0)
+        rwl.setSpacing(0)
+        rwl.addWidget(self.rail)
+        rwl.addStretch(1)
+
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
+        body.addWidget(self._railwrap)
+        body.addWidget(self.stack, 1)
+        root.addLayout(body, 1)
+        self._restyle_strip()
 
         # ── live file-watch: reload when the DB is rebuilt on disk ──
         self._watcher = QFileSystemWatcher(self)
@@ -1128,7 +1075,7 @@ class Stm32PinsWidget(QWidget):
         self.table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.table.itemSelectionChanged.connect(self._on_table_select)
         # clicking a row jumps to the Map screen with that pin selected
-        self.table.cellClicked.connect(lambda *_: self.view_combo.setCurrentText("Map"))
+        self.table.cellClicked.connect(lambda *_: self.rail.select("map"))
         lay.addWidget(self.table, 1)
         return page
 
@@ -1175,16 +1122,10 @@ class Stm32PinsWidget(QWidget):
             self._select(self._sel_pos)
 
     def _restyle_strip(self):
-        self._readout.setStyleSheet(
-            f"#readout{{background:transparent;border:none;"
-            f"border-bottom:1px solid {_LINE};}}")
-        self.pkg_name.setStyleSheet(f"color:{_TXT};font-size:16px;font-weight:700;")
-        self.pkg_sub.setStyleSheet(
-            f"color:{_MUT};font-size:9px;font-family:'JetBrains Mono';")
-        for sep in self._seps:
-            sep.setStyleSheet(f"background:{_LINE};border:none;")
-        for b in self._stats.values():
-            b.restyle()
+        self.readout.restyle()
+        self._railwrap.setStyleSheet(
+            f"background:transparent;border-right:1px solid {_LINE};")
+        self.rail.restyle()
 
     # ── data ───────────────────────────────────────────────────────
     def _populate_packages(self):
@@ -1319,15 +1260,15 @@ class Stm32PinsWidget(QWidget):
         vdda = el.get("vdda_range_v") or el.get("vdd_range_v")
         fv = el.get("five_v_positions", {})
         # top strip: identity + one number per stat card
-        self.pkg_name.setText(a["package"])
-        self.pkg_sub.setText(f"{a['manifest']['part_count']} parts · {r['positions_total']} pins")
-        self._stats["must"].set(r["must_switch_count"])
-        self._stats["osc"].set(r["osc_optional_count"])
-        self._stats["fixed"].set(r["fixed_count"])
-        self._stats["breakout"].set(ea.get("service_breakout_count", 0))
-        self._stats["fivev"].set(fv.get("tolerant_all_parts", 0))
-        self._stats["io"].set(f"±{io} mA" if io else "—")
-        self._stats["vdda"].set(f"{vdda[0]}–{vdda[1]}" if vdda else "—")
+        self.readout.set_identity(
+            a["package"], f"{a['manifest']['part_count']} parts · {r['positions_total']} pins")
+        self.readout.set("must", r["must_switch_count"])
+        self.readout.set("osc", r["osc_optional_count"])
+        self.readout.set("fixed", r["fixed_count"])
+        self.readout.set("breakout", ea.get("service_breakout_count", 0))
+        self.readout.set("fivev", fv.get("tolerant_all_parts", 0))
+        self.readout.set("io", f"±{io} mA" if io else "—")
+        self.readout.set("vdda", f"{vdda[0]}–{vdda[1]}" if vdda else "—")
 
         rows = a["positions"]
         self.table.setSortingEnabled(False)
