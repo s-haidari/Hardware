@@ -12,7 +12,8 @@ import os
 from pathlib import Path
 
 from PyQt5.QtCore import Qt, QFileSystemWatcher, pyqtSignal, QRectF, QPointF
-from PyQt5.QtGui import QColor, QBrush, QPainter, QPen, QFont, QFontMetricsF
+from PyQt5.QtGui import (QColor, QBrush, QPainter, QPen, QFont, QFontMetricsF,
+                         QPainterPath)
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox, QLineEdit,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QSizePolicy,
@@ -623,6 +624,147 @@ class PinMapWidget(QWidget):
 
 
 
+class ConnectionDiagram(QWidget):
+    """The selected pin's rails, drawn as signal flow: the ZIF socket on the left,
+    then one branch per physical path — through an ADG714 switch cell (with its
+    Source/Drain terminal pins) or a 33 Ω series resistor — to the delivered net,
+    which is coloured by type and labelled with its connector contact. Replaces the
+    dense text fabric: you read a pin's whole story at a glance."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._a = None
+        self._pos = None
+        self._cw = None
+        self.setMinimumHeight(150)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+    def set_data(self, a, pos, cw):
+        self._a, self._pos, self._cw = a, pos, cw
+        self.updateGeometry()
+        self.update()
+
+    def _branches(self):
+        if not self._a or self._pos is None:
+            return None
+        return _pin_branches(self._a, self._pos, self._cw)
+
+    def sizeHint(self):
+        from PyQt5.QtCore import QSize
+        b = self._branches()
+        n = len(b[4]) if b else 1
+        return QSize(680, 24 + n * 56 + (n - 1) * 18 + 22)
+
+    def paintEvent(self, _ev):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        W, H = self.width(), self.height()
+        p.fillRect(0, 0, W, H, QColor(_PANEL))
+        info = self._branches()
+        if info is None:
+            p.setPen(QColor(_MUT))
+            f = QFont(_SVG_FONT.split(",")[0]); f.setPointSizeF(10.5)
+            p.setFont(f)
+            p.drawText(self.rect(), Qt.AlignCenter,
+                       "Select a pin on the map to see its connections")
+            return
+        conn, kind, name, pcol, branches = info
+        socket_ref = (self._cw or {}).get("socket_refdes", "J_SOCKET")
+
+        pad = 6
+        NH, GAP = 56, 18
+        n = len(branches)
+        top = 8
+        sockH = n * NH + (n - 1) * GAP
+        sockX, sockW = pad, 156
+        viaX, viaW = sockX + sockW + 34, 236
+        sockCY = top + sockH / 2
+
+        cap_f = QFont(_SVG_MONO.split(",")[0].strip("'")); cap_f.setPointSizeF(6.8)
+        main_f = QFont(_SVG_FONT.split(",")[0]); main_f.setPointSizeF(9.5)
+        big_f = QFont(_SVG_MONO.split(",")[0].strip("'")); big_f.setPointSizeF(13.0); big_f.setWeight(QFont.DemiBold)
+        net_f = QFont(_SVG_MONO.split(",")[0].strip("'")); net_f.setPointSizeF(10.0); net_f.setWeight(QFont.DemiBold)
+        sub_f = QFont(_SVG_MONO.split(",")[0].strip("'")); sub_f.setPointSizeF(7.6)
+
+        def node(x, y, w, h, stroke):
+            p.setPen(QPen(QColor(stroke), 1))
+            p.setBrush(QColor(_CARD))
+            p.drawRoundedRect(QRectF(x, y, w, h), 5, 5)
+
+        def label(x, y, w, font, color, text, elide=True):
+            p.setFont(font); p.setPen(QColor(color))
+            fm = QFontMetricsF(font)
+            t = fm.elidedText(text, Qt.ElideRight, w) if elide else text
+            p.drawText(QRectF(x, y, w, 16), Qt.AlignLeft | Qt.AlignVCenter, t)
+
+        def wire(path, color):
+            p.setPen(QPen(QColor(color), 1.4))
+            p.setBrush(Qt.NoBrush)
+            p.drawPath(path)
+
+        def dot(x, y, color):
+            p.setPen(Qt.NoPen); p.setBrush(QColor(color))
+            p.drawEllipse(QRectF(x - 2.5, y - 2.5, 5, 5))
+
+        # socket node (spans all branches)
+        node(sockX, top, sockW, sockH, _LINE)
+        label(sockX + 12, top + 8, sockW - 20, cap_f, _MUT, socket_ref)
+        p.setFont(big_f); p.setPen(QColor(_TXT))
+        p.drawText(QRectF(sockX + 12, sockCY - 14, sockW - 20, 18),
+                   Qt.AlignLeft | Qt.AlignVCenter, f"Pin {self._pos}")
+        label(sockX + 12, top + sockH - 22, sockW - 20, sub_f, _MUT, name or "")
+
+        for i, br in enumerate(branches):
+            ry = top + i * (NH + GAP)
+            rmid = ry + NH / 2
+            col = br.get("color") or pcol
+            has_via = bool(br.get("via")) and br["via"] != "Direct Route"
+            # elbow wire from socket to this branch row
+            jx = sockX + sockW + 20
+            path = QPainterPath()
+            path.moveTo(sockX + sockW, sockCY)
+            path.lineTo(sockX + sockW + 11, sockCY)
+            path.lineTo(sockX + sockW + 11, rmid)
+            path.lineTo(jx, rmid)
+            wire(path, col)
+            dot(sockX + sockW, sockCY, _MUT)
+
+            if has_via:
+                node(viaX, ry, viaW, NH, _LINE)
+                label(viaX + 12, ry + 9, viaW - 22, cap_f, _MUT, br["caption"])
+                label(viaX + 12, ry + 25, viaW - 22, main_f, _TXT, br["via"])
+                if br.get("via2"):
+                    label(viaX + 12, ry + 40, viaW - 22, sub_f, _MUT, br["via2"])
+                dx = viaX + viaW + 30
+                dw = W - pad - dx
+                lp = QPainterPath(); lp.moveTo(viaX + viaW, rmid); lp.lineTo(dx, rmid)
+                wire(lp, col)
+                dot(viaX + viaW, rmid, col)
+            else:
+                dx = jx + 40
+                dw = W - pad - dx
+                lp = QPainterPath(); lp.moveTo(jx, rmid); lp.lineTo(dx, rmid)
+                wire(lp, col)
+                dot(dx, rmid, col)
+
+            # destination node (type-coloured)
+            node(dx, ry, dw, NH, col)
+            dcap = "Delivered Rail" if br["caption"].startswith("SWITCHED") else \
+                   ("Lane Row" if "LANE" in br["caption"] else "Service Net")
+            label(dx + 12, ry + 9, dw - 22, cap_f, _MUT, dcap)
+            p.setFont(net_f); p.setPen(QColor(col))
+            fm = QFontMetricsF(net_f)
+            p.drawText(QRectF(dx + 12, ry + 24, dw - 22, 16), Qt.AlignLeft | Qt.AlignVCenter,
+                       fm.elidedText(br["to"], Qt.ElideRight, dw - 22))
+            label(dx + 12, ry + 40, dw - 22, sub_f, _MUT, br.get("to2") or "")
+
+        if n > 1 and any(b["caption"].startswith("SWITCHED") for b in branches):
+            p.setFont(sub_f); p.setPen(QColor(_MUT))
+            p.drawText(QRectF(pad, top + sockH + 4, W - 2 * pad, 16),
+                       Qt.AlignLeft,
+                       "◇  mutually exclusive — one branch closed at a time (firmware one-hot)")
+
+
 class ConnectionRow(QFrame):
     """One pin of the wiring table: pin + name in a fixed left column, then one
     aligned row per physical path — FROM (socket refdes · pin), VIA (switch cell
@@ -976,34 +1118,46 @@ class Stm32PinsWidget(QWidget):
 
     # ── page builders ───────────────────────────────────────────────
     def _build_overview_page(self):
-        """The Map screen: the pin map beside the full connection fabric. Clicking a pin
-        on the map highlights and scrolls to it in the fabric; clicking a fabric row
-        selects the pin on the map. Both stay in sync."""
+        """The Map screen is a pin inspector: the QFP pin map on the left selects a
+        pin; the right pane draws that pin's rails as a signal-flow diagram and lists
+        its key facts. Clicking a pin (map) drives both."""
         page = QWidget()
         lay = QHBoxLayout(page)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(8)
-        self.pin_map = PinMapWidget()             # the primary pin visualizer
+        lay.setSpacing(0)
+
+        self.pin_map = PinMapWidget()
         self.pin_map.pinClicked.connect(self._select)
-        self.conn_list = ConnectionsList()        # the full socket -> header fabric
-        self.conn_list.pinClicked.connect(self._select)
-        # compact per-pin detail (roles, rationale, 5V, bootloader, peripherals)
+
+        # ── right: inspector for the selected pin ──
+        insp = QWidget()
+        iv = QVBoxLayout(insp)
+        iv.setContentsMargins(18, 0, 4, 0)
+        iv.setSpacing(8)
+        self.insp_header = QLabel("Select a pin")
+        self.insp_header.setTextFormat(Qt.RichText)
+        iv.addWidget(self.insp_header)
+        iv.addWidget(uw.SectionHeader("Connections"))
+        self.diagram = ConnectionDiagram()
+        iv.addWidget(self.diagram)
+        iv.addWidget(uw.SectionHeader("Detail"))
         self.pin_detail = QTextBrowser()
         self.pin_detail.setOpenExternalLinks(False)
-        self.pin_detail.setFixedHeight(230)
-        left = QWidget()
-        lv = QVBoxLayout(left)
-        lv.setContentsMargins(0, 0, 0, 0)
-        lv.setSpacing(8)
-        lv.addWidget(self.pin_map, 1)
-        lv.addWidget(self.pin_detail)
+        self.pin_detail.setMinimumHeight(150)
+        iv.addWidget(self.pin_detail, 1)
+
         split = QSplitter(Qt.Horizontal)
-        split.addWidget(left)
-        split.addWidget(self.conn_list)
-        split.setStretchFactor(0, 2)
-        split.setStretchFactor(1, 3)
-        split.setSizes([460, 700])
+        split.addWidget(self.pin_map)
+        split.addWidget(insp)
+        split.setStretchFactor(0, 3)
+        split.setStretchFactor(1, 4)
+        split.setSizes([440, 720])
         lay.addWidget(split, 1)
+
+        # keep a hidden fabric model so search/select helpers still resolve
+        self.conn_list = ConnectionsList()
+        self.conn_list.hide()
+        self.conn_list.pinClicked.connect(self._select)
         return page
 
     def _build_cells_page(self):
@@ -1018,14 +1172,16 @@ class Stm32PinsWidget(QWidget):
         return page
 
     def _style_browsers(self):
-        # explicit family: the shell's QTextEdit QSS rule would otherwise put
-        # these browsers in the log's mono font
-        css = (f"QTextBrowser{{background:{_CARD};color:{_TXT};border:1px solid {_LINE};"
-               f"border-radius:6px;padding:10px;"
+        # flat content (de-boxed): no frame, panel ground, explicit UI font so the
+        # shell's mono QTextEdit rule doesn't leak in.
+        css = (f"QTextBrowser{{background:transparent;color:{_TXT};border:none;"
+               f"padding:2px 2px 8px;"
                f"font-family:'Geist','Inter','Segoe UI';font-size:9pt;}}")
         for wdg in (getattr(self, "pin_detail", None), getattr(self, "cells_view", None)):
             if wdg is not None:
                 wdg.setStyleSheet(css)
+        if getattr(self, "insp_header", None) is not None:
+            self.insp_header.setStyleSheet("background:transparent;")
 
     def _build_table_page(self):
         page = QWidget()
@@ -1093,11 +1249,35 @@ class Stm32PinsWidget(QWidget):
                 m.set_selected(pos)
             if getattr(self, "conn_list", None) is not None:
                 self.conn_list.set_selected(pos)
-            if getattr(self, "pin_detail", None) is not None and self.authority:
+            if getattr(self, "diagram", None) is not None and self.authority:
+                self.diagram.set_data(self.authority, pos, self._cw())
+            if self.authority:
                 p = next((x for x in self.authority["positions"]
                           if x["position"] == pos), None)
                 if p is not None:
-                    self.pin_detail.setHtml(_pin_detail_html(p))
+                    if getattr(self, "insp_header", None) is not None:
+                        self.insp_header.setText(self._inspector_header(p))
+                    if getattr(self, "pin_detail", None) is not None:
+                        self.pin_detail.setHtml(_pin_detail_html(p))
+
+    def _cw(self):
+        """Cached card_wiring for the current authority (built once per load)."""
+        if getattr(self, "_cw_cache", None) is None and self.authority:
+            self._cw_cache = sauth.card_wiring(self.authority)
+        return self._cw_cache
+
+    def _inspector_header(self, p):
+        name = next(iter(p["pin_names"]), "") if p["pin_names"] else ""
+        cls = p["switch_class"]
+        col = _SWITCH_COLOR.get(cls, _MUT)
+        clabel = _SWITCH_LABEL.get(cls, cls)
+        side = p.get("side", "")
+        return (f"<span style='font-family:\"JetBrains Mono\";font-size:15pt;"
+                f"font-weight:600;color:{_TXT}'>Pin {p['position']}</span>"
+                f"<span style='font-size:13pt;color:{_TXT}'>&nbsp;&nbsp;{html.escape(name)}</span>"
+                f"<span style='color:{_MUT};font-size:9pt'>&nbsp;&nbsp;{side}</span>"
+                f"<span style='color:{col};font-size:9pt'>"
+                f"&nbsp;&nbsp;&nbsp;● {clabel}</span>")
 
     def _on_table_select(self):
         items = self.table.selectedItems()
@@ -1117,11 +1297,14 @@ class Stm32PinsWidget(QWidget):
             m.update()
         if getattr(self, "conn_list", None) is not None:
             self.conn_list.restyle()
+        if getattr(self, "diagram", None) is not None:
+            self.diagram.update()
         # regenerate themed rich text with the new palette
         if self.authority is not None:
             if getattr(self, "cells_view", None) is not None:
                 self.cells_view.setHtml(cells_html(self.authority))
-            self._select(self._sel_pos)
+            if self._sel_pos is not None:
+                self._select(self._sel_pos)
 
     def _restyle_strip(self):
         self.readout.restyle()
@@ -1238,6 +1421,7 @@ class Stm32PinsWidget(QWidget):
         finally:
             conn.close()
         self._sel_pos = None
+        self._cw_cache = None
         self._populate_peripherals()
         self._populate()
         for m in self._maps():
@@ -1247,9 +1431,19 @@ class Stm32PinsWidget(QWidget):
         self._style_browsers()
         if getattr(self, "cells_view", None) is not None:
             self.cells_view.setHtml(cells_html(self.authority))
+        if getattr(self, "diagram", None) is not None:
+            self.diagram.set_data(None, None, None)
+        if getattr(self, "insp_header", None) is not None:
+            self.insp_header.setText(
+                f"<span style='color:{_MUT};font-size:11pt'>Select a pin on the map</span>")
         if getattr(self, "pin_detail", None) is not None:
             self.pin_detail.setHtml(
                 f"<p style='color:{_MUT}'>Select a pin for its full detail.</p>")
+        # auto-select the first must-switch pin so the inspector isn't empty
+        first = next((p["position"] for p in self.authority["positions"]
+                      if p["switch_class"] == sdb.SWITCH_MUST), None)
+        if first is not None:
+            self._select(first)
 
     def _populate(self):
         a = self.authority
