@@ -185,7 +185,7 @@ class KiCadToolsWidget(QWidget):
         root.setSpacing(10)
 
         # --- Projects card: folder + a compact multi-select dropdown ---
-        pcard, pl = self._card("KICAD Projects")
+        pcard, pl = self._card("KiCad Projects")
         top = QHBoxLayout()
         st = self.style()
         top.addWidget(QLabel("Folder:"))
@@ -260,7 +260,7 @@ class KiCadToolsWidget(QWidget):
         QApplication.processEvents()
 
     def _browse(self):
-        d = QFileDialog.getExistingDirectory(self, "Select KICAD Projects Folder", self.dir_edit.text() or "")
+        d = QFileDialog.getExistingDirectory(self, "Select KiCad Projects Folder", self.dir_edit.text() or "")
         if d:
             self.dir_edit.setText(d)
             self.rescan()
@@ -279,7 +279,7 @@ class KiCadToolsWidget(QWidget):
             it.setData(Qt.UserRole, str(pro) if pro else "")
             self.proj_list.addItem(it)
         self._update_selection()
-        self.log(f"Found {len(projs)} KICAD project(s) under {path or '(unset)'}")
+        self.log(f"Found {len(projs)} KiCad project(s) under {path or '(unset)'}")
 
     def _update_selection(self):
         # Button stays "Select Projects"; the dropdown's checkmarks show the picks.

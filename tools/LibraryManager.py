@@ -1749,7 +1749,7 @@ class LibraryManagerWindow(QMainWindow):
         self._closing = False
         self._workers = []   # tracked background threads (joined on close)
 
-        self.setWindowTitle("KICAD Manager")
+        self.setWindowTitle("KiCad Manager")
         self.setMinimumSize(1040, 680)
         _icon = resource_path("app_icon.ico")
         if _icon.exists():
@@ -1770,7 +1770,7 @@ class LibraryManagerWindow(QMainWindow):
         # --- Header bar (shared across tabs) ---
         main_layout.addWidget(self.create_header_bar())
 
-        # --- "KICAD Manager" tab: 3-column splitter (drop zone lives in Workflow) ---
+        # --- "KiCad Manager" tab: 3-column splitter (drop zone lives in Workflow) ---
         library_tab = QWidget()
         lib_layout = QVBoxLayout(library_tab)
         lib_layout.setSpacing(10)
@@ -1830,10 +1830,10 @@ class LibraryManagerWindow(QMainWindow):
 
         # --- Content: a stacked widget driven by the title-bar tabs ---
         self.main_stack = QStackedWidget()
-        self.main_stack.addWidget(library_tab)   # index 0 -> "KICAD Manager"
-        self.main_stack.addWidget(tools_tab)     # index 1 -> "KICAD Tools"
+        self.main_stack.addWidget(library_tab)   # index 0 -> "KiCad Manager"
+        self.main_stack.addWidget(tools_tab)     # index 1 -> "KiCad Tools"
         self.main_stack.addWidget(stm32_tab)     # index 2 -> "STM32 Pins"
-        self._select_tab(0)                      # KICAD Manager is the default
+        self._select_tab(0)                      # KiCad Manager is the default
         main_layout.addWidget(self.main_stack, 1)
 
         # --- Status bar (operation text + progress + result chip) ---
@@ -1865,13 +1865,13 @@ class LibraryManagerWindow(QMainWindow):
         self.auto_pull_timer.start()
 
     def _build_tools_tab(self) -> QWidget:
-        """The KICAD Tools tab (rename / net classes / project settings)."""
+        """The KiCad Tools tab (rename / net classes / project settings)."""
         try:
             from kicad_tools import KiCadToolsWidget
         except Exception as e:
             w = QWidget()
             lay = QVBoxLayout(w)
-            lay.addWidget(QLabel(f"KICAD Tools unavailable:\n{e}"))
+            lay.addWidget(QLabel(f"KiCad Tools unavailable:\n{e}"))
             return w
         projects_dir = self._settings.value("projects_dir", "") or str(Path(self.cfg["RepoRoot"]).parent)
 
@@ -1925,9 +1925,9 @@ class LibraryManagerWindow(QMainWindow):
         h.setSpacing(8)
 
         # The section tabs ARE the title — custom underline buttons for crisp
-        # rendering (KICAD Manager / KICAD Tools).
+        # rendering (KiCad Manager / KiCad Tools).
         self.nav_btns = []
-        for i, name in enumerate(["KICAD Manager", "KICAD Tools", "STM32 Pins"]):
+        for i, name in enumerate(["KiCad Manager", "KiCad Tools", "STM32 Pins"]):
             b = QPushButton(name)
             b.setObjectName("navTab")
             b.setCheckable(True)
@@ -3237,7 +3237,7 @@ class LibraryManagerWindow(QMainWindow):
         if find_kicad_dir() is None:
             QMessageBox.warning(
                 self, "Open in KICAD",
-                "KICAD does not appear to be installed under Program Files.\n"
+                "KiCad does not appear to be installed under Program Files.\n"
                 "Opening with the default associated app instead."
             )
         for target in targets:
@@ -3248,7 +3248,7 @@ class LibraryManagerWindow(QMainWindow):
                 os.startfile(str(target))   # KiCad registers .kicad_mod/.kicad_sym/.step
                 self.log.write(f"Open in KICAD: {target.name}")
             except Exception as e:
-                self.log.write(f"Open in KICAD failed for {target.name}: {e}")
+                self.log.write(f"Open in KiCad failed for {target.name}: {e}")
 
     def on_remove_duplicates(self):
         """One-click: keep one copy of each duplicated symbol, remove the rest."""
@@ -3465,7 +3465,7 @@ def main():
     except Exception:
         pass
 
-    app.setApplicationName("KICAD Manager")
+    app.setApplicationName("KiCad Manager")
     _icon = resource_path("app_icon.ico")
     if _icon.exists():
         app.setWindowIcon(QIcon(str(_icon)))
