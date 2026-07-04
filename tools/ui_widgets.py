@@ -304,8 +304,8 @@ def restyle_all(*widgets):
 # ── Back-compat: the old CardWidget, kept only for genuinely liftable list
 #    items. Regions must use SectionHeader instead. ───────────────────────────
 class CardWidget(QFrame):
-    """A titled card — retained for list-item content only. Regions use
-    SectionHeader (the de-box primitive)."""
+    """A titled card — retained for list-item content and the log panel. Regions
+    use SectionHeader (the de-box primitive)."""
 
     def __init__(self, title: str = "", parent=None):
         super().__init__(parent)
@@ -316,9 +316,21 @@ class CardWidget(QFrame):
         self.title_lbl = QLabel(title)
         self.title_lbl.setObjectName("cardTitle")
         self.title_lbl.setFont(_font(_UI, FS_BODY, bold=True))
+        # title row: label on the left, an optional widget slot on the right
+        title_row = QWidget()
+        tl = QHBoxLayout(title_row)
+        tl.setContentsMargins(0, 0, 0, 0)
+        tl.setSpacing(6)
         if not title:
             self.title_lbl.setVisible(False)
-        outer.addWidget(self.title_lbl)
+        tl.addWidget(self.title_lbl)
+        tl.addStretch()
+        self._title_right = QWidget()
+        self._title_right_layout = QHBoxLayout(self._title_right)
+        self._title_right_layout.setContentsMargins(0, 0, 0, 0)
+        self._title_right_layout.setSpacing(0)
+        tl.addWidget(self._title_right)
+        outer.addWidget(title_row)
         self.content = QWidget()
         self.content_layout = QVBoxLayout(self.content)
         self.content_layout.setContentsMargins(8, 6, 8, 8)
@@ -327,6 +339,15 @@ class CardWidget(QFrame):
 
     def contentLayout(self):
         return self.content_layout
+
+    def set_title_widget(self, widget: QWidget):
+        """Place a widget on the right side of the title row (e.g. a tab bar)."""
+        for i in reversed(range(self._title_right_layout.count())):
+            item = self._title_right_layout.takeAt(i)
+            w = item.widget()
+            if w:
+                w.setParent(None)
+        self._title_right_layout.addWidget(widget)
 
 
 def make_card(title: str):
