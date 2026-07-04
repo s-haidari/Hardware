@@ -363,7 +363,14 @@ class NetdeckWindow(FluentWindow):
         super().__init__()
         fluent_theme.apply_grayscale_fluent(dark=True)
         apply_app_palette(dark=True)
-        self.setStyleSheet(f"#managerView{{background:{ui_theme.tc('MAIN_BG')};}}")
+        # graphite ground + GRAYSCALE standard checkboxes (Fusion checks default to a
+        # blue that breaks the palette — force the neutral accent instead).
+        self.setStyleSheet(
+            f"#managerView{{background:{ui_theme.tc('MAIN_BG')};}}"
+            f"QCheckBox::indicator{{width:15px;height:15px;border:1.4px solid "
+            f"{ui_theme.tc('BTN_BORDER')};border-radius:3px;background:transparent;}}"
+            f"QCheckBox::indicator:checked{{background:{ui_theme.tc('ACCENT')};"
+            f"border-color:{ui_theme.tc('ACCENT')};}}")
         self.cfg = cfg
         self.setWindowTitle("NETDECK — Firmware Extraction Bench")
         self.resize(1360, 880)
@@ -381,6 +388,17 @@ class NetdeckWindow(FluentWindow):
                 except Exception:
                     pass
         apply_app_palette(dark=True)          # re-assert after tabs republish the theme
+        # grayscale standard checkboxes on the reused tabs (highest specificity, so it
+        # wins over the widget's own stylesheet; Fusion's blue check breaks the palette)
+        _cb = (f"QCheckBox::indicator{{width:15px;height:15px;border:1.4px solid "
+               f"{ui_theme.tc('BTN_BORDER')};border-radius:3px;background:transparent;}}"
+               f"QCheckBox::indicator:checked{{background:{ui_theme.tc('ACCENT')};"
+               f"border-color:{ui_theme.tc('ACCENT')};}}")
+        for w in (self.tools, self.stm32):
+            try:
+                w.setStyleSheet((w.styleSheet() or "") + _cb)
+            except Exception:
+                pass
 
         self.addSubInterface(self.manager, FluentIcon.LIBRARY, "KiCad Manager")
         self.addSubInterface(self.tools, FluentIcon.DEVELOPER_TOOLS, "KiCad Tools")
