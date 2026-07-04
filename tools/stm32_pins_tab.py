@@ -20,21 +20,25 @@ from PyQt5.QtWidgets import (
     QFrame, QScrollArea,
 )
 
-# Theme-swappable surface colours. The pin/data colours further down are
-# theme-independent. set_tab_theme() reassigns these so the custom visuals (pin
-# map, stat cards, SVG panels) follow the app theme; the SVG generators and
-# paintEvents read these globals at call time, so a swap + refresh is enough.
+# Theme-swappable surface colours, derived from the shared design system
+# (tools/ui_theme.py) so this tab can never drift from the shell's palette.
+# The pin/data colours further down are theme-independent. set_tab_theme()
+# reassigns these; the SVG generators and paintEvents read them at call time,
+# so a swap + refresh is enough.
+import ui_theme
+
 _PANEL = _CARD = _TXT = _MUT = _LINE = _BODY = ""
 
 
 def set_tab_theme(dark: bool):
     global _PANEL, _CARD, _TXT, _MUT, _LINE, _BODY
-    if dark:
-        _PANEL, _CARD, _TXT, _MUT, _LINE, _BODY = \
-            "#212124", "#26262b", "#ededf0", "#90909a", "#33333a", "#1c1c1f"
-    else:
-        _PANEL, _CARD, _TXT, _MUT, _LINE, _BODY = \
-            "#f5f5f4", "#ffffff", "#2a2a30", "#70707a", "#e5e5e2", "#eeeeec"
+    t = ui_theme.DARK_COLORS if dark else ui_theme.LIGHT_COLORS
+    _PANEL = t["MAIN_BG"]      # panel background
+    _CARD = t["CARD_BG"]       # card surfaces
+    _TXT = t["FG"]             # primary text
+    _MUT = t["FG_DIM"]         # muted text
+    _LINE = t["BORDER"]        # hairlines
+    _BODY = t["IN_BG"]         # the QFP package body fill
 
 
 set_tab_theme(False)   # light is the app default
@@ -42,17 +46,9 @@ set_tab_theme(False)   # light is the app default
 import stm32_db as sdb
 import stm32_authority as sauth
 
-try:
-    from LibraryManager import (lucide_icon, LUCIDE_NEUTRAL, LUCIDE_BLUE,
-                                LUCIDE_GREEN, LUCIDE_AMBER)
-    _HAVE_LUCIDE = True
-except Exception:  # pragma: no cover
-    _HAVE_LUCIDE = False
-    LUCIDE_NEUTRAL = LUCIDE_BLUE = LUCIDE_GREEN = LUCIDE_AMBER = ""
-
-    def lucide_icon(*_a, **_k):
-        from PyQt5.QtGui import QIcon
-        return QIcon()
+# Icons come from the shared design system (no import back into the shell).
+from ui_theme import (lucide_icon, LUCIDE_NEUTRAL, LUCIDE_BLUE,  # noqa: F401
+                      LUCIDE_GREEN, LUCIDE_AMBER)
 
 
 # Scannable columns that fit the viewport without horizontal scrolling. The verbose

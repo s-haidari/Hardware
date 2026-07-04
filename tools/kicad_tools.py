@@ -34,34 +34,12 @@ except Exception:
 
 
 # Lucide icons (MIT), tinted — matches the main window. SVGs bundled in tools/lucide/.
-_LU_NEUTRAL = "#8b8b91"
-_LU_BLUE = "#8b8b91"
-_LU_GREEN = "#8b8b91"
-_LU_RED = "#8b8b91"
-_LU_AMBER = "#8b8b91"
-_LU_CACHE = {}
-
-
-def _lucide(name: str, color: str = _LU_NEUTRAL, size: int = 16) -> QIcon:
-    key = (name, color, size)
-    if key in _LU_CACHE:
-        return _LU_CACHE[key]
-    icon = QIcon()
-    if _HAVE_QTSVG:
-        try:
-            base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
-            svg = (base / "lucide" / f"{name}.svg").read_text(encoding="utf-8").replace("currentColor", color)
-            r = QSvgRenderer(bytearray(svg, encoding="utf-8"))
-            pm = QPixmap(size, size)
-            pm.fill(Qt.transparent)
-            p = QPainter(pm)
-            r.render(p)
-            p.end()
-            icon = QIcon(pm)
-        except Exception:
-            icon = QIcon()
-    _LU_CACHE[key] = icon
-    return icon
+# Icons come from the shared design system (tools/ui_theme.py); the _LU_*
+# aliases keep the existing call sites readable.
+from ui_theme import (lucide_icon as _lucide,  # noqa: F401
+                      LUCIDE_NEUTRAL as _LU_NEUTRAL, LUCIDE_BLUE as _LU_BLUE,
+                      LUCIDE_GREEN as _LU_GREEN, LUCIDE_RED as _LU_RED,
+                      LUCIDE_AMBER as _LU_AMBER)
 
 
 import nd_wizard as wiz
