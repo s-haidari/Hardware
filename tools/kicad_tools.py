@@ -19,11 +19,13 @@ from typing import List, Optional
 
 from PyQt5.QtWidgets import (
     QWidget, QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
-    QComboBox, QCheckBox, QListWidget, QListWidgetItem, QPlainTextEdit, QTabWidget,
-    QTableWidget, QTableWidgetItem, QFormLayout, QDoubleSpinBox, QFileDialog,
-    QMessageBox, QAbstractItemView, QHeaderView, QSizePolicy, QApplication,
-    QColorDialog, QScrollArea, QToolButton, QMenu, QWidgetAction
+    QComboBox, QCheckBox, QListWidget, QListWidgetItem, QPlainTextEdit,
+    QStackedWidget, QTableWidget, QTableWidgetItem, QFormLayout, QDoubleSpinBox,
+    QFileDialog, QMessageBox, QAbstractItemView, QHeaderView, QSizePolicy,
+    QApplication, QColorDialog, QScrollArea, QToolButton, QMenu, QWidgetAction
 )
+import ui_widgets as uw
+import ui_theme
 from PyQt5.QtGui import QColor, QIcon, QPixmap, QPainter
 from PyQt5.QtCore import Qt, pyqtSignal
 try:
@@ -147,26 +149,48 @@ class KiCadToolsWidget(QWidget):
         self._ctx = ctx                        # shell services (ui_shell.TabContext)
         self.log_line.connect(self._append_log)
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 6, 0, 0)
-        root.setSpacing(10)
+        root = QHBoxLayout(self)
+        root.setContentsMargins(16, 12, 16, 12)
+        root.setSpacing(0)
 
-        # --- Projects card: folder + a compact multi-select dropdown ---
-        pcard, pl = self._card("KiCad Projects")
-        top = QHBoxLayout()
-        top.addWidget(QLabel("Folder:"))
+        # ── left rail: the three operations ──
+        self.rail = uw.Rail(150)
+        self.rail.add_group("Operations")
+        self.rail.add_item("rename", "Bulk Rename")
+        self.rail.add_item("net", "Net Classes")
+        self.rail.add_item("settings", "Project Settings")
+        self.rail.selected.connect(self._on_op)
+        self._railwrap = QWidget()
+        rwl = QVBoxLayout(self._railwrap)
+        rwl.setContentsMargins(0, 0, 16, 0)
+        rwl.setSpacing(0)
+        rwl.addWidget(self.rail)
+        rwl.addStretch(1)
+        root.addWidget(self._railwrap)
+
+        # ── main column ──
+        main = QVBoxLayout()
+        main.setContentsMargins(0, 0, 0, 0)
+        main.setSpacing(10)
+
+        # toolbar: folder + browse/rescan on the left, project picker on the right
+        bar = uw.toolbar_row()
+        fl = QLabel("Folder")
+        fl.setStyleSheet("font-weight:600;")
+        bar.addWidget(fl)
         self.dir_edit = QLineEdit(projects_dir or "")
-        top.addWidget(self.dir_edit, 1)
-        b_browse = QPushButton("Browse…"); b_browse.setIcon(_lucide("folder-open", _LU_NEUTRAL)); b_browse.clicked.connect(self._browse)
-        b_scan = QPushButton("Rescan"); b_scan.setIcon(_lucide("refresh-cw", _LU_BLUE)); b_scan.clicked.connect(self.rescan)
-        top.addWidget(b_browse); top.addWidget(b_scan)
-        pl.addLayout(top)
-
-        row2 = QHBoxLayout()
+        bar.addWidget(self.dir_edit, 1)
+        b_browse = uw.button("Browse…", "default", _lucide("folder-open", _LU_NEUTRAL))
+        b_browse.clicked.connect(self._browse)
+        b_scan = uw.button("Rescan", "default", _lucide("refresh-cw", _LU_BLUE))
+        b_scan.clicked.connect(self.rescan)
+        bar.addWidget(b_browse)
+        bar.addWidget(b_scan)
         self.proj_btn = QToolButton()
+        self.proj_btn.setObjectName("pickerBtn")
         self.proj_btn.setPopupMode(QToolButton.InstantPopup)
         self.proj_btn.setText("Select Projects")
-        self.proj_btn.setMinimumWidth(200)
+        self.proj_btn.setMinimumHeight(30)
         self.proj_btn.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         proj_menu = QMenu(self.proj_btn)
         picker = QWidget()
@@ -185,27 +209,51 @@ class KiCadToolsWidget(QWidget):
         wa = QWidgetAction(proj_menu); wa.setDefaultWidget(picker)
         proj_menu.addAction(wa)
         self.proj_btn.setMenu(proj_menu)
-        row2.addWidget(self.proj_btn)
-        row2.addStretch()
-        pl.addLayout(row2)
-        root.addWidget(pcard)
+        bar.addWidget(self.proj_btn)
+        main.addLayout(bar)
 
-        # --- Operations card (fills the rest) ---
-        ocard, ol = self._card("Operations")
-        self.tabs = QTabWidget()
-        self.tabs.addTab(self._build_rename_tab(), "Bulk Rename")
-        self.tabs.addTab(self._build_netclass_tab(), "Net Classes")
-        self.tabs.addTab(self._build_settings_tab(), "Project Settings")
-        ol.addWidget(self.tabs)
-        root.addWidget(ocard, 1)
+        # readout band: project counts
+        self.readout = uw.ReadoutBand([
+            ("projects", "Projects", None),
+            ("selected", "Selected", ui_theme.tc("ACCENT")),
+        ])
+        self.readout.set_identity("KiCad Tools", "schematic + PCB batch operations")
+        main.addWidget(self.readout)
 
-        # --- Output (full width, short) ---
-        ccard, cl = self._card("Output")
-        self.out = QPlainTextEdit(); self.out.setReadOnly(True); self.out.setMaximumHeight(110)
-        cl.addWidget(self.out)
-        root.addWidget(ccard)
+        # operation section header (updates with the rail) + stacked pages
+        self._op_header = uw.SectionHeader("Bulk Rename")
+        main.addWidget(self._op_header)
+        self.stack = QStackedWidget()
+        self._op_index = {"rename": 0, "net": 1, "settings": 2}
+        self._op_title = {"rename": "Bulk Rename", "net": "Net Classes",
+                          "settings": "Project Settings"}
+        self.stack.addWidget(self._build_rename_tab())
+        self.stack.addWidget(self._build_netclass_tab())
+        self.stack.addWidget(self._build_settings_tab())
+        main.addWidget(self.stack, 1)
 
+        # output
+        main.addWidget(uw.SectionHeader("Output"))
+        self.out = QPlainTextEdit(); self.out.setReadOnly(True); self.out.setMaximumHeight(96)
+        main.addWidget(self.out)
+
+        root.addLayout(main, 1)
+        self._restyle()
         self.rescan()
+
+    def _on_op(self, key: str):
+        self.stack.setCurrentIndex(self._op_index[key])
+        self._op_header.set_text(self._op_title[key])
+
+    def _restyle(self):
+        self._railwrap.setStyleSheet(
+            f"background:transparent;border-right:1px solid {ui_theme.tc('BORDER')};")
+        uw.restyle_all(self.rail, self.readout, self._op_header,
+                       getattr(self, "_nc_empty", None))
+
+    def apply_theme(self, dark: bool):
+        """Follow the app theme (the shell already published the palette)."""
+        self._restyle()
 
     def _card(self, title: str):
         """A titled card — the shared chrome from ui_widgets."""
@@ -258,8 +306,14 @@ class KiCadToolsWidget(QWidget):
         self.log(f"Found {len(projs)} KiCad project(s) under {path or '(unset)'}")
 
     def _update_selection(self):
-        # Button stays "Select Projects"; the dropdown's checkmarks show the picks.
-        self.proj_btn.setText("Select Projects")
+        total = self.proj_list.count()
+        sel = sum(1 for i in range(total)
+                  if self.proj_list.item(i).checkState() == Qt.Checked)
+        self.readout.set("projects", total)
+        self.readout.set("selected", sel)
+        # the picker button shows the current count so it reads at a glance
+        self.proj_btn.setText(f"Select Projects · {sel}/{total}"
+                              if total else "Select Projects")
 
     def _check_all(self, on: bool):
         for i in range(self.proj_list.count()):
@@ -281,48 +335,62 @@ class KiCadToolsWidget(QWidget):
 
     # ============================================================== RENAME
     def _build_rename_tab(self) -> QWidget:
-        w = QWidget(); v = QVBoxLayout(w); v.setSpacing(8)
+        # Two columns in a bounded measure so the form doesn't strand a thin
+        # column against a void: [operation form] | [scope checkboxes].
+        w = QWidget(); outer = QVBoxLayout(w)
+        outer.setContentsMargins(0, 0, 0, 0); outer.setSpacing(10)
+        cols = QHBoxLayout(); cols.setSpacing(28)
 
+        left = QVBoxLayout(); left.setSpacing(6)
+        left.addWidget(uw.SectionHeader("Operation"))
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignRight)
+        form.setHorizontalSpacing(10)
         self.op_combo = QComboBox()
         self.op_combo.addItems([
             "Add Tag Prefix", "Remove Tag Prefix", "Strip All Tags",
             "Reset to Unannotated (lib_id)", "Custom Find / Replace",
         ])
         self.op_combo.currentIndexChanged.connect(self._op_changed)
-        form.addRow("Operation:", self.op_combo)
-
+        form.addRow("Operation", self.op_combo)
         self.tag_edit = QLineEdit(); self.tag_edit.setPlaceholderText("E.g. SH- or CG-")
         self.find_edit = QLineEdit(); self.find_edit.setPlaceholderText("Find text")
         self.repl_edit = QLineEdit(); self.repl_edit.setPlaceholderText("Replace with")
-        form.addRow("Tag:", self.tag_edit)
-        form.addRow("Find:", self.find_edit)
-        form.addRow("Replace:", self.repl_edit)
+        form.addRow("Tag", self.tag_edit)
+        form.addRow("Find", self.find_edit)
+        form.addRow("Replace", self.repl_edit)
         self._rename_form = form
-        v.addLayout(form)
+        left.addLayout(form)
+        left.addStretch(1)
+        left_w = QWidget(); left_w.setLayout(left); left_w.setMinimumWidth(360)
 
-        scope_box = QFrame(); scope_box.setObjectName("card")
-        sb = QVBoxLayout(scope_box); sb.setContentsMargins(10, 8, 10, 8); sb.setSpacing(4)
-        _scope_title = QLabel("Scope"); _scope_title.setObjectName("cardTitle")
-        sb.addWidget(_scope_title)
+        right = QVBoxLayout(); right.setSpacing(6)
+        right.addWidget(uw.SectionHeader("Scope"))
         self.chk_sch_labels = QCheckBox("Schematic Labels / Nets"); self.chk_sch_labels.setChecked(True)
         self.chk_sch_refs = QCheckBox("Schematic References"); self.chk_sch_refs.setChecked(True)
         self.chk_pcb_refs = QCheckBox("PCB References"); self.chk_pcb_refs.setChecked(True)
-        sb.addWidget(self.chk_sch_labels); sb.addWidget(self.chk_sch_refs); sb.addWidget(self.chk_pcb_refs)
-        v.addWidget(scope_box)
+        right.addWidget(self.chk_sch_labels)
+        right.addWidget(self.chk_sch_refs)
+        right.addWidget(self.chk_pcb_refs)
+        right.addStretch(1)
+        right_w = QWidget(); right_w.setLayout(right); right_w.setMinimumWidth(260)
 
-        v.addStretch(1)
+        cols.addWidget(left_w)
+        cols.addWidget(right_w)
+        cols.addStretch(1)
+        outer.addLayout(cols)
 
-        btns = QHBoxLayout()
-        b_prev = QPushButton("Preview"); b_prev.setIcon(_lucide("list-checks", _LU_NEUTRAL))
+        btns = uw.toolbar_row()
+        b_prev = uw.button("Preview", "default", _lucide("list-checks", _LU_NEUTRAL))
         b_prev.clicked.connect(lambda: self._run_rename(apply=False))
-        b_apply = QPushButton("Apply (Creates .bak)"); b_apply.setIcon(_lucide("pencil", _LU_GREEN))
+        b_apply = uw.button("Apply (Creates .bak)", "primary", _lucide("pencil", _LU_GREEN))
         b_apply.clicked.connect(lambda: self._run_rename(apply=True))
-        b_erc = QPushButton("Run ERC"); b_erc.setIcon(_lucide("play", _LU_GREEN))
+        b_erc = uw.button("Run ERC", "default", _lucide("play", _LU_GREEN))
         b_erc.clicked.connect(self._run_erc)
-        btns.addWidget(b_prev); btns.addWidget(b_apply); btns.addStretch(); btns.addWidget(b_erc)
-        v.addLayout(btns)
+        btns.addWidget(b_prev); btns.addWidget(b_apply); btns.addWidget(b_erc); btns.addStretch()
+        outer.addLayout(btns)
+        # actions sit right under the form; the empty room falls to the bottom
+        outer.addStretch(1)
         self._op_changed()
         return w
 
@@ -443,40 +511,57 @@ class KiCadToolsWidget(QWidget):
 
     # ============================================================ NET CLASSES
     def _build_netclass_tab(self) -> QWidget:
-        w = QWidget(); v = QVBoxLayout(w); v.setSpacing(8)
-        bar = QHBoxLayout(); bar.setSpacing(6)
-        for label, icon_name, icon_color, fn in [
-            ("Load Vault Standard", "folder-open", _LU_NEUTRAL, self._nc_load_template),
-            ("Save as Vault Standard", "save", _LU_AMBER, self._nc_save_vault_standard),
-            ("Load from Project", "folder", _LU_NEUTRAL, self._nc_load_project),
-            ("Add", "plus", _LU_GREEN, self._nc_add),
-            ("Remove", "trash-2", _LU_RED, self._nc_remove),
-            ("Sort by Priority", "sliders-horizontal", _LU_NEUTRAL, self._nc_sort_by_priority),
-            ("Import…", "file-down", _LU_NEUTRAL, self._nc_import),
-            ("Export…", "file-up", _LU_NEUTRAL, self._nc_export),
+        w = QWidget(); v = QVBoxLayout(w); v.setContentsMargins(0, 0, 0, 0); v.setSpacing(8)
+        # Two grouped toolbars instead of one 9-button wall: table editing on the
+        # left, source/sync on the right.
+        bar = uw.toolbar_row()
+        for label, icon_name, icon_color, fn, kind in [
+            ("Add", "plus", _LU_GREEN, self._nc_add, "default"),
+            ("Remove", "trash-2", _LU_RED, self._nc_remove, "ghost"),
+            ("Sort by Priority", "sliders-horizontal", _LU_NEUTRAL, self._nc_sort_by_priority, "ghost"),
         ]:
-            b = QPushButton(label); b.setIcon(_lucide(icon_name, icon_color)); b.clicked.connect(fn)
+            b = uw.button(label, kind, _lucide(icon_name, icon_color)); b.clicked.connect(fn)
             bar.addWidget(b)
         bar.addStretch()
-        b_sync = QPushButton("Sync to Selected Projects")
-        b_sync.setIcon(_lucide("refresh-cw", _LU_BLUE)); b_sync.clicked.connect(self._nc_sync)
-        bar.addWidget(b_sync)
+        for label, icon_name, icon_color, fn, kind in [
+            ("Load Vault Standard", "folder-open", _LU_NEUTRAL, self._nc_load_template, "ghost"),
+            ("Save as Vault Standard", "save", _LU_AMBER, self._nc_save_vault_standard, "ghost"),
+            ("Load from Project", "folder", _LU_NEUTRAL, self._nc_load_project, "ghost"),
+            ("Import…", "file-down", _LU_NEUTRAL, self._nc_import, "ghost"),
+            ("Export…", "file-up", _LU_NEUTRAL, self._nc_export, "ghost"),
+            ("Sync to Selected Projects", "refresh-cw", _LU_BLUE, self._nc_sync, "primary"),
+        ]:
+            b = uw.button(label, kind, _lucide(icon_name, icon_color)); b.clicked.connect(fn)
+            bar.addWidget(b)
         v.addLayout(bar)
 
         self.nc_table = QTableWidget(0, len(self.NC_COLS))
         self.nc_table.setHorizontalHeaderLabels([c[0] for c in self.NC_COLS])
-        # Columns size to content (no truncation); the last column stretches so
-        # the table always fills the window width.
         hdr = self.nc_table.horizontalHeader()
         for i in range(len(self.NC_COLS) - 1):
             hdr.setSectionResizeMode(i, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(len(self.NC_COLS) - 1, QHeaderView.Stretch)
         self.nc_table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.nc_table.cellDoubleClicked.connect(self._nc_cell_clicked)
-        v.addWidget(self.nc_table, 1)
-        v.addWidget(QLabel("Distances/thicknesses in mm. Double-click a Color cell to "
-                           "pick. A .bak is written on sync."))
+        self.nc_table.model().rowsInserted.connect(self._nc_sync_empty)
+        self.nc_table.model().rowsRemoved.connect(self._nc_sync_empty)
+        # table or empty-state, whichever fits
+        self._nc_stack = QStackedWidget()
+        self._nc_empty = uw.EmptyState(
+            "No net classes loaded",
+            "Load the vault standard, load from a project, or Add a class to start.")
+        self._nc_stack.addWidget(self._nc_empty)
+        self._nc_stack.addWidget(self.nc_table)
+        v.addWidget(self._nc_stack, 1)
+        note = QLabel("Distances / thicknesses in mm. Double-click a Color cell to "
+                      "pick. A .bak is written on sync.")
+        note.setStyleSheet(f"color:{ui_theme.tc('FG_DIM')};")
+        v.addWidget(note)
+        self._nc_sync_empty()
         return w
+
+    def _nc_sync_empty(self, *_):
+        self._nc_stack.setCurrentIndex(1 if self.nc_table.rowCount() else 0)
 
     def _nc_set_color_item(self, r, col, hexv):
         hexv = hexv or "#808080"
@@ -654,50 +739,65 @@ class KiCadToolsWidget(QWidget):
         self.log(f"Exported template to {f}.")
 
     # ========================================================= PROJECT SETTINGS
+    def _ps_group(self, section, fields, defaults):
+        """A section header over a form of mil spin-boxes with live mm read-outs."""
+        box = QVBoxLayout(); box.setSpacing(4)
+        box.addWidget(uw.SectionHeader(section))
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignRight)
+        form.setHorizontalSpacing(10)
+        for attr, label in fields:
+            sp = QDoubleSpinBox()
+            sp.setRange(-1000, 100000); sp.setDecimals(2); sp.setSingleStep(1.0)
+            sp.setSuffix(" mil")
+            sp.setValue(float(getattr(defaults, attr)))
+            self.ps_spins[attr] = sp
+            mm = QLabel(); mm.setStyleSheet(f"color:{ui_theme.tc('FG_DIM')};"); mm.setMinimumWidth(90)
+
+            def _upd(val, lbl=mm):
+                lbl.setText(f"= {val * 0.0254:.3f} mm")
+            sp.valueChanged.connect(_upd)
+            _upd(sp.value())
+            fieldw = QWidget()
+            fh = QHBoxLayout(fieldw); fh.setContentsMargins(0, 0, 0, 0); fh.setSpacing(10)
+            fh.addWidget(sp); fh.addWidget(mm); fh.addStretch()
+            form.addRow(label, fieldw)
+        box.addLayout(form)
+        return box
+
     def _build_settings_tab(self) -> QWidget:
         outer = QWidget(); ov = QVBoxLayout(outer)
-        bar = QHBoxLayout()
-        b_load = QPushButton("Load from Project"); b_load.setIcon(_lucide("folder", _LU_NEUTRAL))
-        b_load.clicked.connect(self._ps_load)
-        bar.addWidget(b_load); bar.addStretch()
-        b_sync = QPushButton("Sync to Selected Projects"); b_sync.setIcon(_lucide("refresh-cw", _LU_BLUE))
-        b_sync.clicked.connect(self._ps_sync)
-        bar.addWidget(b_sync)
-        ov.addLayout(bar)
-
-        # Grouped like KiCad's dialog, in a scroll area so it never squishes.
-        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.NoFrame)
-        inner = QWidget(); form = QFormLayout(inner)
-        form.setLabelAlignment(Qt.AlignRight)
+        ov.setContentsMargins(0, 0, 0, 0); ov.setSpacing(10)
         self.ps_spins = {}
         defaults = ProjectSettings()
-        for section, fields in self.PS_GROUPS:
-            hdr = QLabel(section)
-            hdr.setStyleSheet("font-weight: 800; padding-top: 8px;")
-            form.addRow(hdr)
-            for attr, label in fields:
-                sp = QDoubleSpinBox()
-                sp.setRange(-1000, 100000); sp.setDecimals(2); sp.setSingleStep(1.0)
-                sp.setSuffix(" mil")
-                sp.setValue(float(getattr(defaults, attr)))
-                self.ps_spins[attr] = sp
-                # show the mm equivalent side-by-side, updating live
-                mm = QLabel()
-                mm.setStyleSheet("color: #90909a;")   # neutral, readable on both themes
-                mm.setMinimumWidth(96)
-
-                def _upd(val, lbl=mm):
-                    lbl.setText(f"= {val * 0.0254:.3f} mm")
-                sp.valueChanged.connect(_upd)
-                _upd(sp.value())
-
-                fieldw = QWidget()
-                fh = QHBoxLayout(fieldw); fh.setContentsMargins(0, 0, 0, 0); fh.setSpacing(10)
-                fh.addWidget(sp); fh.addWidget(mm); fh.addStretch()
-                form.addRow(label, fieldw)
-        scroll.setWidget(inner)
+        # two columns so the groups fill the width instead of a thin left column
+        # against a void: Schematic | (PCB Text Boxes + Footprint Text).
+        cols = QHBoxLayout(); cols.setSpacing(40)
+        left = QVBoxLayout(); left.setSpacing(10)
+        right = QVBoxLayout(); right.setSpacing(10)
+        for i, (section, fields) in enumerate(self.PS_GROUPS):
+            (left if i == 0 else right).addLayout(self._ps_group(section, fields, defaults))
+        left.addStretch(1); right.addStretch(1)
+        lw = QWidget(); lw.setLayout(left); lw.setMinimumWidth(320)
+        rw = QWidget(); rw.setLayout(right); rw.setMinimumWidth(320)
+        cols.addWidget(lw); cols.addWidget(rw); cols.addStretch(1)
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.NoFrame)
+        colw = QWidget(); colw.setLayout(cols)
+        scroll.setWidget(colw)
         ov.addWidget(scroll, 1)
-        ov.addWidget(QLabel("Values shown in mils with the mm equivalent. Grid is per-project (.kicad_prl) and not synced."))
+
+        note = QLabel("Values in mils with the mm equivalent. Grid is per-project "
+                      "(.kicad_prl) and not synced.")
+        note.setStyleSheet(f"color:{ui_theme.tc('FG_DIM')};")
+        ov.addWidget(note)
+
+        bar = uw.toolbar_row()
+        b_load = uw.button("Load from Project", "default", _lucide("folder", _LU_NEUTRAL))
+        b_load.clicked.connect(self._ps_load)
+        b_sync = uw.button("Sync to Selected Projects", "primary", _lucide("refresh-cw", _LU_BLUE))
+        b_sync.clicked.connect(self._ps_sync)
+        bar.addWidget(b_load); bar.addWidget(b_sync); bar.addStretch()
+        ov.addLayout(bar)
         return outer
 
     def _ps_load(self):

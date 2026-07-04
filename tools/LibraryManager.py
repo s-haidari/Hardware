@@ -2793,8 +2793,8 @@ class LibraryManagerWindow(QMainWindow):
         QPushButton#railItem { background: transparent; border: none; border-left: 3px solid transparent; border-radius: 0; padding: 5px 10px; color: @FG_DIM@; text-align: left; font-weight: 600; }
         QPushButton#railItem:hover { color: @FG@; background: @@HOVER_BG@@; }
         QPushButton#railItem:checked { color: @FG@; border-left: 3px solid @ACCENT@; background: @@CARD_BG@@; }
-        QPushButton#btnPrimary { background: transparent; color: @ACCENT@; border: 1px solid @ACCENT@; border-radius: 4px; padding: 6px 14px; font-weight: 700; text-align: center; }
-        QPushButton#btnPrimary:hover { background: @@CARD_BG@@; }
+        QPushButton#btnPrimary { background: @@ACCENT@@; color: @WIN_BG@; border: 1px solid @ACCENT@; border-radius: 4px; padding: 6px 14px; font-weight: 700; text-align: center; }
+        QPushButton#btnPrimary:hover { background: @@FG@@; border-color: @FG@; }
         QPushButton#btnDefault { background: @@BTN_BG@@; color: @FG@; border: 1px solid @BTN_BORDER@; border-radius: 4px; padding: 6px 12px; font-weight: 600; text-align: center; }
         QPushButton#btnDefault:hover { border-color: @ACCENT@; background: @@BTN_HOVER@@; }
         QPushButton#btnGhost { background: transparent; color: @FG_DIM@; border: none; border-radius: 4px; padding: 6px 10px; font-weight: 600; text-align: center; }
