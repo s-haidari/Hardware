@@ -196,8 +196,12 @@ def roles(pin: Pin) -> list:
     elif ec == "nc":
         pass
     else:  # io — HSE only (OSC_IN/OSC_OUT), NOT LSE OSC32 (plain GPIO)
-        if "OSC_IN" in name or "OSC_OUT" in name or "RCC_OSC_IN" in sigs or "RCC_OSC_OUT" in sigs:
-            out.append(("oscillator_hse", "local_card"))
+        # Keep the IN/OUT side: the vault services the pair on split nets
+        # (SERVICE_OSC_IN on contact RA-10, SERVICE_OSC_OUT on contact RA-12).
+        if "OSC_OUT" in name or "RCC_OSC_OUT" in sigs:
+            out.append(("oscillator_hse_out", "local_card"))
+        elif "OSC_IN" in name or "RCC_OSC_IN" in sigs:
+            out.append(("oscillator_hse_in", "local_card"))
         if "SWDIO" in sigs or "JTMS" in sigs:
             out.append(("swdio", "service"))
         if "SWCLK" in sigs or "JTCK" in sigs:
@@ -438,8 +442,14 @@ class SwitchDecision:
         non_io = [i for i in self.identities if i != ID_IO]
         if not non_io:
             return TARGET_NET[ID_IO]
-        best = max(non_io, key=lambda i: self.identities[i])
-        return TARGET_NET[best]
+        # VSS loses to any other role: an OPEN channel already serves the VSS
+        # variant (the pin rides its lane, which the parent grounds), so the
+        # switched branch goes to the role only the switch can serve — e.g.
+        # VCAP|VSS pins land on the VCAP node (Card 7B channels 6/7 and 2-1).
+        pool = [i for i in non_io if i != ID_VSS] or non_io
+        best = max(pool, key=lambda i: self.identities[i])
+        # per-pin overrides (e.g. the oscillator OUT side) live in target_nets
+        return self.target_nets.get(best, TARGET_NET[best])
 
 
 def _cell_for(identities: dict, needs_switch: bool) -> str:
@@ -459,8 +469,10 @@ def _cell_for(identities: dict, needs_switch: bool) -> str:
     return CELL_DIRECT_IO
 
 
-def classify_pin(pin: int, side: str, identities: dict, total_mcus: int) -> SwitchDecision:
-    """Turn one pin's identity histogram into a SwitchDecision."""
+def classify_pin(pin: int, side: str, identities: dict, total_mcus: int,
+                 osc_side: str = "") -> SwitchDecision:
+    """Turn one pin's identity histogram into a SwitchDecision. osc_side ('in'/'out')
+    picks the correct half of the vault's split SERVICE_OSC_IN / SERVICE_OSC_OUT pair."""
     if not identities:
         return SwitchDecision(
             pin=pin, side=side, identities={ID_IO: 0}, total_mcus=total_mcus,
@@ -484,6 +496,8 @@ def classify_pin(pin: int, side: str, identities: dict, total_mcus: int) -> Swit
         switch_class = SWITCH_MUST
 
     target_nets = {i: TARGET_NET[i] for i in identities if i != ID_IO}
+    if ID_OSC in target_nets and osc_side == "out":
+        target_nets[ID_OSC] = "SERVICE_OSC_OUT"
     flags: list = []
     if minority and needs_switch:
         flags.append("MINORITY_ROLE_PRESENT")
@@ -576,17 +590,26 @@ def pin_identity_histograms(conn: sqlite3.Connection, package: str) -> tuple:
 
     hist: dict = {}
     sides: dict = {}
+    osc_sides: dict = {}
     for pin, side, role_name, role_class, n in rows:
         pin = int(pin)
         ident = switch_identity(role_name, role_class)
         bucket = hist.setdefault(pin, {})
         bucket[ident] = max(bucket.get(ident, 0), int(n))
         sides.setdefault(pin, side or "")
-    return hist, sides, total_mcus
+        if role_name == "oscillator_hse_out":
+            osc_sides.setdefault(pin, set()).add("out")
+        elif role_name == "oscillator_hse_in":
+            osc_sides.setdefault(pin, set()).add("in")
+    return hist, sides, total_mcus, osc_sides
 
 
 def package_report(conn: sqlite3.Connection, package: str) -> PackageSwitchReport:
     """The canonical per-package switch-cell report."""
-    hist, sides, total = pin_identity_histograms(conn, package)
-    decisions = [classify_pin(pin, sides.get(pin, ""), hist[pin], total) for pin in sorted(hist)]
+    hist, sides, total, osc_sides = pin_identity_histograms(conn, package)
+    decisions = [
+        classify_pin(pin, sides.get(pin, ""), hist[pin], total,
+                     osc_side="out" if osc_sides.get(pin) == {"out"} else "")
+        for pin in sorted(hist)
+    ]
     return PackageSwitchReport(package=package, decisions=decisions)

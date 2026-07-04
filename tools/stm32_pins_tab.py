@@ -317,17 +317,20 @@ def _pin_branches(a: dict, pos: int, cw: dict = None):
     branches = []
     if kind == "switch":
         cw = cw or sauth.card_wiring(a)
-        c = next((x for x in cw["channels"] if x["socket_pin"] == pos), None)
-        if c:
+        chans = [x for x in cw["channels"] if x["socket_pin"] == pos]
+        many = len(chans) > 1                 # mutually-exclusive branches (one-hot)
+        for bi, c in enumerate(chans, start=1):
             rail_sub = ("Contact " + " / ".join(c["connector_contacts"])) if c["connector_contacts"] \
                 else ("Ground Plane" if c["rail"] == "GND" else "Local Cap")
-            branches.append(("SWITCHED ROLE", [
+            cap = f"SWITCHED ROLE {bi} OF {len(chans)}" if many else "SWITCHED ROLE"
+            branches.append((cap, [
                 (f"ADG714 Cell {c['cell']} · Channel {c['channel']}",
                  f"Source {c['s_pin']} Pin {c['s_pin_num']} · Drain {c['d_pin']} Pin {c['d_pin_num']}", None),
-                (c["rail"], rail_sub, pcol)]))
+                (c["rail"], rail_sub, _CAT_COLOR.get(sauth._NET_CATEGORY.get(c["rail"], "lane"), pcol))]))
+        if chans:
             branches.append(("DEFAULT IO LANE", [
                 ("33 Ω Series Resistor", "", None),
-                (c["card_lane"], "Lane Row", _CAT_COLOR["lane"])]))
+                (chans[0]["card_lane"], "Lane Row", _CAT_COLOR["lane"])]))
     elif kind == "resistor":
         branches.append(("IO LANE", [
             ("33 Ω Series Resistor", "", None),

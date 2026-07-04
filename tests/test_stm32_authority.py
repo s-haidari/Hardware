@@ -275,9 +275,107 @@ class AuthorityTests(unittest.TestCase):
         self.assertEqual((sw1["position"], sw1["destination"]), (1, "VBAT_TGT"))
         spares = [sw for cell in cm for sw in cell["switches"] if sw["spare"]]
         self.assertEqual(len(spares), 2 * 8 - a["rollup"]["channel_count"])   # 16 - 11 = 5
+        # LQFP100 as built (Card 7C / spec locked 2026-06-30): one channel per
+        # non-IO role of every switched pin, paralleled to 59 channels / 8 cells;
+        # cells_min stays ceil(43/8) = 6.
         lq100 = auth.build(self.conn, "LQFP100")
-        self.assertEqual(lq100["rollup"]["channel_count"], 43)               # one per must-switch pin
-        self.assertEqual(len(auth.adg714_cell_map(lq100)), 6)
+        self.assertEqual(lq100["rollup"]["channel_count"], 59)
+        self.assertEqual(lq100["rollup"]["cells_min"], 6)
+        self.assertEqual(lq100["rollup"]["cells_as_built"], 8)
+        self.assertEqual(len(auth.adg714_cell_map(lq100)), 8)
+
+    def test_as_built_rail_multiset_matches_card_7c(self):
+        """The DB-derived LQFP100 channel map reproduces Card 7C's as-built rail
+        multiset count-for-count — the 'derived, never hand-authored' goal."""
+        from collections import Counter
+        a = auth.build(self.conn, "LQFP100")
+        rails = Counter()
+        for p in a["positions"]:
+            for ch in p["assignment"].get("channels", []):
+                rails[ch["destination"]] += 1
+        self.assertEqual(dict(rails), {
+            "VTARGET": 15, "GND": 12, "VREF_TGT": 6, "VCAP_NODE": 6,
+            "SERVICE_OSC_IN": 4, "SERVICE_OSC_OUT": 4, "VSSA_TGT": 3,
+            "VDDA_TGT": 3, "VBAT_TGT": 2, "SERVICE_NRST": 2, "SERVICE_BOOT0": 2})
+        # LQFP64 stays the Card 7B single-branch map, byte-stable: 30/31/47 on the
+        # VCAP node (an open channel already serves their VSS variant via the lane).
+        a64 = auth.build(self.conn, "LQFP64")
+        w64 = auth.card_wiring(a64)
+        self.assertEqual([(c["socket_pin"], c["rail"]) for c in w64["channels"]], [
+            (1, "VBAT_TGT"), (13, "VDDA_TGT"), (17, "VREF_TGT"), (18, "GND"),
+            (19, "VTARGET"), (30, "VCAP_NODE"), (31, "VCAP_NODE"), (33, "VREF_TGT"),
+            (47, "VCAP_NODE"), (48, "VTARGET"), (60, "SERVICE_BOOT0")])
+
+    def test_osc_sides_and_pin100_invariant(self):
+        """Oscillator destinations follow the pin's HSE side (split service nets),
+        and LQFP100 pin 100 is hardwired VTARGET — never a switch channel (LOCKED)."""
+        a64 = auth.build(self.conn, "LQFP64")
+        self.assertEqual(self._pos(a64, 5)["assignment"]["destination"], "SERVICE_OSC_IN")
+        self.assertEqual(self._pos(a64, 6)["assignment"]["destination"], "SERVICE_OSC_OUT")
+        self.assertFalse(self._pos(a64, 5)["assignment"].get("channels"))  # 7B: osc unwired
+        a100 = auth.build(self.conn, "LQFP100")
+        p100 = self._pos(a100, 100)
+        self.assertEqual(p100["switch_class"], db.SWITCH_NONE)
+        self.assertFalse(p100["assignment"].get("channels"))
+        self.assertEqual(p100["assignment"].get("net"), "VTARGET")
+        # osc pins carry BOTH service nets as-built (7C: 4x IN + 4x OUT), one-hot
+        osc = self._pos(a100, 12)
+        dests = {c["destination"] for c in osc["assignment"]["channels"]}
+        self.assertEqual(dests, {"SERVICE_OSC_IN", "SERVICE_OSC_OUT"})
+        self.assertTrue(all(c["exclusive_group"] == 12 for c in osc["assignment"]["channels"]))
+
+    def test_switchmap_carries_vssa_spares_and_lanes(self):
+        """The firmware exports carry the VSSA_TGT rail (Connector Contract contact 24),
+        the spare channels, and per-PIN lane numbering (001..043 must, 044..046 osc)."""
+        a = auth.build(self.conn, "LQFP100")
+        hdr = auth.to_switchmap_c(a)
+        self.assertIn("RAIL_VSSA_TGT", hdr)
+        self.assertIn("RAIL_SERVICE_OSC_OUT", hdr)
+        self.assertIn("#define NETDECK_LQFP100_CELLS 8", hdr)
+        self.assertIn("#define NETDECK_LQFP100_CHANNELS_USED 59", hdr)
+        self.assertIn("#define NETDECK_LQFP100_CHANNELS_SPARE 5", hdr)
+        w = auth.card_wiring(a)
+        self.assertEqual(len(w["spare_channels"]), 5)
+        self.assertTrue(w["exclusive_groups"])                    # one-hot groups present
+        # lanes: per switched pin — must pins keep 001..043; osc pins append
+        musts = sorted({c["socket_pin"] for c in w["channels"]
+                        if c["socket_pin"] not in (9, 12, 13)})
+        first = next(c for c in w["channels"] if c["socket_pin"] == musts[0])
+        self.assertEqual(first["card_lane"], "CARD_LANE_001")
+        osc12 = next(c for c in w["channels"] if c["socket_pin"] == 12)
+        self.assertEqual(osc12["card_lane"], "CARD_LANE_045")     # 043 must + osc 9,12,13
+        # a pin's branches share ONE lane
+        p19 = {c["card_lane"] for c in w["channels"] if c["socket_pin"] == 19}
+        self.assertEqual(len(p19), 1)
+
+    def test_locked_constants_and_provenance(self):
+        """Pin the vault-locked wiring constants and the manifest's DB provenance."""
+        self.assertEqual(auth.ADG714_TERMINAL_PIN["S1"], 5)
+        self.assertEqual(auth.ADG714_TERMINAL_PIN["D1"], 6)
+        self.assertEqual(auth.ADG714_TERMINAL_PIN["D5"], 13)      # non-sequential half
+        self.assertEqual(auth.ADG714_TERMINAL_PIN["S5"], 14)
+        self.assertEqual(auth.ADG714_TERMINAL_PIN["S8"], 20)
+        self.assertEqual(auth.RAIL_CONTACT["VBAT_TGT"], ["LA-33"])
+        self.assertEqual(auth.RAIL_CONTACT["VDDA_TGT"], ["RA-20"])
+        self.assertEqual(auth.RAIL_CONTACT["VREF_TGT"], ["RA-22"])
+        self.assertEqual(auth.RAIL_CONTACT["VSSA_TGT"], ["RA-24"])
+        self.assertEqual(auth.RAIL_CONTACT["VTARGET"], ["RA-16", "RA-18"])
+        self.assertEqual(auth.RAIL_CONTACT["SERVICE_OSC_IN"], ["RA-10"])
+        self.assertEqual(auth.RAIL_CONTACT["SERVICE_OSC_OUT"], ["RA-12"])
+        bus = {s: (p, c) for s, p, c, _ in auth.ADG714_BUS}
+        self.assertEqual(bus["SCLK"], (1, "LA-9"))
+        self.assertEqual(bus["DIN"], (3, "LA-11"))
+        self.assertEqual(bus["DOUT"], (22, "LA-13"))
+        a = auth.build(self.conn, "LQFP64")
+        m = a["manifest"]
+        self.assertTrue(m["db_imported_at"])                      # DB origin + rev (spec)
+        self.assertTrue(m["db_source_path"])
+        self.assertEqual(m["channel_policy"], "dominant")
+        self.assertEqual(a["schema_version"], 4)
+        # files carry electrical once, top-level only (no 100x duplication)
+        slim = auth.serializable(a)
+        self.assertNotIn("electrical", slim["positions"][0])
+        self.assertIn("electrical", slim)
 
     def test_csv_and_markdown_export(self):
         a = auth.build(self.conn, "LQFP64")

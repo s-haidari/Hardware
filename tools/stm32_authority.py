@@ -299,20 +299,56 @@ def _position_tags(role_names: set, fam_names: set) -> dict:
     }
 
 
-def _adg714_channels(rep) -> tuple:
-    """One ADG714 channel per must-switch pin, routed to that pin's dominant rail
-    (primary_target_net). Matches the vault's card wiring exactly: LQFP64 = 11 channels
-    across 2 cells (Card 7B), LQFP100 = 43. The pin's IO alternate stays on the hardwired
-    default lane (no channel). Deterministic packing: pins ascending, cell=i//8+1,
-    channel=i%8+1. Returns (pin -> [ {cell, channel, s_pin, d_pin, destination} ], total)."""
-    ms = sorted(rep.must_switch, key=lambda d: d.pin)
+# Per-package channel policy, encoding each build card's as-built fabric
+# (spec: "channel_count adds paralleled power-rail channels per the card policy").
+#   dominant  — one channel per must-switch pin, routed to its dominant rail
+#               (Card 7B as built: LQFP64 = 11 channels / 2 cells).
+#   per_role  — one channel per non-IO role of every switched pin (must + osc),
+#               mutually-exclusive branches sharing the pin's socket trace
+#               (Card 7C as built: LQFP100 = 59 channels / 8 cells).
+CHANNEL_POLICY = {"LQFP64": "dominant", "LQFP100": "per_role"}
+
+
+def _adg714_channels(rep, policy: str = "dominant", vssa_pins: frozenset = frozenset()) -> tuple:
+    """The as-built ADG714 channel map per the package's card policy. Deterministic
+    packing (spec, locked 2026-06-30): switched positions ascending; under per_role each
+    pin contributes one channel per non-IO identity (dominant identity first, then by
+    descending part count / name), flattened, cell=i//8+1, channel=i%8+1. VSS branches
+    of analog-ground pins land on VSSA_TGT (Connector Contract contact 24), not GND.
+    Branches of one pin form a mutually-exclusive group (firmware one-hot).
+    Returns (pin -> [ {cell, channel, s_pin, d_pin, destination, exclusive_group} ], total)."""
+    if policy == "per_role":
+        pins = sorted(list(rep.must_switch) + list(rep.osc_optional), key=lambda d: d.pin)
+    else:
+        pins = sorted(rep.must_switch, key=lambda d: d.pin)
+    flat = []                                   # (decision, destination)
+    branch_count: dict = {}
+    for d in pins:
+        if policy == "per_role":
+            idents = sorted((i for i in d.identities if i != db.ID_IO),
+                            key=lambda i: (-d.identities[i], i))
+            dests = []
+            for i in idents:
+                if i == db.ID_OSC:
+                    # The HSE side is part-dependent, so the card wires BOTH
+                    # service nets to every osc-capable pin (Card 7C: 4x IN + 4x OUT).
+                    dests += ["SERVICE_OSC_IN", "SERVICE_OSC_OUT"]
+                else:
+                    dests.append(d.target_nets.get(i, db.TARGET_NET[i]))
+        else:
+            dests = [d.primary_target_net]
+        dests = ["VSSA_TGT" if (net == "GND" and d.pin in vssa_pins) else net
+                 for net in dests]
+        branch_count[d.pin] = len(dests)
+        flat.extend((d, net) for net in dests)
     out: dict = defaultdict(list)
-    for i, d in enumerate(ms):
+    for i, (d, net) in enumerate(flat):
         ch = i % 8 + 1
         out[d.pin].append({"cell": i // 8 + 1, "channel": ch,
                            "s_pin": f"S{ch}", "d_pin": f"D{ch}",
-                           "destination": d.primary_target_net})
-    return dict(out), len(ms)
+                           "destination": net,
+                           "exclusive_group": d.pin if branch_count[d.pin] > 1 else None})
+    return dict(out), len(flat)
 
 
 def _variant_note(pin_names: dict) -> str:
@@ -629,7 +665,7 @@ def socket_connections(authority: dict) -> list:
         pin = p["position"]
         name = list(p["pin_names"])[0] if p["pin_names"] else ""
         service = [n for n in p.get("breakout", {}).get("service_nets", []) if n]
-        if p["switch_class"] == db.SWITCH_MUST:
+        if p["assignment"].get("channels"):
             dest, kind = p["assignment"]["adg714"]["destination"], "switch"
         elif service:
             dest, kind = service[0], "direct"
@@ -638,7 +674,9 @@ def socket_connections(authority: dict) -> list:
             if net in _NET_CATEGORY:
                 dest, kind = net, "direct"          # fixed power / ground rail
             else:
-                dest, kind = f"CARD_LANE_{pin:03d}", "resistor"   # GPIO -> series R -> lane
+                # Plain GPIO rides the generic, unnumbered lane — numbered
+                # CARD_LANE_nnn nets belong exclusively to switched pins (7B).
+                dest, kind = "CARD_LANE", "resistor"
         cat = _NET_CATEGORY.get(dest, "lane")
         out.append({"pin": pin, "name": name, "kind": kind, "dest": dest,
                     "category": cat, "contact": _dest_contact(dest)})
@@ -655,13 +693,25 @@ def card_wiring(authority: dict) -> dict:
     zif = ZIF_SOCKET.get(pkg, "IC51 ZIF socket")
     pinname = {p["position"]: (list(p["pin_names"])[0] if p["pin_names"] else "")
                for p in authority["positions"]}
-    channels, lane = [], 0
+    # Numbered lanes are per switched PIN, not per channel: a pin's branches share
+    # its socket trace, so they parallel onto one lane. Must-switch pins ascending
+    # take CARD_LANE_001.., then osc-optional pins with channels continue the run
+    # (LQFP64: 001..011 per Card 7B; LQFP100: 001..043 then 044..046). Plain GPIO
+    # rides the generic, unnumbered CARD_LANE (numbered lanes are switch-only).
+    must = [p["position"] for p in sorted(authority["positions"], key=lambda p: p["position"])
+            if p["switch_class"] == db.SWITCH_MUST]
+    osc_wired = [p["position"] for p in sorted(authority["positions"], key=lambda p: p["position"])
+                 if p["switch_class"] == db.SWITCH_OSC_OPTIONAL
+                 and p["assignment"].get("channels")]
+    lane_of = {pin: f"CARD_LANE_{i:03d}" for i, pin in enumerate(must + osc_wired, start=1)}
+    channels, spares, groups = [], [], defaultdict(list)
     cells = adg714_cell_map(authority)
     for cell in cells:
         for sw in cell["switches"]:
             if sw["spare"]:
+                spares.append({"cell": cell["cell"], "channel": sw["channel"],
+                               "s_pin": sw["s_pin"], "d_pin": sw["d_pin"], "spare": True})
                 continue
-            lane += 1
             rail = sw["destination"]
             contacts = RAIL_CONTACT.get(rail, [])
             name = pinname.get(sw["position"], "")
@@ -677,10 +727,16 @@ def card_wiring(authority: dict) -> dict:
                 "d_pin": sw["d_pin"], "d_pin_num": ADG714_TERMINAL_PIN.get(sw["d_pin"]),
                 "socket_pin": sw["position"], "socket_name": name,
                 "rail": rail, "connector_contacts": contacts,
-                "card_lane": f"CARD_LANE_{lane:03d}",
+                "card_lane": lane_of.get(sw["position"], "CARD_LANE"),
                 "s_connects_to": f"socket pin {sw['position']} ({name}) via {zif}",
                 "d_connects_to": d_to,
             })
+            groups[sw["position"]].append((cell["cell"], sw["channel"]))
+    # Mutually-exclusive branch groups: every channel set sharing one socket pin is
+    # one-hot — firmware must close at most one (the open state leaves the pin on
+    # its lane). Only multi-branch pins are listed.
+    exclusive = [{"socket_pin": pin, "channels": [{"cell": c, "channel": ch} for c, ch in chs]}
+                 for pin, chs in sorted(groups.items()) if len(chs) > 1]
     daisy = {"head_din_contact": "LA-11", "tail_dout_contact": "LA-13",
              "order": [c["cell"] for c in cells],
              "note": "DIN into cell 1; each cell DOUT into the next cell DIN; last cell DOUT "
@@ -688,7 +744,8 @@ def card_wiring(authority: dict) -> dict:
     return {"package": pkg, "zif_socket": zif, "connector": CONNECTOR,
             "bus": [{"signal": s, "adg714_pin": p, "connector_contact": c, "controller": m}
                     for s, p, c, m in ADG714_BUS],
-            "cells": len(cells), "channels": channels, "daisy_chain": daisy}
+            "cells": len(cells), "channels": channels, "spare_channels": spares,
+            "exclusive_groups": exclusive, "daisy_chain": daisy}
 
 
 def to_switchmap_json(authority: dict) -> str:
@@ -717,6 +774,19 @@ def to_switchmap_c(authority: dict) -> str:
     L.append("};")
     L.append(f"static const unsigned char NETDECK_{pkg}_CELL_ORDER[] = "
              f"{{ {', '.join(str(n) for n in w['daisy_chain']['order'])} }};")
+    L += ["",
+          f"#define NETDECK_{pkg}_CELLS {w['cells']}",
+          f"#define NETDECK_{pkg}_CHANNELS_USED {len(w['channels'])}",
+          f"#define NETDECK_{pkg}_CHANNELS_SPARE {len(w.get('spare_channels', []))}"]
+    if w.get("exclusive_groups"):
+        L += ["",
+              "/* One-hot rule: channels sharing a socket_pin are mutually exclusive",
+              " * branches of that pin — close at most ONE per socket_pin; all open",
+              " * leaves the pin on its default lane. Multi-branch pins:",
+              " *   " + ", ".join(
+                  f"pin {g['socket_pin']} ({len(g['channels'])} branches)"
+                  for g in w["exclusive_groups"]),
+              " */"]
     L += ["", f"#endif /* NETDECK_SWITCHMAP_{pkg}_H */", ""]
     return "\n".join(L)
 
@@ -959,8 +1029,10 @@ _SWITCH_MD = {db.SWITCH_MUST: "must", db.SWITCH_OSC_OPTIONAL: "osc", db.SWITCH_N
 def build(conn: sqlite3.Connection, package: str) -> dict:
     rep = db.package_report(conn, package)
     fam_names = _families_at(conn, package)
-    adg_ch, channel_count = _adg714_channels(rep)
     blob, ecs = _blob_at(conn, package)
+    vssa_pins = frozenset(pin for pin, toks in blob.items() if "VSSA" in " ".join(toks))
+    policy = CHANNEL_POLICY.get(package, "dominant")
+    adg_ch, channel_count = _adg714_channels(rep, policy, vssa_pins)
     periph = _peripherals_at(conn, package)
 
     names: dict = defaultdict(lambda: defaultdict(int))
@@ -986,7 +1058,10 @@ def build(conn: sqlite3.Connection, package: str) -> dict:
                           "adg714": chans[0] if chans else None,
                           "destination": d.primary_target_net}
         elif d.switch_class == db.SWITCH_OSC_OPTIONAL:
-            assignment = {"kind": "osc_optional", "destination": d.primary_target_net}
+            chans = adg_ch.get(d.pin, [])       # wired on per_role cards (7C), none on 7B
+            assignment = {"kind": "osc_optional", "channels": chans,
+                          "adg714": chans[0] if chans else None,
+                          "destination": d.primary_target_net}
         else:
             only = d.non_io_identities[0] if d.non_io_identities else db.ID_IO
             assignment = {"kind": "direct", "net": NET_DICT.get(only, NET_DICT[db.ID_IO])}
@@ -1046,14 +1121,22 @@ def build(conn: sqlite3.Connection, package: str) -> dict:
         "SELECT DISTINCT family FROM mcu WHERE package_name = ?", (package,))})
 
     incl_osc = rep.must_switch_count + rep.osc_optional_count
+    src = conn.execute(
+        "SELECT path, imported_at FROM source_artifact ORDER BY id DESC LIMIT 1").fetchone()
     data = {
         "package": package,
-        "schema_version": 3,
+        "schema_version": 4,
         "manifest": {
             "part_count": len(parts),
             "supported_parts": parts,
             "supported_families": families,
             "source": "CubeMX MCU XML via tools/stm32_db.py",
+            # DB origin + rev (spec, Layer B): ties every generated file to the
+            # exact CubeMX import it was derived from. Stable across re-runs of
+            # the same DB, so outputs stay byte-stable.
+            "db_source_path": src[0] if src else None,
+            "db_imported_at": src[1] if src else None,
+            "channel_policy": policy,
         },
         "rollup": {
             "positions_total": len(positions),
@@ -1063,7 +1146,9 @@ def build(conn: sqlite3.Connection, package: str) -> dict:
             "switched_pin_count": rep.must_switch_count,
             "incl_osc_count": incl_osc,
             "channel_count": channel_count,
-            "cells_min": math.ceil(channel_count / 8) if channel_count else 0,
+            # Spec (locked 2026-06-30): cells_min = ceil(switched_pin_count / 8),
+            # cells_as_built = ceil(channel_count / 8); cards cite the one they mean.
+            "cells_min": math.ceil(rep.must_switch_count / 8) if rep.must_switch_count else 0,
             "cells_as_built": math.ceil(channel_count / 8) if channel_count else 0,
         },
         "electrical": electrical,
@@ -1213,6 +1298,18 @@ def to_yaml(data: dict) -> str:
     return "\n".join(_yaml(data)) + "\n"
 
 
+def serializable(data: dict) -> dict:
+    """The authority dict shaped for file output: the package-wide electrical block
+    stays top-level only instead of being repeated verbatim inside all 64/100
+    positions (which bloats the JSON/YAML ~100x with identical copies). In-memory
+    consumers keep the per-position reference; files carry it once."""
+    slim = dict(data)
+    slim["positions"] = [
+        {k: v for k, v in p.items() if k != "electrical"} for p in data["positions"]
+    ]
+    return slim
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Write
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1222,10 +1319,11 @@ def write_authority(conn: sqlite3.Connection, package: str, out_dir: Path) -> di
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     data = build(conn, package)
+    slim = serializable(data)
     (out_dir / f"pinout_authority_{package}.json").write_text(
-        json.dumps(data, indent=2), encoding="utf-8", newline="\n")
+        json.dumps(slim, indent=2), encoding="utf-8", newline="\n")
     (out_dir / f"pinout_authority_{package}.yaml").write_text(
-        to_yaml(data), encoding="utf-8", newline="\n")
+        to_yaml(slim), encoding="utf-8", newline="\n")
     (out_dir / f"pins_{package}.tsv").write_text(
         raw_tsv(conn, package), encoding="utf-8", newline="\n")
     (out_dir / f"{package}_socket.kicad_sym").write_text(
