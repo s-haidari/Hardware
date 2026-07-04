@@ -2172,8 +2172,6 @@ class LibraryManagerWindow(QMainWindow):
         layout.setSpacing(5)
         layout.setContentsMargins(4, 6, 4, 6)
 
-        btn_style = "QPushButton { text-align: left; padding: 6px 10px; font-size: 8pt; }"
-
         def section(text):
             lbl = QLabel(text.upper())
             lbl.setObjectName("wfSection")
@@ -2182,7 +2180,7 @@ class LibraryManagerWindow(QMainWindow):
         def add_btn(label, cb, icon_name, icon_color, height=32):
             b = QPushButton(label)
             b.setIcon(lucide_icon(icon_name, icon_color))
-            b.setStyleSheet(btn_style)
+            b.setObjectName("wfAction")
             b.setMaximumHeight(height)
             b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             b.clicked.connect(cb)
@@ -2234,7 +2232,7 @@ class LibraryManagerWindow(QMainWindow):
             a.triggered.connect(lambda checked=False, fn=cb: fn())
         adv_btn = QPushButton("More…")
         adv_btn.setIcon(lucide_icon("sliders-horizontal", LUCIDE_NEUTRAL))
-        adv_btn.setStyleSheet(btn_style)
+        adv_btn.setObjectName("wfAction")
         adv_btn.setMaximumHeight(30)
         adv_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         adv_btn.setMenu(adv_menu)
@@ -2248,7 +2246,7 @@ class LibraryManagerWindow(QMainWindow):
         # Repo root button
         self.repo_btn = QPushButton("Root")
         self.repo_btn.setMaximumHeight(28)
-        self.repo_btn.setStyleSheet(btn_style)
+        self.repo_btn.setObjectName("wfAction")
         self.repo_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         repo_menu = QMenu(self.repo_btn)
         self.repo_path_action = repo_menu.addAction(self.cfg.get('RepoRoot', ''))
@@ -2264,7 +2262,7 @@ class LibraryManagerWindow(QMainWindow):
         # Downloads button
         self.dl_btn = QPushButton("Downloads")
         self.dl_btn.setMaximumHeight(28)
-        self.dl_btn.setStyleSheet(btn_style)
+        self.dl_btn.setObjectName("wfAction")
         self.dl_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         dl_menu = QMenu(self.dl_btn)
         self.dl_path_action = dl_menu.addAction(self.cfg.get('Downloads', ''))
@@ -2801,8 +2799,12 @@ class LibraryManagerWindow(QMainWindow):
         QLabel#headerStatus { color: @FG_DIM@; font-size: 9pt; }
         QToolButton#iconBtn { font-size: 13pt; padding: 0 8px; border: none; background: transparent; color: @FG_DIM@; }
         QToolButton#iconBtn:hover { color: @TITLE_FG@; }
-        QFrame#card { border: 1px solid @BORDER@; border-radius: 6px; background-color: @@CARD_BG@@; margin-top: 6px; }
-        QLabel#cardTitle { color: @TITLE_FG@; padding: 6px 8px 2px 8px; font-weight: 700; font-size: 9pt; }
+        QFrame#card { border: none; background: transparent; margin-top: 6px; }
+        QLabel#cardTitle { color: @FG_DIM@; padding: 0; }
+        QFrame#cardRule { background: @BORDER@; border: none; max-height: 1px; }
+        QPushButton#wfAction { text-align: left; padding: 6px 10px; font-size: 8pt; font-weight: 600; background: transparent; border: none; border-radius: 5px; color: @FG@; }
+        QPushButton#wfAction:hover { background: @@HOVER_BG@@; color: @FG@; }
+        QPushButton#wfAction::menu-indicator { image: none; width: 0; }
         QLabel#wfSection { color: @FG_DIM@; font-weight: 800; font-size: 7pt; padding: 7px 4px 1px 4px; }
         QLabel#previewPane { background-color: @@LOG_BG@@; border: 1px solid @BORDER@; border-radius: 6px; color: @FG_DIM@; }
         QToolButton { background: transparent; border: 1px solid @BORDER@; border-radius: 4px; padding: 6px 10px; font-weight: 600; }

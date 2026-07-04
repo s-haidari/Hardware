@@ -313,18 +313,26 @@ class CardWidget(QFrame):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(6)
-        self.title_lbl = QLabel(title)
+        # De-boxed: the title reads as a SectionHeader caption (uppercase, dim,
+        # letterspaced) over a hairline rule, on flat content — no framed box.
+        self.title_lbl = QLabel(title.upper())
         self.title_lbl.setObjectName("cardTitle")
-        self.title_lbl.setFont(_font(_UI, FS_BODY, bold=True))
-        # title row: label on the left, an optional widget slot on the right
+        self.title_lbl.setFont(_font(_UI, FS_LABEL, bold=True, spacing=1.1))
+        # title row: caption on the left, a hairline rule filling the width,
+        # then an optional widget slot on the right
         title_row = QWidget()
         tl = QHBoxLayout(title_row)
-        tl.setContentsMargins(0, 0, 0, 0)
-        tl.setSpacing(6)
+        tl.setContentsMargins(0, 2, 0, 2)
+        tl.setSpacing(10)
+        self._has_title = bool(title)
+        tl.addWidget(self.title_lbl)
+        self._rule = QFrame()
+        self._rule.setObjectName("cardRule")
+        self._rule.setFixedHeight(1)
+        self._rule.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        tl.addWidget(self._rule, 1)
         if not title:
             self.title_lbl.setVisible(False)
-        tl.addWidget(self.title_lbl)
-        tl.addStretch()
         self._title_right = QWidget()
         self._title_right_layout = QHBoxLayout(self._title_right)
         self._title_right_layout.setContentsMargins(0, 0, 0, 0)
@@ -333,7 +341,7 @@ class CardWidget(QFrame):
         outer.addWidget(title_row)
         self.content = QWidget()
         self.content_layout = QVBoxLayout(self.content)
-        self.content_layout.setContentsMargins(8, 6, 8, 8)
+        self.content_layout.setContentsMargins(0, 4, 0, 6)
         self.content_layout.setSpacing(6)
         outer.addWidget(self.content)
 
