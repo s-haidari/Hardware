@@ -1354,8 +1354,21 @@ class Stm32PinsWidget(QWidget):
             if not out:
                 return
             vdirs = [Path(out)]
+        import hashlib
+
+        def _hashes(vdir, names):
+            out = {}
+            for nm in names:
+                f = Path(vdir) / nm
+                if f.exists():
+                    out[nm] = hashlib.sha256(f.read_bytes()).hexdigest()
+            return out
+
         conn = sdb.connect(self.db_path)
         try:
+            # hash what's there so the save can report changed vs unchanged
+            probe = [f"pinout_authority_{p}.json" for p in ("LQFP64", "LQFP100")]
+            before = {str(v): _hashes(v, probe) for v in vdirs}
             written = [sauth.write_authority(conn, pkg, vdir)
                        for vdir in vdirs for pkg in ("LQFP64", "LQFP100")]
             # Drift gate at save time: a vault copy that contradicts the build
@@ -1365,6 +1378,15 @@ class Stm32PinsWidget(QWidget):
             lint_ok, lint_lines = (True, [])
             if claim_files:
                 lint_ok, lint_lines = sauth.run_lint(conn, claim_files)
+            changed = []
+            for v in vdirs:
+                after = _hashes(v, probe)
+                for nm in probe:
+                    if before.get(str(v), {}).get(nm) != after.get(nm):
+                        changed.append(nm)
+            changed = sorted(set(changed))
+            # dataset registration page (generated; overwritten on every save)
+            self._write_dataset_page(vdirs, written, lint_ok, lint_lines, changed)
         except Exception as e:
             QMessageBox.warning(self, "Generate → Vault", f"Failed:\n{e}")
             return
@@ -1378,13 +1400,58 @@ class Stm32PinsWidget(QWidget):
                 self, "Generate → Vault",
                 f"Wrote {n} files, but the drift gate found card/authority "
                 f"mismatches:\n\n{drift}\n\nFix the build cards or the claims files.")
-        self.status.setText(
-            f"Wrote {n} pin-data files to {dests}. "
-            + ("Drift gate: all claims match." if lint_ok else "DRIFT DETECTED — see warning."))
+        what = "no content changes" if not changed else "changed: " + ", ".join(changed)
+        msg = (f"Wrote {n} pin-data files to {dests} ({what}). "
+               + ("Drift gate: all claims match." if lint_ok else "DRIFT DETECTED — see warning."))
+        self.status.setText(msg)
+        if self.ctx:
+            self.ctx.log(msg)
         try:
             os.startfile(str(vdirs[0]))  # noqa: S606
         except Exception:
             pass
+
+    def _write_dataset_page(self, vdirs, written, lint_ok, lint_lines, changed):
+        """The dataset registration page next to the generated files: provenance,
+        rollup numbers, the full inventory, and the latest drift-gate verdict.
+        Fully generated — safe to overwrite on every save."""
+        by_pkg = {}
+        for w in written:
+            by_pkg.setdefault(w["package"], w)
+        if not by_pkg:
+            return
+        L = ["---", "type: dataset", "generated: true",
+             "tool: git/Hardware tools/stm32_authority.py",
+             "schema_version: 4", "---", "",
+             "# STM32 Pinout Authority", "",
+             "Generated pinout-authority collection — the switch fabric, breakouts, and",
+             "cell counts are **derived, never hand-authored** (see the Pinout Authority",
+             "Generator spec). Build cards cite these files instead of copying pin numbers.",
+             "",
+             "Homes: `Wiki/Datasets/STM32 Pinout Authority/` and `Brain/data/` "
+             "(identical copies, written together by Save to Vault).", ""]
+        for pkg, w in sorted(by_pkg.items()):
+            r = w["rollup"]
+            L += [f"## {pkg}", "",
+                  f"- Must-switch pins: **{r['must_switch_count']}** "
+                  f"(+{r['osc_optional_count']} oscillator-optional)",
+                  f"- Channels: **{r['channel_count']}** — cells: "
+                  f"**{r['cells_min']}** minimum / **{r['cells_as_built']}** as built",
+                  "- Files: " + ", ".join(f"`{f}`" for f in w["files"]), ""]
+        L += ["## Drift Gate", "",
+              ("All build-card claims match the authority."
+               if lint_ok else "**DRIFT DETECTED** — see below."), ""]
+        L += [f"- {ln}" for ln in lint_lines]
+        L += ["", "## Last Save", "",
+              ("- No content changes vs the previous save." if not changed
+               else "- Changed files: " + ", ".join(f"`{c}`" for c in changed)), ""]
+        text = "\n".join(L)
+        for v in vdirs:
+            try:
+                (Path(v) / "STM32 Pinout Authority.md").write_text(
+                    text, encoding="utf-8", newline="\n")
+            except Exception:
+                pass
 
     # ── live file-watch ─────────────────────────────────────────────
     def _arm_watch(self):
