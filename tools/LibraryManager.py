@@ -583,6 +583,113 @@ def match_model_for_footprint(fp_stem: str, model_files: List[Path]) -> Optional
     return best
 
 
+# ── Part grouping — associate symbol+footprint+model regardless of name ──────
+# Names alone don't group differently-named parts (footprint 'IC51-1004-809' vs
+# model 'Yamaichi_ZIF.step'). KiCad already encodes the links explicitly, so we
+# group by those first: a symbol's Footprint property, a footprint's (model …)
+# line. Name-normalization is only a fallback to *propose* a model for a
+# footprint that has none, and a persisted override map covers the rest.
+def symbol_footprint_ref(symbol_block: str) -> str:
+    """The footprint a symbol points at (library nickname stripped), or ''."""
+    m = _FP_PROP_RE.search(symbol_block)
+    return footprint_name(m.group(2)) if m else ""
+
+
+def footprint_model_ref(footprint_text: str) -> str:
+    """Basename of the 3D model a footprint's (model …) line references, or ''."""
+    m = _MODEL_PATH_RE.search(footprint_text)
+    if not m:
+        return ""
+    raw = m.group(2).strip().strip('"')
+    return raw.replace("\\", "/").split("/")[-1]
+
+
+def associate_parts(symbol_text: str, footprints: Dict[str, str],
+                    model_files, overrides: Optional[dict] = None) -> List[dict]:
+    """Group symbol/footprint/model into logical parts, naming-independent.
+
+    Precedence for each link: manual override → explicit KiCad reference →
+    name-normalized guess. Args: symbol lib text; {footprint_stem: text};
+    iterable of model filenames; overrides {"model": {fp: file},
+    "symbol": {sym: fp}}. Returns [{footprint, symbols, model, model_source}].
+    """
+    overrides = overrides or {}
+    ov_model = overrides.get("model", {})
+    ov_sym = overrides.get("symbol", {})
+    model_paths = [Path(x) for x in model_files]
+
+    groups: Dict[str, dict] = {}
+
+    def group_for(fp: str) -> dict:
+        if fp not in groups:
+            groups[fp] = {"footprint": fp, "symbols": [], "model": None, "model_source": None}
+        return groups[fp]
+
+    # footprint -> model: override, then explicit (model …) line, then name guess
+    for stem, text in footprints.items():
+        g = group_for(stem)
+        if stem in ov_model:
+            g["model"], g["model_source"] = ov_model[stem], "override"
+        else:
+            ref = footprint_model_ref(text)
+            if ref:
+                g["model"], g["model_source"] = ref, "reference"
+            else:
+                guess = match_model_for_footprint(stem, model_paths)
+                if guess:
+                    g["model"], g["model_source"] = guess.name, "name-match"
+
+    # symbol -> footprint: override, then the symbol's Footprint property
+    ungrouped: List[str] = []
+    for b in extract_symbol_blocks(symbol_text):
+        nm = extract_symbol_name(b)
+        fp = ov_sym.get(nm) or symbol_footprint_ref(b)
+        if fp:
+            group_for(fp)["symbols"].append(nm)
+        else:
+            ungrouped.append(nm)
+
+    out = sorted(groups.values(), key=lambda g: g["footprint"].lower())
+    if ungrouped:
+        out.append({"footprint": None, "symbols": sorted(ungrouped),
+                    "model": None, "model_source": None})
+    return out
+
+
+def _group_overrides_path(cfg: Dict[str, str]) -> Path:
+    return Path(cfg.get("Libs", ".")) / "part_group_overrides.json"
+
+
+def load_group_overrides(cfg: Dict[str, str]) -> dict:
+    import json
+    p = _group_overrides_path(cfg)
+    if p.exists():
+        try:
+            return json.loads(read_text(p))
+        except Exception:
+            return {}
+    return {}
+
+
+def save_group_overrides(cfg: Dict[str, str], overrides: dict) -> None:
+    import json
+    write_text(_group_overrides_path(cfg), json.dumps(overrides, indent=2))
+
+
+def associate_parts_from_cfg(cfg: Dict[str, str], overrides: Optional[dict] = None) -> List[dict]:
+    """associate_parts() sourced from the configured shared-library paths."""
+    sym_path = Path(cfg["SymbolLib"])
+    symbol_text = read_text(sym_path) if sym_path.exists() else ""
+    fp_dir = Path(cfg["FootprintLib"])
+    footprints = {p.stem: read_text(p) for p in sorted(fp_dir.glob("*.kicad_mod"))} \
+        if fp_dir.exists() else {}
+    mdl_dir = Path(cfg["ModelLib"])
+    model_files = [p.name for p in sorted(mdl_dir.glob("*"))
+                   if p.suffix.lower() in (".step", ".stp", ".wrl")] if mdl_dir.exists() else []
+    return associate_parts(symbol_text, footprints, model_files,
+                           overrides if overrides is not None else load_group_overrides(cfg))
+
+
 def repair_library(cfg: Dict[str, str], log: UILog) -> Dict[str, int]:
     """Fix the whole shared library so placed parts resolve in KiCad:
     rewrite every symbol's Footprint to MyFootprints:<name>, add/repair each

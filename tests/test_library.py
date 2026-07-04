@@ -283,3 +283,55 @@ def test_filter_rows_dup_only_and_type(tmp_path):
     assert {r["name"] for r in dup_only} == {"A"}
     sym_only = L.filter_rows(rows, "", {"Symbol"}, dup_only=False)
     assert all(r["type"] == "Symbol" for r in sym_only)
+
+
+# --- reference-based part grouping (names may differ) ---------------------
+def test_symbol_footprint_ref():
+    b = '(symbol "U1" (property "Footprint" "MyFootprints:QFN-16") (pin 1))'
+    assert L.symbol_footprint_ref(b) == "QFN-16"
+    assert L.symbol_footprint_ref('(symbol "U2" (pin 1))') == ""
+
+
+def test_footprint_model_ref():
+    assert L.footprint_model_ref('(footprint "X" (model "${MY3DMODELS}/Foo.step" (scale 1)))') == "Foo.step"
+    assert L.footprint_model_ref('(footprint "X" (pad 1))') == ""
+
+
+def test_associate_parts_groups_by_reference():
+    # Symbol->footprint via the Footprint property; footprint->model via its
+    # (model …) line — grouped even when footprint and model names are unrelated.
+    sym = ('(kicad_symbol_lib (version 20211014) (generator "t")\n'
+           '  (symbol "ADG714" (property "Footprint" "MyFootprints:IC51-1004-809") (pin 1))\n'
+           '  (symbol "R33" (property "Footprint" "MyFootprints:R_0402") (pin 1))\n'
+           '  (symbol "NoFP" (pin 1))\n)\n')
+    footprints = {
+        "IC51-1004-809": '(footprint "IC51-1004-809" (model "${MY3DMODELS}/Yamaichi_ZIF.step" (scale 1)))',
+        "R_0402": '(footprint "R_0402" (pad 1))',   # no (model …) line
+    }
+    groups = L.associate_parts(sym, footprints, ["Yamaichi_ZIF.step", "R_0402.step"])
+    by_fp = {g["footprint"]: g for g in groups}
+    # unrelated footprint + model grouped via the explicit reference
+    assert by_fp["IC51-1004-809"]["model"] == "Yamaichi_ZIF.step"
+    assert by_fp["IC51-1004-809"]["model_source"] == "reference"
+    assert by_fp["IC51-1004-809"]["symbols"] == ["ADG714"]
+    # footprint without a model line falls back to a name-normalized guess
+    assert by_fp["R_0402"]["model"] == "R_0402.step"
+    assert by_fp["R_0402"]["model_source"] == "name-match"
+    # a symbol with no Footprint property is reported ungrouped
+    ung = [g for g in groups if g["footprint"] is None][0]
+    assert ung["symbols"] == ["NoFP"]
+
+
+def test_associate_parts_override_wins():
+    sym = '(kicad_symbol_lib\n  (symbol "U1" (property "Footprint" "MyFootprints:FP1") (pin 1))\n)\n'
+    footprints = {"FP1": '(footprint "FP1" (model "${V}/auto.step"))'}
+    ov = {"model": {"FP1": "manual_pick.step"}}
+    g = L.associate_parts(sym, footprints, ["auto.step", "manual_pick.step"], ov)[0]
+    assert g["model"] == "manual_pick.step" and g["model_source"] == "override"
+
+
+def test_group_overrides_roundtrip(tmp_path):
+    cfg = {"Libs": str(tmp_path)}
+    assert L.load_group_overrides(cfg) == {}
+    L.save_group_overrides(cfg, {"model": {"FP1": "x.step"}})
+    assert L.load_group_overrides(cfg) == {"model": {"FP1": "x.step"}}
