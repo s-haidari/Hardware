@@ -30,6 +30,17 @@ import ui_theme
 import ui_widgets as uw
 
 _PANEL = _CARD = _TXT = _MUT = _LINE = _BODY = ""
+# Grayscale luminance ramp — the ONLY encoding of the switch axis (must-switch is
+# the whole point of the board, so it carries the most light; fixed pins recede).
+# No categorical hues anywhere: net category is shown as an inline TEXT tag. Tones
+# follow the active theme, so they invert correctly between graphite and paper.
+_T_MUST = _T_OSC = _T_FIXED = _T_SEL = ""
+
+
+def _refresh_tones():
+    t = ui_theme.theme()
+    global _T_MUST, _T_OSC, _T_FIXED, _T_SEL
+    _T_MUST, _T_OSC, _T_FIXED, _T_SEL = t["FG"], t["FG_DIM"], t["DOT_IDLE"], t["ACCENT"]
 
 
 def set_tab_theme(dark: bool):
@@ -40,7 +51,8 @@ def set_tab_theme(dark: bool):
     _TXT = t["FG"]             # primary text
     _MUT = t["FG_DIM"]         # muted text
     _LINE = t["BORDER"]        # hairlines
-    _BODY = t["IN_BG"]         # the QFP package body fill
+    _BODY = t["IN_BG"]         # the package body fill
+    _refresh_tones()
 
 
 set_tab_theme(False)   # light is the app default
@@ -706,8 +718,14 @@ class ConnectionDiagram(QWidget):
             p.setPen(Qt.NoPen); p.setBrush(QColor(color))
             p.drawEllipse(QRectF(x - 2.5, y - 2.5, 5, 5))
 
-        # socket node (spans all branches)
+        # socket node (spans all branches); a left accent in the pin's class colour
+        # ties it back to the pin map.
+        pd = next((x for x in self._a["positions"] if x["position"] == self._pos), None)
+        cls_col = _SWITCH_COLOR.get(pd["switch_class"], _MUT) if pd else _MUT
         node(sockX, top, sockW, sockH, _LINE)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(cls_col))
+        p.drawRoundedRect(QRectF(sockX, top + 6, 3, sockH - 12), 1.5, 1.5)
         label(sockX + 12, top + 8, sockW - 20, cap_f, _MUT, socket_ref)
         p.setFont(big_f); p.setPen(QColor(_TXT))
         p.drawText(QRectF(sockX + 12, sockCY - 14, sockW - 20, 18),

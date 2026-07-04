@@ -1,0 +1,14 @@
+# NETDECK desktop — runtime + dev dependencies.
+# Recreate/refresh the project venv with:
+#   .venv\Scripts\python -m pip install -r requirements.txt
+#
+# ── GUI runtime ──────────────────────────────────────────────────────────────
+PyQt5>=5.15,<5.16
+
+# Fluent design widget set, themed GRAYSCALE (see tools/fluent_theme.py).
+# PyQt5 build — imported as `qfluentwidgets`. [full] adds frameless-window,
+# darkdetect, colorthief, scipy (acrylic/theme helpers).
+PyQt-Fluent-Widgets[full]>=1.11
+
+# ── Tests ────────────────────────────────────────────────────────────────────
+pytest>=7
