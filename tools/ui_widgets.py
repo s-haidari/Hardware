@@ -149,17 +149,23 @@ class _Readout(QFrame):
         super().__init__(parent)
         self._accent = accent
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(14, 2, 14, 4)
-        lay.setSpacing(2)
+        lay.setContentsMargins(15, 2, 15, 4)
+        lay.setSpacing(4)
         self._v = QLabel("–")
         self._v.setFont(_font(_MONO, FS_VALUE, demibold=True))
-        self._tick = QFrame()
-        self._tick.setFixedSize(12, 2)
+        # a small type-coloured DOT before the label (never an underline)
+        lrow = QHBoxLayout()
+        lrow.setContentsMargins(0, 0, 0, 0)
+        lrow.setSpacing(6)
+        self._dot = QFrame()
+        self._dot.setFixedSize(7, 7)
         self._l = QLabel(label.upper())
         self._l.setFont(_font(_UI, FS_LABEL, bold=True, spacing=1.1))
+        lrow.addWidget(self._dot)
+        lrow.addWidget(self._l)
+        lrow.addStretch(1)
         lay.addWidget(self._v)
-        lay.addWidget(self._tick)
-        lay.addWidget(self._l)
+        lay.addLayout(lrow)
         self.restyle()
 
     def set_value(self, v):
@@ -168,9 +174,8 @@ class _Readout(QFrame):
     def restyle(self):
         self.setStyleSheet("background:transparent;")
         self._v.setStyleSheet(f"color:{ui_theme.tc('FG')};")
-        self._tick.setStyleSheet(
-            f"background:{self._accent or 'transparent'};border:none;")
-        self._tick.setVisible(bool(self._accent))
+        dot = self._accent or ui_theme.tc("DOT_IDLE")
+        self._dot.setStyleSheet(f"background:{dot};border:none;border-radius:3px;")
         self._l.setStyleSheet(f"color:{ui_theme.tc('FG_DIM')};")
 
 

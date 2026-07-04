@@ -20,36 +20,58 @@ except Exception:  # pragma: no cover
     HAVE_QTSVG = False
 
 # ── Theme tokens ─────────────────────────────────────────────────────────────
+# Graphite ground. ACCENT is a NEUTRAL bright (chrome active states only, never a
+# colour): colour is reserved entirely for pin/net type, via CATEGORY below.
 DARK_COLORS = {
-    "WIN_BG": "#1a1a1c", "MAIN_BG": "#151517", "FG": "#ededf0", "FG_DIM": "#90909a",
-    "TITLE_FG": "#ffffff", "CARD_BG": "#212124", "BORDER": "#33333a",
-    "HDR1": "#212124", "HDR2": "#1a1a1c", "CHIP_BG": "#26262b", "IN_BG": "#1c1c1f",
-    "BTN_BG": "#26262b", "BTN_HOVER": "#2f2f35", "BTN_BORDER": "#37373e",
-    "ACCENT": "#e5534b",   # NETDECK red — active states only
-    "TREE_BG": "#1c1c1f", "TREE_ALT": "#202024",
-    "SEL_BG": "#33333c", "SEL_FG": "#ffffff", "HOVER_BG": "#26262b",
-    "SEC_BG": "#212124", "SEC_FG": "#b8b8c0", "LOG_BG": "#151517", "LOG_FG": "#c0c0c8",
-    "SCROLL": "#37373e", "SCROLL_HOVER": "#4a4a52", "ST_BG": "#151517", "ST_FG": "#90909a",
-    "PROG_BG": "#1c1c1f", "PROG1": "#55555e", "PROG2": "#d0d0d6",
-    "TAB_BG": "#212124", "TAB_SEL_BG": "#2a2a30", "TAB_SEL_FG": "#ffffff",
-    "MENU_BG": "#212124", "MENU_SEL": "#2a2a30", "CHK_BG": "#1c1c1f", "CHK_ON": "#d0d0d6",
-    "DOT_IDLE": "#55555e",
+    "WIN_BG": "#0f1012", "MAIN_BG": "#17181b", "FG": "#e9eaed", "FG_DIM": "#8b8f97",
+    "TITLE_FG": "#ffffff", "CARD_BG": "#1e2024", "BORDER": "#2b2e34",
+    "HDR1": "#1e2024", "HDR2": "#17181b", "CHIP_BG": "#23262b", "IN_BG": "#202227",
+    "BTN_BG": "#23262b", "BTN_HOVER": "#2b2e34", "BTN_BORDER": "#34383f",
+    "ACCENT": "#d6d8dc",   # neutral bright — chrome active only (no colour)
+    "TREE_BG": "#1a1b1f", "TREE_ALT": "#1e2024",
+    "SEL_BG": "#2b2e34", "SEL_FG": "#ffffff", "HOVER_BG": "#23262b",
+    "SEC_BG": "#1e2024", "SEC_FG": "#b6bac1", "LOG_BG": "#131417", "LOG_FG": "#b9bcc3",
+    "SCROLL": "#34383f", "SCROLL_HOVER": "#454a52", "ST_BG": "#17181b", "ST_FG": "#8b8f97",
+    "PROG_BG": "#202227", "PROG1": "#4a4e56", "PROG2": "#d6d8dc",
+    "TAB_BG": "#1e2024", "TAB_SEL_BG": "#26292f", "TAB_SEL_FG": "#ffffff",
+    "MENU_BG": "#1e2024", "MENU_SEL": "#26292f", "CHK_BG": "#202227", "CHK_ON": "#d6d8dc",
+    "DOT_IDLE": "#4a4e56",
 }
 LIGHT_COLORS = {
-    "WIN_BG": "#f7f7f6", "MAIN_BG": "#efefee", "FG": "#26262b", "FG_DIM": "#85858c",
-    "TITLE_FG": "#101014", "CARD_BG": "#ffffff", "BORDER": "#ececea",
-    "HDR1": "#ffffff", "HDR2": "#f2f2f0", "CHIP_BG": "#efefed", "IN_BG": "#ffffff",
-    "BTN_BG": "#f7f7f6", "BTN_HOVER": "#efefee", "BTN_BORDER": "#e2e2df",
-    "ACCENT": "#e5534b",   # NETDECK red — active states only
-    "TREE_BG": "#ffffff", "TREE_ALT": "#f7f7f6",
-    "SEL_BG": "#e6e6e2", "SEL_FG": "#101014", "HOVER_BG": "#f2f2f0",
-    "SEC_BG": "#f7f7f6", "SEC_FG": "#56565c", "LOG_BG": "#fafafa", "LOG_FG": "#33333a",
-    "SCROLL": "#d4d4d0", "SCROLL_HOVER": "#b8b8b4", "ST_BG": "#efefee", "ST_FG": "#85858c",
-    "PROG_BG": "#efefee", "PROG1": "#b0b0ac", "PROG2": "#2a2a30",
-    "TAB_BG": "#f0f0ee", "TAB_SEL_BG": "#ffffff", "TAB_SEL_FG": "#101014",
-    "MENU_BG": "#ffffff", "MENU_SEL": "#f2f2f0", "CHK_BG": "#ffffff", "CHK_ON": "#2a2a30",
-    "DOT_IDLE": "#b0b0ac",
+    "WIN_BG": "#f4f6f4", "MAIN_BG": "#eceeec", "FG": "#1b1e1c", "FG_DIM": "#6b7069",
+    "TITLE_FG": "#101210", "CARD_BG": "#ffffff", "BORDER": "#dde2df",
+    "HDR1": "#ffffff", "HDR2": "#f1f3f1", "CHIP_BG": "#eceeec", "IN_BG": "#ffffff",
+    "BTN_BG": "#f4f6f4", "BTN_HOVER": "#eceeec", "BTN_BORDER": "#dbe0dc",
+    "ACCENT": "#2c302d",   # neutral bright — chrome active only (no colour)
+    "TREE_BG": "#ffffff", "TREE_ALT": "#f6f8f6",
+    "SEL_BG": "#e4e8e4", "SEL_FG": "#101210", "HOVER_BG": "#f1f3f1",
+    "SEC_BG": "#f4f6f4", "SEC_FG": "#545953", "LOG_BG": "#fafbfa", "LOG_FG": "#333934",
+    "SCROLL": "#d2d7d3", "SCROLL_HOVER": "#b6bcb7", "ST_BG": "#eceeec", "ST_FG": "#6b7069",
+    "PROG_BG": "#eceeec", "PROG1": "#adb3ae", "PROG2": "#2c302d",
+    "TAB_BG": "#eef0ee", "TAB_SEL_BG": "#ffffff", "TAB_SEL_FG": "#101210",
+    "MENU_BG": "#ffffff", "MENU_SEL": "#f1f3f1", "CHK_BG": "#ffffff", "CHK_ON": "#2c302d",
+    "DOT_IDLE": "#adb3ae",
 }
+
+# Categorical pin/net-type palette — one tuned family (≈L60 S48) on graphite.
+# This is the ONLY place colour lives; UI chrome stays neutral.
+CATEGORY = {
+    "power":    "#e0a94a",   # power rails: VTARGET / VDDA / VREF / VBAT
+    "ground":   "#7f93ad",   # returns: GND / VSSA
+    "core":     "#b58cd0",   # core cap: VCAP
+    "service":  "#66b884",   # service nets: OSC / NRST / BOOT0 / debug
+    "lane":     "#5d9cd6",   # default IO lane: CARD_LANE
+    "must":     "#e0685f",   # must-switch class
+    "osc":      "#e0a94a",   # oscillator class
+    "fixed":    "#8b8f97",   # fixed / neutral
+    "breakout": "#5d9cd6",   # extraction breakout
+    "fivev":    "#3fb6a0",   # 5V-tolerant
+}
+
+
+def cat(name: str, fallback: str = "#8b8f97") -> str:
+    """A pin/net-type colour by category name."""
+    return CATEGORY.get(name, fallback)
 
 # The active theme dict. LIGHT is the app default; the main window's
 # _apply_theme calls set_theme() and every custom-painted widget reads tc().

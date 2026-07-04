@@ -2783,9 +2783,9 @@ class LibraryManagerWindow(QMainWindow):
         QWidget#rootCentral { background-color: @@WIN_BG@@; }
         QFrame#headerBar { background: transparent; border: none; }
         QLabel#appTitle { font-size: 12pt; font-weight: 800; color: @TITLE_FG@; }
-        QPushButton#navTab { background: transparent; border: none; border-bottom: 2px solid transparent; border-radius: 0; padding: 7px 14px; margin-right: 4px; font-size: 11pt; font-weight: 700; color: @FG_DIM@; text-align: center; }
-        QPushButton#navTab:hover { color: @TITLE_FG@; }
-        QPushButton#navTab:checked { color: @TITLE_FG@; border-bottom: 3px solid @ACCENT@; }
+        QPushButton#navTab { background: transparent; border: none; border-radius: 5px; padding: 6px 14px; margin-right: 2px; font-size: 11pt; font-weight: 700; color: @FG_DIM@; text-align: center; }
+        QPushButton#navTab:hover { color: @TITLE_FG@; background: @@HOVER_BG@@; }
+        QPushButton#navTab:checked { color: @TITLE_FG@; background: @@CARD_BG@@; }
         /* ── instrument kit (ui_widgets): left rail + standardized buttons ── */
         QPushButton#railItem { background: transparent; border: none; border-left: 3px solid transparent; border-radius: 0; padding: 5px 10px; color: @FG_DIM@; text-align: left; font-weight: 600; }
         QPushButton#railItem:hover { color: @FG@; background: @@HOVER_BG@@; }
@@ -2923,12 +2923,14 @@ class LibraryManagerWindow(QMainWindow):
         # repaint duplicate highlights with theme-appropriate colours
         if hasattr(self, "tree") and getattr(self, "rows", None) is not None:
             self.on_filter_change()
-        # let the STM32 tab's custom visuals follow the theme
-        if getattr(self, "stm32_widget", None) is not None:
-            try:
-                self.stm32_widget.apply_theme(dark)
-            except Exception:
-                pass
+        # let the tabs' custom visuals follow the theme
+        for attr in ("stm32_widget", "tools_widget"):
+            w = getattr(self, attr, None)
+            if w is not None and hasattr(w, "apply_theme"):
+                try:
+                    w.apply_theme(dark)
+                except Exception:
+                    pass
 
 
     def toggle_theme(self):

@@ -58,12 +58,13 @@ from ui_theme import (lucide_icon, LUCIDE_NEUTRAL, LUCIDE_BLUE,  # noqa: F401
 _COLS = ["Pin", "Side", "Pin Name(s)", "Role Set", "Switch",
          "Destination", "Peripherals", "Breakout", "VDD (V)"]
 
-_BREAKOUT_COLOR = "#4c8df0"   # extraction-access / debug-service breakout (blue)
+# All type colour comes from the one shared categorical palette (ui_theme.CATEGORY).
+_BREAKOUT_COLOR = ui_theme.cat("breakout")
 
 _SWITCH_COLOR = {
-    sdb.SWITCH_MUST: "#e5534b",
-    sdb.SWITCH_OSC_OPTIONAL: "#e6a030",
-    sdb.SWITCH_NONE: "#9aa1a9",
+    sdb.SWITCH_MUST: ui_theme.cat("must"),
+    sdb.SWITCH_OSC_OPTIONAL: ui_theme.cat("osc"),
+    sdb.SWITCH_NONE: ui_theme.cat("fixed"),
 }
 _SWITCH_LABEL = {
     sdb.SWITCH_MUST: "Must-Switch",
@@ -351,8 +352,9 @@ _SVG_FONT = "Geist,Inter,'Segoe UI',system-ui,Arial"
 _SVG_MONO = "'JetBrains Mono',Consolas,monospace"
 
 
-_CAT_COLOR = {"power": "#e5534b", "analog": "#e6a030", "ground": "#9aa1a9",
-              "core": "#8b6fe8", "service": "#24b196", "lane": "#4c8df0"}
+_CAT_COLOR = {"power": ui_theme.cat("power"), "analog": ui_theme.cat("osc"),
+              "ground": ui_theme.cat("ground"), "core": ui_theme.cat("core"),
+              "service": ui_theme.cat("service"), "lane": ui_theme.cat("lane")}
 _CAT_LABEL = [("All", None), ("Switched", "switch"), ("Power", "power"), ("Analog", "analog"),
               ("Ground", "ground"), ("Core VCAP", "core"), ("Debug & Service", "service"),
               ("GPIO Lanes", "lane")]
@@ -542,7 +544,7 @@ class PinMapWidget(QWidget):
                 qp.drawRoundedRect(QRectF(x - 1.5, y - 1.5, pw + 3, ph + 3), 2, 2)
             if pos in self.highlight:
                 qp.setBrush(Qt.NoBrush)
-                qp.setPen(QPen(QColor("#24b196"), 2.5))
+                qp.setPen(QPen(QColor(ui_theme.cat("fivev")), 2.5))
                 qp.drawRoundedRect(QRectF(x - 3.5, y - 3.5, pw + 7, ph + 7), 3, 3)
             if pos == self.selected:
                 qp.setBrush(Qt.NoBrush)
@@ -929,7 +931,7 @@ class Stm32PinsWidget(QWidget):
             ("osc", "Oscillator", _SWITCH_COLOR[sdb.SWITCH_OSC_OPTIONAL]),
             ("fixed", "Fixed", None),
             ("breakout", "Breakout", _BREAKOUT_COLOR),
-            ("fivev", "5V-Tolerant", "#24b196"),
+            ("fivev", "5V-Tolerant", ui_theme.cat("fivev")),
             ("io", "Per-Pin I/O", None),
             ("vdda", "VDDA (V)", None),
         ])
