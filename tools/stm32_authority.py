@@ -1341,12 +1341,21 @@ def write_authority(conn: sqlite3.Connection, package: str, out_dir: Path) -> di
         to_switchmap_c(data), encoding="utf-8", newline="\n")
     (out_dir / f"wiring_{package}.md").write_text(
         to_wiring_md(data), encoding="utf-8", newline="\n")
+    svg_files = []
+    try:
+        from stm32_pins_tab import pin_map_svg
+        (out_dir / f"pinmap_{package}.svg").write_text(
+            pin_map_svg(data), encoding="utf-8", newline="\n")
+        svg_files = [f"pinmap_{package}.svg"]
+    except Exception:
+        pass                                  # headless without PyQt5: skip the SVG
     return {
         "package": package, "out_dir": str(out_dir),
         "files": [f"pinout_authority_{package}.yaml", f"pinout_authority_{package}.json",
                   f"pins_{package}.tsv", f"{package}_socket.kicad_sym",
                   f"pins_{package}.csv", f"authority_{package}.md",
-                  f"switchmap_{package}.json", f"switchmap_{package}.h", f"wiring_{package}.md"],
+                  f"switchmap_{package}.json", f"switchmap_{package}.h",
+                  f"wiring_{package}.md"] + svg_files,
         "rollup": data["rollup"],
     }
 

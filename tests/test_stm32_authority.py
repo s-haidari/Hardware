@@ -58,7 +58,7 @@ class AuthorityTests(unittest.TestCase):
     def test_emit_yaml_json_tsv(self):
         out = Path(tempfile.mkdtemp())
         summ = auth.write_authority(self.conn, "LQFP64", out)
-        self.assertEqual(len(summ["files"]), 9)   # + switchmap json/h + wiring md
+        self.assertEqual(len(summ["files"]), 10)  # + switchmap json/h + wiring md + pin-map svg
         j = json.loads((out / "pinout_authority_LQFP64.json").read_text(encoding="utf-8"))
         self.assertEqual(len(j["positions"]), 64)
         y = (out / "pinout_authority_LQFP64.yaml").read_text(encoding="utf-8")

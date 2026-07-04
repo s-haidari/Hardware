@@ -17,7 +17,7 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox, QLineEdit,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QSizePolicy,
     QFileDialog, QMessageBox, QApplication, QSplitter, QStackedWidget,
-    QFrame, QScrollArea,
+    QFrame, QScrollArea, QTextBrowser,
 )
 
 # Theme-swappable surface colours, derived from the shared design system
@@ -227,6 +227,54 @@ def _vault_authority_dirs():
 
 # ── QFP pin-map geometry (pure — shared by the Qt widget AND the SVG export, so
 #    the live widget and any preview render pixel-for-pixel identically) ──────
+
+def cells_html(a: dict) -> str:
+    """The Cells view body: package summary, the SPI control bus with its
+    connector contacts, the daisy-chain order, and one table per ADG714 cell
+    (channel, Source/Drain terminals, socket pin, rail — spares included).
+    Themed rich text (pure — unit-testable)."""
+    w = sauth.card_wiring(a)
+    cm = sauth.adg714_cell_map(a)
+    css_th = f"color:{_MUT};text-align:left;padding:2px 10px 2px 0;font-size:9pt"
+    css_td = "padding:2px 10px 2px 0"
+    out = [_summary_html(a), "<hr>"]
+    out.append("<h3>Control Bus (SPI, shared / daisy-chained)</h3>")
+    out.append("<table cellspacing='0'>")
+    out.append(f"<tr><th style='{css_th}'>Signal</th><th style='{css_th}'>ADG714 Pin</th>"
+               f"<th style='{css_th}'>Connector Contact</th><th style='{css_th}'>Controller</th></tr>")
+    for bus in w["bus"]:
+        contact = bus["connector_contact"] if bus["connector_contact"] is not None else "(plane)"
+        out.append(f"<tr><td style='{css_td}'>{_esc(bus['signal'])}</td>"
+                   f"<td style='{css_td}'>{bus['adg714_pin']}</td>"
+                   f"<td style='{css_td}'>{_esc(contact)}</td>"
+                   f"<td style='{css_td}'>{_esc(bus['controller'])}</td></tr>")
+    out.append("</table>")
+    out.append(f"<p style='color:{_MUT}'>{_esc(w['daisy_chain']['note'])}</p>")
+    if w.get("exclusive_groups"):
+        pins = ", ".join(str(g["socket_pin"]) for g in w["exclusive_groups"])
+        out.append(f"<p><b>One-hot groups:</b> channels sharing a socket pin are "
+                   f"mutually exclusive branches — close at most one per pin. "
+                   f"Multi-branch pins: {pins}.</p>")
+    for cell in cm:
+        out.append(f"<h3>Cell {cell['cell']} <span style='color:{_MUT}'>"
+                   f"({_esc(cell['symbol'])} · {_esc(cell['footprint'])})</span></h3>")
+        out.append("<table cellspacing='0'>")
+        out.append(f"<tr><th style='{css_th}'>Channel</th><th style='{css_th}'>Terminals</th>"
+                   f"<th style='{css_th}'>Socket Pin</th><th style='{css_th}'>Rail</th></tr>")
+        for sw in cell["switches"]:
+            if sw["spare"]:
+                out.append(f"<tr><td style='{css_td}'>{sw['channel']}</td>"
+                           f"<td style='{css_td}'>{sw['s_pin']}/{sw['d_pin']}</td>"
+                           f"<td style='{css_td};color:{_MUT}' colspan='2'>Spare (No Connect)</td></tr>")
+            else:
+                out.append(f"<tr><td style='{css_td}'>{sw['channel']}</td>"
+                           f"<td style='{css_td}'>{sw['s_pin']}/{sw['d_pin']}</td>"
+                           f"<td style='{css_td}'>{sw['position']} ({_esc(sw['pin_name'])})</td>"
+                           f"<td style='{css_td}'>{_esc(sw['destination'])}</td></tr>")
+        out.append("</table>")
+    return "".join(out)
+
+
 def pin_map_geometry(positions: list, w: float, h: float, margin: float = 46) -> dict:
     """Lay socket pins on a centered QFP body. Returns {body:(x,y,w,h),
     pins:[{pos, side, rect:(x,y,w,h), sw, breakout, name}]}. Pin 1 starts top-left
@@ -653,6 +701,12 @@ class ConnectionsList(QWidget):
         self.sort_combo.currentTextChanged.connect(self._rebuild)
         bar.addWidget(QLabel("Show:")); bar.addWidget(self.filter_combo)
         bar.addWidget(QLabel("Sort:")); bar.addWidget(self.sort_combo)
+        bar.addWidget(QLabel("Search:"))
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Pin, name, net, contact, rail, cell…")
+        self.search.setMaximumWidth(230)
+        self.search.textChanged.connect(self._rebuild)
+        bar.addWidget(self.search)
         bar.addStretch()
         self.count = QLabel(""); self.count.setObjectName("connCount")
         bar.addWidget(self.count)
@@ -674,10 +728,32 @@ class ConnectionsList(QWidget):
         self._authority = a
         self._rebuild()
 
+    def _haystacks(self):
+        """pin -> lowercase searchable text: name, destination, contact, plus every
+        switch branch's rail / cell / channel / lane — so 'which pin lands on LA-33'
+        or 'cell 3' answers itself."""
+        a = self._authority
+        hs = {}
+        cw = sauth.card_wiring(a)
+        per_pin = {}
+        for c in cw["channels"]:
+            per_pin.setdefault(c["socket_pin"], []).append(
+                f"{c['rail']} {c['card_lane']} cell {c['cell']} channel {c['channel']} "
+                f"{' '.join(c['connector_contacts'])}")
+        for rec in sauth.socket_connections(a):
+            extra = " ".join(per_pin.get(rec["pin"], []))
+            hs[rec["pin"]] = (f"{rec['pin']} {rec['name']} {rec['kind']} {rec['dest']} "
+                              f"{rec['contact']} {extra}").lower()
+        return hs
+
     def _records(self):
         if not self._authority:
             return []
         conns = sauth.socket_connections(self._authority)
+        q = (self.search.text() or "").strip().lower() if hasattr(self, "search") else ""
+        if q:
+            hs = self._haystacks()
+            conns = [c for c in conns if q in hs.get(c["pin"], "")]
         cat = dict(_CAT_LABEL).get(self.filter_combo.currentText())
         if cat == "switch":
             conns = [c for c in conns if c["kind"] == "switch"]
@@ -702,7 +778,7 @@ class ConnectionsList(QWidget):
     def _rebuild(self, *_):
         self._clear()
         conns = self._records()
-        self.count.setText(f"{len(conns)} pins")
+        self.count.setText(f"{len(conns)} pin" + ("s" if len(conns) != 1 else ""))
         a = self._authority
         cw = sauth.card_wiring(a) if a else None          # built once, reused per pin
         for rec in conns:
@@ -748,8 +824,9 @@ class Stm32PinsWidget(QWidget):
         bar.setSpacing(6)
         bar.addWidget(QLabel("Package:"))
         self.pkg_combo = QComboBox()
-        self.pkg_combo.addItems(["LQFP64", "LQFP100"])
+        self.pkg_combo.addItems(["LQFP64", "LQFP100"])   # vault export set (default)
         self.pkg_combo.currentTextChanged.connect(lambda p: self.load(p))
+        self._packages_populated = False
         bar.addWidget(self.pkg_combo)
 
         self.btn_build = QPushButton("Build Database")
@@ -771,7 +848,7 @@ class Stm32PinsWidget(QWidget):
 
         bar.addWidget(QLabel("View:"))
         self.view_combo = QComboBox()
-        self.view_combo.addItems(["Map", "Table"])
+        self.view_combo.addItems(["Map", "Table", "Cells"])
         self.view_combo.currentIndexChanged.connect(lambda i: self.stack.setCurrentIndex(i))
         bar.addWidget(self.view_combo)
         root.addLayout(bar)
@@ -812,6 +889,7 @@ class Stm32PinsWidget(QWidget):
         self.stack = QStackedWidget()
         self.stack.addWidget(self._build_overview_page())
         self.stack.addWidget(self._build_table_page())
+        self.stack.addWidget(self._build_cells_page())
         root.addWidget(self.stack, 1)
 
         # ── live file-watch: reload when the DB is rebuilt on disk ──
@@ -835,14 +913,42 @@ class Stm32PinsWidget(QWidget):
         self.pin_map.pinClicked.connect(self._select)
         self.conn_list = ConnectionsList()        # the full socket -> header fabric
         self.conn_list.pinClicked.connect(self._select)
+        # compact per-pin detail (roles, rationale, 5V, bootloader, peripherals)
+        self.pin_detail = QTextBrowser()
+        self.pin_detail.setOpenExternalLinks(False)
+        self.pin_detail.setFixedHeight(230)
+        left = QWidget()
+        lv = QVBoxLayout(left)
+        lv.setContentsMargins(0, 0, 0, 0)
+        lv.setSpacing(8)
+        lv.addWidget(self.pin_map, 1)
+        lv.addWidget(self.pin_detail)
         split = QSplitter(Qt.Horizontal)
-        split.addWidget(self.pin_map)
+        split.addWidget(left)
         split.addWidget(self.conn_list)
         split.setStretchFactor(0, 2)
         split.setStretchFactor(1, 3)
         split.setSizes([460, 700])
         lay.addWidget(split, 1)
         return page
+
+    def _build_cells_page(self):
+        """The Cells view: package summary, SPI control bus + daisy chain, and one
+        channel table per ADG714 cell (spares included)."""
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 0, 0, 0)
+        self.cells_view = QTextBrowser()
+        self.cells_view.setOpenExternalLinks(False)
+        lay.addWidget(self.cells_view)
+        return page
+
+    def _style_browsers(self):
+        css = (f"QTextBrowser{{background:{_CARD};color:{_TXT};border:1px solid {_LINE};"
+               f"border-radius:10px;padding:10px;}}")
+        for wdg in (getattr(self, "pin_detail", None), getattr(self, "cells_view", None)):
+            if wdg is not None:
+                wdg.setStyleSheet(css)
 
     def _build_table_page(self):
         page = QWidget()
@@ -910,6 +1016,11 @@ class Stm32PinsWidget(QWidget):
                 m.set_selected(pos)
             if getattr(self, "conn_list", None) is not None:
                 self.conn_list.set_selected(pos)
+            if getattr(self, "pin_detail", None) is not None and self.authority:
+                p = next((x for x in self.authority["positions"]
+                          if x["position"] == pos), None)
+                if p is not None:
+                    self.pin_detail.setHtml(_pin_detail_html(p))
 
     def _on_table_select(self):
         items = self.table.selectedItems()
@@ -924,10 +1035,16 @@ class Stm32PinsWidget(QWidget):
         custom visuals (stat strip, pin map, connection fabric)."""
         set_tab_theme(dark)
         self._restyle_strip()
+        self._style_browsers()
         for m in self._maps():
             m.update()
         if getattr(self, "conn_list", None) is not None:
             self.conn_list.restyle()
+        # regenerate themed rich text with the new palette
+        if self.authority is not None:
+            if getattr(self, "cells_view", None) is not None:
+                self.cells_view.setHtml(cells_html(self.authority))
+            self._select(self._sel_pos)
 
     def _restyle_strip(self):
         self.pkg_name.setStyleSheet(f"color:{_TXT};font-size:16px;font-weight:700;")
@@ -936,8 +1053,31 @@ class Stm32PinsWidget(QWidget):
             b.restyle()
 
     # ── data ───────────────────────────────────────────────────────
+    def _populate_packages(self):
+        """Offer every package the database actually contains (the LQFP64/LQFP100
+        pair stays the vault-export set); keeps the current selection."""
+        if self._packages_populated or not self.db_path.exists():
+            return
+        try:
+            conn = sdb.connect(self.db_path)
+            pkgs = [r[0] for r in conn.execute(
+                "SELECT DISTINCT package_name FROM mcu ORDER BY package_name")]
+            conn.close()
+        except Exception:
+            return
+        if pkgs:
+            cur = self.pkg_combo.currentText()
+            self.pkg_combo.blockSignals(True)
+            self.pkg_combo.clear()
+            self.pkg_combo.addItems(pkgs)
+            if cur in pkgs:
+                self.pkg_combo.setCurrentText(cur)
+            self.pkg_combo.blockSignals(False)
+            self._packages_populated = True
+
     def _load_if_ready(self):
         if self.db_path.exists():
+            self._populate_packages()
             self.load(self.pkg_combo.currentText())
         else:
             src = self.source if self.source else "not found"
@@ -979,6 +1119,8 @@ class Stm32PinsWidget(QWidget):
                 return
             res = box["res"]
             self.source = src
+            self._packages_populated = False
+            self._populate_packages()
             lq = ", ".join(f"{k}={v}" for k, v in sorted(res.packages.items())
                            if k.startswith("LQFP"))
             msg = (f"Built {res.mcus} STM32F MCUs, {res.pins} pins, {res.roles} roles "
@@ -1025,6 +1167,12 @@ class Stm32PinsWidget(QWidget):
             m.set_authority(self.authority)
         if getattr(self, "conn_list", None) is not None:
             self.conn_list.set_authority(self.authority)
+        self._style_browsers()
+        if getattr(self, "cells_view", None) is not None:
+            self.cells_view.setHtml(cells_html(self.authority))
+        if getattr(self, "pin_detail", None) is not None:
+            self.pin_detail.setHtml(
+                f"<p style='color:{_MUT}'>Select a pin for its full detail.</p>")
 
     def _populate(self):
         a = self.authority
