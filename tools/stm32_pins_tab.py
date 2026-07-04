@@ -1129,6 +1129,15 @@ class Stm32PinsWidget(QWidget):
         self.pin_map = PinMapWidget()
         self.pin_map.pinClicked.connect(self._select)
 
+        # left column: the map over a colour key (fills the column, teaches the code)
+        left = QWidget()
+        lc = QVBoxLayout(left)
+        lc.setContentsMargins(0, 0, 12, 0)
+        lc.setSpacing(8)
+        lc.addWidget(self.pin_map, 1)
+        lc.addWidget(uw.SectionHeader("Legend"))
+        lc.addWidget(self._pin_legend())
+
         # ── right: inspector for the selected pin ──
         insp = QWidget()
         iv = QVBoxLayout(insp)
@@ -1147,7 +1156,7 @@ class Stm32PinsWidget(QWidget):
         iv.addWidget(self.pin_detail, 1)
 
         split = QSplitter(Qt.Horizontal)
-        split.addWidget(self.pin_map)
+        split.addWidget(left)
         split.addWidget(insp)
         split.setStretchFactor(0, 3)
         split.setStretchFactor(1, 4)
@@ -1159,6 +1168,38 @@ class Stm32PinsWidget(QWidget):
         self.conn_list.hide()
         self.conn_list.pinClicked.connect(self._select)
         return page
+
+    def _pin_legend(self):
+        """A compact colour key for the pin/net-type palette."""
+        items = [
+            ("must", "Must-switch"), ("osc", "Oscillator"), ("fixed", "Fixed"),
+            ("breakout", "Breakout"), ("fivev", "5V-tolerant"),
+            ("power", "Power rail"), ("ground", "Ground"), ("lane", "IO lane"),
+            ("core", "Core cap"), ("service", "Service"),
+        ]
+        w = QWidget()
+        g = QGridLayout(w)
+        g.setContentsMargins(2, 0, 2, 0)
+        g.setHorizontalSpacing(14)
+        g.setVerticalSpacing(5)
+        self._legend_dots = []
+        for i, (key, label) in enumerate(items):
+            row, col = divmod(i, 2)
+            cell = QHBoxLayout()
+            cell.setSpacing(7)
+            dot = QFrame()
+            dot.setFixedSize(9, 9)
+            dot.setStyleSheet(f"background:{ui_theme.cat(key)};border-radius:4px;")
+            self._legend_dots.append(dot)
+            lbl = QLabel(label)
+            lbl.setFont(QFont(_SVG_FONT.split(",")[0], 8))
+            cell.addWidget(dot)
+            cell.addWidget(lbl)
+            cell.addStretch(1)
+            holder = QWidget()
+            holder.setLayout(cell)
+            g.addWidget(holder, row, col)
+        return w
 
     def _build_cells_page(self):
         """The Cells view: package summary, SPI control bus + daisy chain, and one
