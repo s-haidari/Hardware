@@ -557,6 +557,42 @@ def _conn_icon2(cx, cy, col):
     return "".join(o)
 
 
+def _pin_branches(a: dict, pos: int):
+    """The physical connection branches of one socket pin — shared by the focus panel
+    and the wiring band so the two never diverge. Returns
+    (conn, kind, name, pcol, branches), where branches is a list of
+    (caption, [(title, sub, colour-or-None)]); colour None marks a neutral intermediate
+    node, a colour marks a delivered destination. A switched pin has two branches (its
+    ADG714 channel to a rail, and its default 33 ohm IO lane); others have one."""
+    conn = next((c for c in sauth.socket_connections(a) if c["pin"] == pos), None)
+    p = next((x for x in a["positions"] if x["position"] == pos), None)
+    kind = conn["kind"] if conn else "direct"
+    name = next(iter(p["pin_names"]), "") if (p and p["pin_names"]) else ""
+    pcol = _CAT_COLOR.get(conn["category"], "#4c8df0") if conn else _MUT
+    branches = []
+    if kind == "switch":
+        c = next((x for x in sauth.card_wiring(a)["channels"] if x["socket_pin"] == pos), None)
+        if c:
+            rail_sub = ("Contact " + " / ".join(c["connector_contacts"])) if c["connector_contacts"] \
+                else ("Ground Plane" if c["rail"] == "GND" else "Local Cap")
+            branches.append(("SWITCHED ROLE", [
+                (f"ADG714 Cell {c['cell']} · Ch {c['channel']}",
+                 f"{c['s_pin']} Pin {c['s_pin_num']} · {c['d_pin']} Pin {c['d_pin_num']}", None),
+                (c["rail"], rail_sub, pcol)]))
+            branches.append(("DEFAULT IO LANE", [
+                ("33 Ω Series R", "R_IO", None),
+                (c["card_lane"], "Lane Row", _CAT_COLOR["lane"])]))
+    elif kind == "resistor":
+        branches.append(("IO LANE", [
+            ("33 Ω Series R", "R_IO", None),
+            (conn["dest"], "Lane Row", _CAT_COLOR["lane"])]))
+    else:
+        branches.append(("DIRECT", [
+            (conn["dest"] if conn else "",
+             f"Contact {conn['contact']}" if (conn and conn["contact"]) else "Hardwired", pcol)]))
+    return conn, kind, name, pcol, branches
+
+
 def detail_svg(a: dict, pos=None) -> str:
     """Visual detail panel: a package summary with pin-number chips when no pin is
     selected, or one pin's identities, switch channels, rationale, breakout, 5V, and
@@ -683,51 +719,48 @@ def detail_svg(a: dict, pos=None) -> str:
         p = next((x for x in a["positions"] if x["position"] == pos), None)
         if p is None:
             return detail_svg(a, None)
-        conn = next((c for c in sauth.socket_connections(a) if c["pin"] == pos), None)
-        kind = conn["kind"] if conn else "direct"
-        col = _CAT_COLOR.get(conn["category"], "#4c8df0") if conn else _MUT
-        kindlbl = {"switch": "Switched", "resistor": "GPIO Lane", "direct": "Direct"}[kind]
-        name = list(p["pin_names"])[0] if p["pin_names"] else ""
-        dest = conn["dest"] if conn else ""
-        contact = conn["contact"] if conn else ""
-        neu = _MUT                                      # neutral bar/wire; colour only the destination
-        # header row + kind badge (badge is the one coloured accent up top)
+        conn, kind, name, pcol, branches = _pin_branches(a, pos)
+        kindlbl = {"switch": "Switched", "resistor": "IO Lane", "direct": "Direct"}[kind]
+        neu = _MUT
+        cardw = W - 2 * pad
+        # header row + kind badge (the one coloured accent up top)
         body.append(f'<text x="{pad}" y="{y}" fill="{_TXT}" font-size="{_FS_TITLE}" font-weight="700">Pin {pos}</text>')
         body.append(f'<text x="{pad + 42 + len(str(pos)) * 8}" y="{y}" fill="{_MUT}" '
-                    f'font-size="{_FS_BODY}">{p.get("side", "").capitalize()}</text>')
+                    f'font-size="{_FS_BODY}">{_esc(name)} · {p.get("side", "").capitalize()}</text>')
         tw = 14 + len(kindlbl) * 5.9
-        body.append(f'<rect x="{W-pad-tw:.0f}" y="{y-13}" width="{tw:.0f}" height="{_CHIP_H}" rx="9" fill="{col}"/>')
+        body.append(f'<rect x="{W-pad-tw:.0f}" y="{y-13}" width="{tw:.0f}" height="{_CHIP_H}" rx="9" fill="{pcol}"/>')
         body.append(f'<text x="{W-pad-tw/2:.0f}" y="{y-1}" fill="#161618" text-anchor="middle" '
                     f'font-size="{_FS_CHIP}" font-weight="600">{kindlbl}</text>')
-        y += 24
-        cx = W / 2
-        # socket card (neutral)
-        body.append(f'<rect x="{pad}" y="{y}" width="{W-2*pad}" height="50" rx="10" fill="{_CARD}"/>'
-                    f'<rect x="{pad}" y="{y}" width="3" height="50" rx="1.5" fill="{neu}"/>')
-        body.append(_chip_icon2(pad + 30, y + 25, neu))
-        body.append(f'<text x="{pad+54}" y="{y+21}" fill="{_TXT}" font-size="{_FS_CARD}" font-weight="700">{_esc(name)}</text>')
-        body.append(f'<text x="{pad+54}" y="{y+38}" fill="{_MUT}" font-size="{_FS_CAP}">ZIF Socket Contact {pos}</text>')
-        body.append(f'<text x="{W-pad-10}" y="{y+27}" fill="#a2a2a8" font-size="8" font-weight="700" '
-                    f'text-anchor="end" letter-spacing="0.8">SOCKET</text>')
-        y += 50
-        # connection line + component badge (neutral)
-        body.append(f'<line x1="{cx}" y1="{y}" x2="{cx}" y2="{y+44}" stroke="{neu}" stroke-width="2"/>')
-        complbl = {"switch": "Switch", "resistor": "33 &#937; Series R", "direct": "Direct"}[kind]
-        bw = 120                                          # one fixed size, whatever the label
-        body.append(f'<rect x="{cx-bw/2:.0f}" y="{y+11}" width="{bw:.0f}" height="22" rx="11" '
-                    f'fill="{_PANEL}" stroke="{neu}"/>')
-        body.append(f'<text x="{cx:.0f}" y="{y+26}" fill="{_MUT}" text-anchor="middle" '
-                    f'font-size="{_FS_CHIP}" font-weight="600">{complbl}</text>')
-        y += 44
-        # header card (the destination — the one coloured card)
-        body.append(f'<rect x="{pad}" y="{y}" width="{W-2*pad}" height="50" rx="10" fill="{_CARD}"/>'
-                    f'<rect x="{pad}" y="{y}" width="3" height="50" rx="1.5" fill="{col}"/>')
-        body.append(_conn_icon2(pad + 30, y + 25, col))
-        body.append(f'<text x="{pad+54}" y="{y+21}" fill="{col}" font-size="{_FS_CARD}" font-weight="700">{_esc(dest)}</text>')
-        body.append(f'<text x="{pad+54}" y="{y+38}" fill="{_MUT}" font-size="{_FS_CAP}">{_esc(contact)}</text>')
-        body.append(f'<text x="{W-pad-10}" y="{y+27}" fill="#a2a2a8" font-size="8" font-weight="700" '
-                    f'text-anchor="end" letter-spacing="0.8">HEADER</text>')
-        y += 50 + 14
+        y += 20
+
+        def _nodecard(title, sub, color):
+            nonlocal y
+            barcol = color or neu
+            body.append(f'<rect x="{pad}" y="{y}" width="{cardw}" height="40" rx="9" fill="{_CARD}"/>'
+                        f'<rect x="{pad}" y="{y}" width="3" height="40" rx="1.5" fill="{barcol}"/>')
+            body.append(f'<text x="{pad+14}" y="{y+17}" fill="{color or _TXT}" font-size="{_FS_CARD}" '
+                        f'font-weight="700">{_esc(title)}</text>')
+            body.append(f'<text x="{pad+14}" y="{y+33}" fill="{_MUT}" font-size="{_FS_CAP}">{_esc(sub)}</text>')
+            y += 40
+
+        def _wire(h=8):
+            nonlocal y
+            body.append(f'<line x1="{pad+20}" y1="{y}" x2="{pad+20}" y2="{y+h}" stroke="{neu}" stroke-width="2"/>')
+            y += h
+
+        # socket (source), then each branch's nodes stacked vertically — same model
+        # as the Overview wiring band, in a vertical form for the narrow panel.
+        _nodecard(name or f"Pin {pos}", f"ZIF Socket · Contact {pos}", None)
+        for caption, stops in branches:
+            _wire(8)
+            body.append(f'<text x="{pad}" y="{y+9}" fill="#a2a2a8" font-size="8" font-weight="700" '
+                        f'letter-spacing="0.8">{caption}</text>')
+            y += 14
+            for si, (title, sub, color) in enumerate(stops):
+                if si > 0:
+                    _wire(8)
+                _nodecard(title, sub, color)
+        y += 16
         # explanation for switched pins
         why = sauth.switch_rationale(p)
         if why and kind == "switch":
@@ -780,10 +813,6 @@ def detail_band_svg(a: dict, pos, width: int, height: int = 224) -> str:
     destination node (plus the pin's badge) carries its net-category colour."""
     W, H, pad = max(700, int(width)), height, 22
     NEU = _MUT
-
-    def catcol(cat):
-        return _CAT_COLOR.get(cat, "#4c8df0")
-
     s = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" font-family="{_SVG_FONT}">',
          f'<rect width="{W}" height="{H}" fill="{_PANEL}"/>']
     if pos is None:
@@ -793,34 +822,8 @@ def detail_band_svg(a: dict, pos, width: int, height: int = 224) -> str:
     p = next((x for x in a["positions"] if x["position"] == pos), None)
     if p is None:
         return detail_band_svg(a, None, width, height)
-    conn = next((c for c in sauth.socket_connections(a) if c["pin"] == pos), None)
-    kind = conn["kind"] if conn else "direct"
-    name = next(iter(p["pin_names"]), "") if p["pin_names"] else ""
+    conn, kind, name, pcol, branches = _pin_branches(a, pos)   # same model as the focus panel
     kindlbl = {"switch": "Switched", "resistor": "IO Lane", "direct": "Direct"}[kind]
-    pcol = catcol(conn["category"]) if conn else NEU
-
-    # ── branches: (caption, [(title, sub, colour-or-None)]); None = neutral node ──
-    branches = []
-    if kind == "switch":
-        cw = sauth.card_wiring(a)
-        c = next((x for x in cw["channels"] if x["socket_pin"] == pos), None)
-        if c:
-            rail_sub = ("Contact " + " / ".join(c["connector_contacts"])) if c["connector_contacts"] \
-                else ("Ground Plane" if c["rail"] == "GND" else "Local Cap")
-            branches.append(("SWITCHED ROLE", [
-                (f"ADG714 Cell {c['cell']} · Ch {c['channel']}",
-                 f"{c['s_pin']} Pin {c['s_pin_num']} · {c['d_pin']} Pin {c['d_pin_num']}", None),
-                (c["rail"], rail_sub, pcol)]))
-            branches.append(("DEFAULT IO LANE", [
-                ("33 Ω Series R", "R_IO", None),
-                (c["card_lane"], "Lane Row", catcol("lane"))]))
-    elif kind == "resistor":
-        branches.append(("IO LANE", [
-            ("33 Ω Series R", "R_IO", None),
-            (conn["dest"], "Lane Row", catcol("lane"))]))
-    else:
-        branches.append(("DIRECT", [
-            (conn["dest"], f"Contact {conn['contact']}" if conn["contact"] else "Hardwired", pcol)]))
 
     # ── header block (left) ──
     s.append(f'<text x="{pad}" y="40" fill="{_TXT}" font-size="{_FS_TITLE}" font-weight="700">Pin {pos}</text>')
@@ -1062,34 +1065,6 @@ class PinMapWidget(QWidget):
             self.selected = pin["pos"]
             self.update()
             self.pinClicked.emit(pin["pos"])
-
-
-class _StatCard(QFrame):
-    """Compact dashboard stat card: title, big value, sub-line, coloured left bar."""
-    def __init__(self, title, accent, parent=None):
-        super().__init__(parent)
-        self.setObjectName("statCard")
-        self._accent = accent
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(14, 9, 14, 9)
-        lay.setSpacing(1)
-        self._t = QLabel(title)
-        self._b = QLabel("")
-        self._s = QLabel("")
-        for w in (self._t, self._b, self._s):
-            lay.addWidget(w)
-        self.restyle()
-
-    def restyle(self):
-        self.setStyleSheet(f"#statCard{{background:{_CARD};border-radius:10px;"
-                           f"border-left:4px solid {self._accent};}}")
-        self._t.setStyleSheet(f"color:{_MUT};font-size:10px;font-weight:700;")
-        self._b.setStyleSheet(f"color:{_TXT};font-size:19px;font-weight:700;")
-        self._s.setStyleSheet(f"color:{_MUT};font-size:11px;")
-
-    def set(self, big, sub):
-        self._b.setText(str(big))
-        self._s.setText(str(sub))
 
 
 class _MiniStat(QFrame):
@@ -1343,7 +1318,7 @@ class Stm32PinsWidget(QWidget):
 
         bar.addWidget(QLabel("View:"))
         self.view_combo = QComboBox()
-        self.view_combo.addItems(["Overview", "Pin Map", "Table", "Connections"])
+        self.view_combo.addItems(["Overview", "Table", "Connections"])
         self.view_combo.currentIndexChanged.connect(lambda i: self.stack.setCurrentIndex(i))
         bar.addWidget(self.view_combo)
         root.addLayout(bar)
@@ -1379,11 +1354,10 @@ class Stm32PinsWidget(QWidget):
         root.addLayout(strip)
         self._restyle_strip()
 
-        # ── stacked views: Pin map (dashboard) | Table | Card BOM ──
+        # ── stacked views: Overview | Table | Connections ──
         self._sel_pos = None
         self.stack = QStackedWidget()
         self.stack.addWidget(self._build_overview_page())
-        self.stack.addWidget(self._build_dashboard_page())
         self.stack.addWidget(self._build_table_page())
         self.stack.addWidget(self._build_bom_page())
         root.addWidget(self.stack, 1)
@@ -1404,43 +1378,11 @@ class Stm32PinsWidget(QWidget):
         lay = QVBoxLayout(page)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(8)
-        self.ov_map = PinMapWidget()
-        self.ov_map.pinClicked.connect(self._select)
-        self.ov_band = _BandSvg(224)
-        lay.addWidget(self.ov_map, 1)
-        lay.addWidget(self.ov_band)
-        return page
-
-    def _build_dashboard_page(self):
-        page = QWidget()
-        lay = QHBoxLayout(page)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(8)
-        col = QWidget()
-        cl = QVBoxLayout(col)
-        cl.setContentsMargins(0, 0, 0, 0)
-        cl.setSpacing(8)
-        col.setMaximumWidth(240)
-        col.setMinimumWidth(206)
-        self.sc_switch = _StatCard("SWITCH FABRIC", _SWITCH_COLOR[sdb.SWITCH_MUST])
-        self.sc_break = _StatCard("BREAKOUT", _BREAKOUT_COLOR)
-        self.sc_5v = _StatCard("5V-TOLERANCE", "#24b196")
-        self.sc_elec = _StatCard("ELECTRICAL", "#e6a030")
-        for c in (self.sc_switch, self.sc_break, self.sc_5v, self.sc_elec):
-            cl.addWidget(c)
-        cl.addStretch()
-        lay.addWidget(col)
-        self.pin_map = PinMapWidget()
+        self.pin_map = PinMapWidget()             # the primary pin visualizer
         self.pin_map.pinClicked.connect(self._select)
-        lay.addWidget(self.pin_map, 2)
-        self.map_detail = QSvgWidget()
-        self._mda = QScrollArea()
-        self._mda.setWidgetResizable(False)
-        self._mda.setWidget(self.map_detail)
-        self._mda.setMinimumWidth(300)
-        self._mda.setMaximumWidth(410)
-        self._mda.setStyleSheet("QScrollArea{border:none;background:%s;}" % _PANEL)
-        lay.addWidget(self._mda, 1)
+        self.ov_band = _BandSvg(224)
+        lay.addWidget(self.pin_map, 1)
+        lay.addWidget(self.ov_band)
         return page
 
     def _build_table_page(self):
@@ -1529,13 +1471,12 @@ class Stm32PinsWidget(QWidget):
 
     # ── selection + dashboard ───────────────────────────────────────
     def _maps(self):
-        """Every pin visualizer (overview + dashboard + table view) so selection and
-        highlight stay in sync across views."""
+        """Every pin visualizer (overview + table view) so selection and highlight
+        stay in sync across views."""
         ms = [self.pin_map]
-        for attr in ("table_pin_map", "ov_map"):
-            w = getattr(self, attr, None)
-            if w is not None:
-                ms.append(w)
+        w = getattr(self, "table_pin_map", None)
+        if w is not None:
+            ms.append(w)
         return ms
 
     def _select(self, pos):
@@ -1558,10 +1499,7 @@ class Stm32PinsWidget(QWidget):
     def _refresh_details(self):
         if not self.authority:
             return
-        svg = detail_svg(self.authority, self._sel_pos)
-        for w in (self.map_detail, self.detail):
-            if w is not None:
-                self._load_svg(w, svg)
+        self._load_svg(self.detail, detail_svg(self.authority, self._sel_pos))
         if getattr(self, "ov_band", None) is not None:
             self.ov_band.set_data(self.authority, self._sel_pos)
 
@@ -1572,19 +1510,15 @@ class Stm32PinsWidget(QWidget):
 
     def apply_theme(self, dark: bool):
         """Follow the app theme: swap the tab's surface colours and refresh the
-        custom visuals (stat cards, scroll areas, pin maps, SVG panels)."""
+        custom visuals (stat strip, scroll areas, pin map, SVG panels)."""
         set_tab_theme(dark)
         self._restyle_strip()
-        for sc in (self.sc_switch, self.sc_break, self.sc_5v, self.sc_elec):
-            sc.restyle()
-        for area in (self._mda, self.detail_area):
-            area.setStyleSheet("QScrollArea{border:none;background:%s;}" % _PANEL)
+        self.detail_area.setStyleSheet("QScrollArea{border:none;background:%s;}" % _PANEL)
         for m in self._maps():
             m.update()
         if getattr(self, "conn_list", None) is not None:
             self.conn_list.restyle()
         if self.authority:
-            self._update_dashboard()
             self._refresh_details()
 
     def _restyle_strip(self):
@@ -1592,24 +1526,6 @@ class Stm32PinsWidget(QWidget):
         self.pkg_sub.setStyleSheet(f"color:{_MUT};font-size:10px;")
         for b in self._stats.values():
             b.restyle()
-
-    def _update_dashboard(self):
-        a = self.authority
-        if not a:
-            return
-        r, ea, el = a["rollup"], a["extraction_access"], a["electrical"]
-        fv = el.get("five_v_positions", {})
-        vdda = el.get("vdda_range_v")
-        self.sc_switch.set(f"{r['must_switch_count']}",
-                           f"Must-Switch · {r['osc_optional_count']} Oscillator · {r['fixed_count']} Fixed")
-        self.sc_break.set(f"{ea.get('service_breakout_count', 0)} nets",
-                          f"{len(ea.get('debug_positions', []))} Debug · "
-                          f"{len(ea.get('trace_positions', []))} Trace")
-        self.sc_5v.set(f"{fv.get('tolerant_all_parts', 0)} 5V-Tolerant",
-                       f"{fv.get('family_dependent', 0)} Part-Dependent · "
-                       f"{fv.get('not_tolerant_any_part', 0)} Never")
-        self.sc_elec.set(f"±{el.get('max_io_current_ma', '?')} mA I/O",
-                         f"VDDA {vdda[0]}–{vdda[1]} V · VCAP {el.get('vcap_required')}" if vdda else "")
 
     # ── data ───────────────────────────────────────────────────────
     def _load_if_ready(self):
@@ -1666,7 +1582,6 @@ class Stm32PinsWidget(QWidget):
             m.set_authority(self.authority)
         if getattr(self, "conn_list", None) is not None:
             self.conn_list.set_authority(self.authority)
-        self._update_dashboard()
         self._refresh_details()
 
     def _populate(self):
