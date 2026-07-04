@@ -732,8 +732,9 @@ class ConnectionsList(QWidget):
 
 
 class Stm32PinsWidget(QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, ctx=None):
         super().__init__(parent)
+        self.ctx = ctx                          # shell services (ui_shell.TabContext)
         self.db_path = sdb.default_db_path()
         self.source = sdb.default_cubemx_source()
         self.authority: dict | None = None
@@ -951,25 +952,50 @@ class Stm32PinsWidget(QWidget):
         src = self.source or self._pick_source()
         if not src:
             return
-        self.status.setText("Building database from CubeMX XML…")
         self._building = True                       # suppress the file-watcher mid-build
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        QApplication.processEvents()
-        try:
-            res = sdb.build_database(src, self.db_path)
-        except Exception as e:
-            QApplication.restoreOverrideCursor()
+        box = {}
+
+        def work():
+            progress = self.ctx.set_progress if self.ctx else None
+            box["res"] = sdb.build_database(src, self.db_path, progress=progress)
+
+        def finish(ok: bool):
             self._building = False
-            QMessageBox.warning(self, "Build Database", f"Build failed:\n{e}")
+            self._arm_watch()
+            if not ok or "res" not in box:
+                if self.ctx is None:
+                    QMessageBox.warning(self, "Build Database",
+                                        "Build failed — see the log for details.")
+                return
+            res = box["res"]
+            self.source = src
+            lq = ", ".join(f"{k}={v}" for k, v in sorted(res.packages.items())
+                           if k.startswith("LQFP"))
+            msg = (f"Built {res.mcus} STM32F MCUs, {res.pins} pins, {res.roles} roles "
+                   f"from {src}: {lq}")
+            self.status.setText(msg)
+            if self.ctx:
+                self.ctx.log(msg)
+            self.load(self.pkg_combo.currentText())
+
+        if self.ctx and self.ctx.run_async:
+            # off the GUI thread: the shell drives the status bar + progress
+            self.status.setText("Building database from CubeMX XML…")
+            self.ctx.run_async(work, "Building STM32 database…",
+                               "Database built ✓", done_cb=finish)
             return
-        QApplication.restoreOverrideCursor()
-        self._building = False
-        self._arm_watch()
-        self.source = src
-        lq = ", ".join(f"{k}={v}" for k, v in sorted(res.packages.items()) if k.startswith("LQFP"))
-        self.status.setText(f"Built {res.mcus} STM32F MCUs, {res.pins} pins, {res.roles} roles "
-                            f"from {src}: {lq}")
-        self.load(self.pkg_combo.currentText())
+        # standalone fallback (tests / headless): synchronous
+        self.status.setText("Building database from CubeMX XML…")
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            work()
+            ok = True
+        except Exception as e:
+            ok = False
+            QMessageBox.warning(self, "Build Database", f"Build failed:\n{e}")
+        finally:
+            QApplication.restoreOverrideCursor()
+        finish(ok)
 
     def load(self, package: str):
         if not self.db_path.exists():

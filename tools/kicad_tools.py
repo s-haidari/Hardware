@@ -25,7 +25,7 @@ from PyQt5.QtWidgets import (
     QColorDialog, QScrollArea, QToolButton, QMenu, QWidgetAction
 )
 from PyQt5.QtGui import QColor, QIcon, QPixmap, QPainter
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal
 try:
     from PyQt5.QtSvg import QSvgRenderer
     _HAVE_QTSVG = True
@@ -139,9 +139,13 @@ class KiCadToolsWidget(QWidget):
         ]),
     ]
 
-    def __init__(self, parent, projects_dir: str, save_dir_cb=None):
+    log_line = pyqtSignal(str)                # queued -> safe from worker threads
+
+    def __init__(self, parent, projects_dir: str, save_dir_cb=None, ctx=None):
         super().__init__(parent)
         self._save_dir_cb = save_dir_cb
+        self._ctx = ctx                        # shell services (ui_shell.TabContext)
+        self.log_line.connect(self._append_log)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 6, 0, 0)
@@ -217,9 +221,26 @@ class KiCadToolsWidget(QWidget):
 
     # ---------- helpers ----------
     def log(self, msg: str):
+        """Thread-safe: emits into the output pane via a queued signal and
+        forwards to the shared shell log when running inside the app."""
+        self.log_line.emit(msg)
+        if self._ctx is not None:
+            try:
+                self._ctx.log(msg)
+            except Exception:
+                pass
+
+    def _append_log(self, msg: str):
         self.out.appendPlainText(msg)
         self.out.verticalScrollBar().setValue(self.out.verticalScrollBar().maximum())
-        QApplication.processEvents()
+
+    def _run_heavy(self, busy: str, fn):
+        """Run long work off the GUI thread when the shell provides a runner
+        (window stays responsive, status bar shows busy); inline standalone."""
+        if self._ctx is not None and getattr(self._ctx, "run_async", None):
+            self._ctx.run_async(fn, busy, "Done ✓")
+        else:
+            fn()
 
     def _browse(self):
         d = QFileDialog.getExistingDirectory(self, "Select KiCad Projects Folder", self.dir_edit.text() or "")
@@ -357,32 +378,35 @@ class KiCadToolsWidget(QWidget):
                 QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
                 return
 
-        totals = {"local": 0, "global": 0, "hier": 0, "sheet_pin": 0, "symbol_ref": 0, "pcb_ref": 0}
-        samples = []
-        self.log(f"\n=== {'APPLY' if apply else 'PREVIEW'}: {self.op_combo.currentText()} ===")
-        for pro in pros:
-            proj = pro.parent
-            if do_labels or do_refs:
-                for sch in wiz.list_schematics(proj):
-                    counts, smp, _ = wiz.schematic_preview_and_apply(
-                        sch, op, tag_or_find, repl=repl, apply=apply,
-                        touch_refs=do_refs, touch_labels=do_labels)
-                    for k in totals:
-                        totals[k] += counts.get(k, 0)
-                    samples += smp
-            if do_pcb:
-                for brd in wiz.list_boards(proj):
-                    cnt, smp, _ = wiz.pcb_preview_and_apply(brd, op, tag_or_find, repl=repl, apply=apply)
-                    totals["pcb_ref"] += cnt
-                    samples += smp
-        self.log(f"Schematic labels: {totals['local']+totals['global']+totals['hier']+totals['sheet_pin']}  "
-                 f"| Schematic refs: {totals['symbol_ref']}  | PCB refs: {totals['pcb_ref']}")
-        for s in samples[:15]:
-            self.log("  " + s)
-        if not any(totals.values()):
-            self.log("  No matching changes.")
-        elif apply:
-            self.log("Applied. Backups (.bak) created next to modified files.")
+        def work():
+            totals = {"local": 0, "global": 0, "hier": 0, "sheet_pin": 0, "symbol_ref": 0, "pcb_ref": 0}
+            samples = []
+            self.log(f"\n=== {'APPLY' if apply else 'PREVIEW'}: {self.op_combo.currentText()} ===")
+            for pro in pros:
+                proj = pro.parent
+                if do_labels or do_refs:
+                    for sch in wiz.list_schematics(proj):
+                        counts, smp, _ = wiz.schematic_preview_and_apply(
+                            sch, op, tag_or_find, repl=repl, apply=apply,
+                            touch_refs=do_refs, touch_labels=do_labels)
+                        for k in totals:
+                            totals[k] += counts.get(k, 0)
+                        samples += smp
+                if do_pcb:
+                    for brd in wiz.list_boards(proj):
+                        cnt, smp, _ = wiz.pcb_preview_and_apply(brd, op, tag_or_find, repl=repl, apply=apply)
+                        totals["pcb_ref"] += cnt
+                        samples += smp
+            self.log(f"Schematic labels: {totals['local']+totals['global']+totals['hier']+totals['sheet_pin']}  "
+                     f"| Schematic refs: {totals['symbol_ref']}  | PCB refs: {totals['pcb_ref']}")
+            for smp in samples[:15]:
+                self.log("  " + smp)
+            if not any(totals.values()):
+                self.log("  No matching changes.")
+            elif apply:
+                self.log("Applied. Backups (.bak) created next to modified files.")
+
+        self._run_heavy("Applying rename…" if apply else "Previewing rename…", work)
 
     def _run_erc(self):
         pros = self.selected_pro_files()
@@ -391,21 +415,24 @@ class KiCadToolsWidget(QWidget):
         kdir = wiz_find_kicad_cli()
         if not kdir:
             QMessageBox.warning(self, "ERC", "kicad-cli not found (install KICAD)."); return
-        self.log("\n=== ERC (kicad-cli) ===")
-        for pro in pros:
-            schs = wiz.list_schematics(pro.parent)
-            if not schs:
-                continue
-            top = schs[0]
-            self.log(f"ERC: {top.name}")
-            try:
-                proc = subprocess.run([str(kdir), "sch", "erc", str(top)],
-                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                      text=True, encoding="utf-8", creationflags=_NO_WINDOW)
-                for line in (proc.stdout or "").splitlines()[-12:]:
-                    self.log("  " + line)
-            except Exception as e:
-                self.log(f"  ERROR: {e}")
+        def work():
+            self.log("\n=== ERC (kicad-cli) ===")
+            for pro in pros:
+                schs = wiz.list_schematics(pro.parent)
+                if not schs:
+                    continue
+                top = schs[0]
+                self.log(f"ERC: {top.name}")
+                try:
+                    proc = subprocess.run([str(kdir), "sch", "erc", str(top)],
+                                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                          text=True, encoding="utf-8", creationflags=_NO_WINDOW)
+                    for line in (proc.stdout or "").splitlines()[-12:]:
+                        self.log("  " + line)
+                except Exception as e:
+                    self.log(f"  ERROR: {e}")
+
+        self._run_heavy("Running ERC…", work)
 
     # ============================================================ NET CLASSES
     def _build_netclass_tab(self) -> QWidget:
@@ -594,11 +621,14 @@ class KiCadToolsWidget(QWidget):
             f"User-created classes are preserved; a .bak is written.",
             QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
             return
-        results = m.sync_to_projects(pros, backup=True)
-        ok = sum(1 for v in results.values() if v)
-        self.log(f"\nNet-class sync: {ok}/{len(pros)} project(s) updated.")
-        if m.last_preserved_unmanaged:
-            self.log("Preserved unmanaged classes: " + ", ".join(m.last_preserved_unmanaged))
+        def work():
+            results = m.sync_to_projects(pros, backup=True)
+            ok = sum(1 for v in results.values() if v)
+            self.log(f"\nNet-class sync: {ok}/{len(pros)} project(s) updated.")
+            if m.last_preserved_unmanaged:
+                self.log("Preserved unmanaged classes: " + ", ".join(m.last_preserved_unmanaged))
+
+        self._run_heavy("Syncing net classes…", work)
 
     def _nc_import(self):
         f, _ = QFileDialog.getOpenFileName(self, "Import Net-Class Template", "", "JSON (*.json)")

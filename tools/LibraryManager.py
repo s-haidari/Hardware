@@ -1823,7 +1823,8 @@ class LibraryManagerWindow(QMainWindow):
                 self._settings.setValue("projects_dir", p)
             except Exception:
                 pass
-        self.tools_widget = KiCadToolsWidget(self, projects_dir, save_dir_cb=_save)
+        self.tools_widget = KiCadToolsWidget(self, projects_dir, save_dir_cb=_save,
+                                             ctx=self._tab_context())
         return self.tools_widget
 
     def _build_stm32_tab(self) -> QWidget:
@@ -1835,7 +1836,7 @@ class LibraryManagerWindow(QMainWindow):
             lay = QVBoxLayout(w)
             lay.addWidget(QLabel(f"STM32 Pins unavailable:\n{e}"))
             return w
-        self.stm32_widget = Stm32PinsWidget(self)
+        self.stm32_widget = Stm32PinsWidget(self, ctx=self._tab_context())
         return self.stm32_widget
 
 
@@ -2000,9 +2001,10 @@ class LibraryManagerWindow(QMainWindow):
         self._spawn(_work)
 
     def run_async(self, fn, busy_msg: str, success_msg: Optional[str] = None,
-                  refresh: bool = False):
+                  refresh: bool = False, done_cb=None):
         """Run blocking work (git/processing) off the GUI thread so the window
-        stays responsive. UI updates happen on the GUI thread via signals."""
+        stays responsive. UI updates happen on the GUI thread via signals; an
+        optional done_cb(ok) runs on the GUI thread when the work finishes."""
         self.set_busy(busy_msg)
 
         def _work():
@@ -2019,9 +2021,21 @@ class LibraryManagerWindow(QMainWindow):
                 if refresh:
                     self.refresh_library()
                     self.refresh_commits()
+                if done_cb is not None:
+                    done_cb(ok)
             self._emit(self._async_finished, _finish)
 
         self._spawn(_work)
+
+    def _tab_context(self):
+        """The shell services injected into every tab (see ui_shell.TabContext):
+        one log pane, one async runner, one progress surface."""
+        from ui_shell import TabContext
+        return TabContext(
+            log=lambda m: self._emit(self.log_signal, m),
+            run_async=self.run_async,
+            set_progress=lambda d, t, n: self._emit(self.progress_signal, d, t, n),
+        )
 
     # ----- async action handlers (dialogs run here on the GUI thread) -----
     def do_pull(self):
