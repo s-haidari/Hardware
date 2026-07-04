@@ -177,10 +177,11 @@ _CAT_WORD = {"power": "Power", "analog": "Analog", "ground": "Ground",
              "core": "Core", "service": "Service", "lane": "Card Lane"}
 
 
-def _pin_detail_html(p: dict) -> str:
-    """Pin detail — Title Case, no redundant rows (the delivered net + ADG714 wiring
-    live in the signal-path diagram; the switch class is in the header), un-abbreviated
-    nets. Pure / unit-testable."""
+def _pin_detail_rows(p: dict) -> list:
+    """(label, value) rows for one pin — Title Case, no redundant rows (delivered net
+    + ADG714 wiring live in the signal-path diagram; switch class is in the header),
+    un-abbreviated nets. Pure / unit-testable; shared by the native inspector panel
+    and the HTML export."""
     fv = p.get("five_v")
     if fv is None:
         fvt = "N/A (non-GPIO)"
@@ -214,10 +215,52 @@ def _pin_detail_html(p: dict) -> str:
     if boot:
         rows.append(("Bootloader", boot))
     rows += [("5V Tolerant", fvt), ("Supply Voltage", _fmt_rng(el.get("vdd_range_v")))]
+    return rows
+
+
+def _pin_detail_html(p: dict) -> str:
+    """HTML rendering of _pin_detail_rows (kept for exports / unit tests)."""
     body = "".join(
         f"<tr><td style='color:{_MUT};padding-right:16px;vertical-align:top;"
-        f"white-space:nowrap'>{k}</td><td>{_esc(v)}</td></tr>" for k, v in rows)
+        f"white-space:nowrap'>{k}</td><td>{_esc(v)}</td></tr>" for k, v in _pin_detail_rows(p))
     return f"<table cellspacing='0' cellpadding='2'>{body}</table>"
+
+
+class _KeyValuePanel(QScrollArea):
+    """Native label/value inspector rows (grayscale, Title-Case keys) — replaces the
+    HTML detail table so the pin inspector is pure Qt like the rest of the app."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._inner = QWidget()
+        self._grid = QGridLayout(self._inner)
+        self._grid.setContentsMargins(2, 2, 2, 8)
+        self._grid.setHorizontalSpacing(16)
+        self._grid.setVerticalSpacing(9)
+        self._grid.setColumnStretch(1, 1)
+        self.setWidget(self._inner)
+        self.setStyleSheet("QScrollArea{background:transparent;border:none;}")
+        self._inner.setStyleSheet("background:transparent;")
+
+    def set_rows(self, rows):
+        while self._grid.count():
+            it = self._grid.takeAt(0)
+            w = it.widget()
+            if w is not None:
+                w.deleteLater()
+        fam = _SVG_FONT.split(",")[0]
+        for r, (k, v) in enumerate(rows):
+            kl = QLabel(str(k)); kl.setFont(QFont(fam, 8))
+            kl.setStyleSheet(f"color:{_MUT};"); kl.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+            vl = QLabel(str(v)); vl.setFont(QFont(fam, 9))
+            vl.setStyleSheet(f"color:{_TXT};"); vl.setWordWrap(True)
+            vl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            self._grid.addWidget(kl, r, 0, Qt.AlignTop | Qt.AlignLeft)
+            self._grid.addWidget(vl, r, 1, Qt.AlignTop | Qt.AlignLeft)
+        self._grid.setRowStretch(len(rows), 1)   # push rows to the top
 
 
 def _summary_html(a: dict) -> str:
@@ -1203,8 +1246,7 @@ class Stm32PinsWidget(QWidget):
         self.diagram = ConnectionDiagram()
         iv.addWidget(self.diagram)
         iv.addWidget(uw.SectionHeader("Detail"))
-        self.pin_detail = QTextBrowser()
-        self.pin_detail.setOpenExternalLinks(False)
+        self.pin_detail = _KeyValuePanel()      # native rows, not an HTML table
         self.pin_detail.setMinimumHeight(150)
         iv.addWidget(self.pin_detail, 1)
 
@@ -1279,9 +1321,16 @@ class Stm32PinsWidget(QWidget):
         css = (f"QTextBrowser{{background:transparent;color:{_TXT};border:none;"
                f"padding:2px 2px 8px;"
                f"font-family:'Geist','Inter','Segoe UI';font-size:9pt;}}")
-        for wdg in (getattr(self, "pin_detail", None), getattr(self, "cells_view", None)):
-            if wdg is not None:
-                wdg.setStyleSheet(css)
+        if getattr(self, "cells_view", None) is not None:
+            self.cells_view.setStyleSheet(css)
+        if getattr(self, "pin_detail", None) is not None:   # native panel, not HTML
+            self.pin_detail.setStyleSheet("QScrollArea{background:transparent;border:none;}")
+            self.pin_detail.viewport().setStyleSheet("background:transparent;")
+            if self._sel_pos is not None and self.authority:  # re-theme rows on toggle
+                pp = next((x for x in self.authority["positions"]
+                           if x["position"] == self._sel_pos), None)
+                if pp is not None:
+                    self.pin_detail.set_rows(_pin_detail_rows(pp))
         if getattr(self, "insp_header", None) is not None:
             self.insp_header.setStyleSheet("background:transparent;")
 
@@ -1376,7 +1425,7 @@ class Stm32PinsWidget(QWidget):
                     if getattr(self, "insp_header", None) is not None:
                         self.insp_header.setText(self._inspector_header(p))
                     if getattr(self, "pin_detail", None) is not None:
-                        self.pin_detail.setHtml(_pin_detail_html(p))
+                        self.pin_detail.set_rows(_pin_detail_rows(p))
 
     def _cw(self):
         """Cached card_wiring for the current authority (built once per load)."""
@@ -1551,7 +1600,7 @@ class Stm32PinsWidget(QWidget):
             self.insp_header.setText(
                 f"<span style='color:{_MUT};font-size:11pt'>No package loaded</span>")
         if getattr(self, "pin_detail", None) is not None:
-            self.pin_detail.setHtml("")
+            self.pin_detail.set_rows([])
 
     def _revert_package_or_clear(self):
         """After a failed load, keep the UI self-consistent. Prefer reverting the
@@ -1597,8 +1646,7 @@ class Stm32PinsWidget(QWidget):
             self.insp_header.setText(
                 f"<span style='color:{_MUT};font-size:11pt'>Select a pin on the map</span>")
         if getattr(self, "pin_detail", None) is not None:
-            self.pin_detail.setHtml(
-                f"<p style='color:{_MUT}'>Select a pin for its full detail.</p>")
+            self.pin_detail.set_rows([])
         # auto-select the first must-switch pin so the inspector isn't empty
         first = next((p["position"] for p in self.authority["positions"]
                       if p["switch_class"] == sdb.SWITCH_MUST), None)
