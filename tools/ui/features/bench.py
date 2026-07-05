@@ -18,7 +18,7 @@ from pathlib import Path
 from PyQt5.QtCore import Qt, QRectF
 from PyQt5.QtGui import QPainter, QColor, QPen, QPixmap
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-                             QSizePolicy, QComboBox, QGridLayout, QPushButton, QFrame)
+                             QSizePolicy, QComboBox, QGridLayout, QPushButton, QFrame, QScrollArea)
 
 from .. import theme as T
 from .. import widgets as W
@@ -34,13 +34,18 @@ _CAT_FROM_NET = {"analog": "power", "power": "power", "ground": "ground",
 
 
 def _pin_category(p: dict) -> str:
-    sc = p.get("switch_class", "")
-    if sc == "must_switch":
-        return "must"
-    if sc == "osc_optional":
-        return "osc"
+    """Net category — the COLOUR dimension only. Switch class and 5 V tolerance are
+    separate, stacking layers (a border and a badge) so nothing collapses into one
+    conflated colour."""
     dest = p["assignment"].get("destination") or p["assignment"].get("net") or ""
     return _CAT_FROM_NET.get(sauth._NET_CATEGORY.get(dest, "lane"), "lane")
+
+
+def _is_5v(p: dict) -> bool:
+    fv = p.get("five_v")
+    if not fv:
+        return False
+    return bool(fv.get("tolerant") or any(fv.get("by_family", {}).values()))
 
 
 def _resolved_cat(pn: dict) -> str:
@@ -192,63 +197,102 @@ class BenchState:
         self._refreshers.append(fn)
 
 
-# ── the painted pin map (category colour + numbers + click) ──────────────────
+# ── the painted pin map: net colour (fill) + switch class (border) + marks + zoom ─
 class PinMap(QWidget):
-    SIZE = 460
+    SIZE = 460  # kept for _side_of's independent geometry
 
-    def __init__(self, on_select, size=460, parent=None):
+    def __init__(self, on_select, base=380, parent=None):
         super().__init__(parent)
         self._on_select = on_select
-        self._size = size
+        self._base = base
+        self._zoom = 1.0
+        self._size = base
+        self._positions = []
         self._geo = {"body": (0, 0, 0, 0), "pins": []}
-        self._catof = {}
+        self._attr = {}
         self._selected = None
-        self.setFixedSize(size, size)
+        self.setFixedSize(base, base)
         self.setCursor(Qt.PointingHandCursor)
 
-    def set_positions(self, geo_positions, catof):
-        self._geo = pins.pin_map_geometry(geo_positions, self._size, self._size)
-        self._catof = dict(catof)
-        if self._selected not in self._catof:
-            self._selected = None
+    def _relayout(self):
+        self._size = max(120, int(self._base * self._zoom))
+        self.setFixedSize(self._size, self._size)
+        self._geo = pins.pin_map_geometry(self._positions, self._size, self._size)
         self.update()
+
+    def set_positions(self, geo_positions, attrof):
+        self._positions = list(geo_positions)
+        self._attr = dict(attrof)
+        if self._selected not in self._attr:
+            self._selected = None
+        self._relayout()
 
     def set_authority(self, authority):
         positions = authority["positions"] if authority else []
-        self.set_positions(positions, {p["position"]: _pin_category(p) for p in positions})
+        self.set_positions(positions, {p["position"]: {"cat": _pin_category(p), "fivev": _is_5v(p)}
+                                       for p in positions})
+
+    def set_zoom(self, z):
+        self._zoom = max(0.7, min(2.6, z)); self._relayout()
+
+    def zoom_by(self, f):
+        self.set_zoom(self._zoom * f)
+
+    def wheelEvent(self, e):
+        if e.modifiers() & Qt.ControlModifier:
+            self.zoom_by(1.12 if e.angleDelta().y() > 0 else 1 / 1.12); e.accept()
+        else:
+            e.ignore()
 
     def select(self, pos):
-        self._selected = pos
-        self.update()
+        self._selected = pos; self.update()
 
     def paintEvent(self, _e):
-        qp = QPainter(self)
-        qp.setRenderHint(QPainter.Antialiasing, True)
+        qp = QPainter(self); qp.setRenderHint(QPainter.Antialiasing, True)
         bx, by, bw, bh = self._geo["body"]
         pen = QPen(T.qcolor("txt3")); pen.setWidthF(1.3)
         qp.setPen(pen); qp.setBrush(Qt.NoBrush)
         qp.drawRoundedRect(QRectF(bx, by, bw, bh), 10, 10)
-        # pin-1 marker
         qp.setBrush(T.qcolor("txt3")); qp.setPen(Qt.NoPen)
         qp.drawEllipse(QRectF(bx + 12, by + 12, 7, 7))
-        mono = T.mono_font(7)
         for pin in self._geo["pins"]:
-            x, y, w, h = pin["rect"]
-            cat = self._catof.get(pin["pos"], "lane")
-            qp.setBrush(T.qcolor(T.category(cat))); qp.setPen(Qt.NoPen)
-            qp.drawRoundedRect(QRectF(x, y, w, h), 2, 2)
+            x, y, w, h = pin["rect"]; rect = QRectF(x, y, w, h)
+            a = self._attr.get(pin["pos"], {})
+            # 1) fill = net category
+            qp.setBrush(T.qcolor(T.category(a.get("cat", "lane")))); qp.setPen(Qt.NoPen)
+            qp.drawRoundedRect(rect, 2, 2)
+            # 2) border = switch class (solid coral = must-switch, dashed orange = oscillator)
+            sw = pin.get("sw")
+            if sw in ("must_switch", "osc_optional"):
+                bp = QPen(T.qcolor(T.category("must" if sw == "must_switch" else "osc"))); bp.setWidthF(2.0)
+                if sw == "osc_optional":
+                    bp.setStyle(Qt.DashLine)
+                qp.setPen(bp); qp.setBrush(Qt.NoBrush); qp.drawRoundedRect(rect, 2, 2)
+            # 3) breakout mark = a thin inner notch
+            if pin.get("breakout"):
+                op = QPen(T.qcolor("txt1")); op.setWidthF(1.0)
+                qp.setPen(op); qp.setBrush(Qt.NoBrush)
+                qp.drawRoundedRect(QRectF(x + 1.5, y + 1.5, w - 3, h - 3), 1, 1)
+            # 4) 5 V-tolerant badge = a small dot at the pad's outer end
+            if a.get("fivev"):
+                d = 4.0
+                cx, cy = {"L": (x + 2.5, y + h / 2), "R": (x + w - 2.5, y + h / 2),
+                          "T": (x + w / 2, y + 2.5)}.get(pin["side"], (x + w / 2, y + h - 2.5))
+                qp.setBrush(T.qcolor(T.category("service"))); qp.setPen(Qt.NoPen)
+                qp.drawEllipse(QRectF(cx - d / 2, cy - d / 2, d, d))
+            # selection ring (outermost)
             if pin["pos"] == self._selected:
                 sp = QPen(T.qcolor("accent")); sp.setWidthF(2.4)
                 qp.setPen(sp); qp.setBrush(Qt.NoBrush)
                 qp.drawRoundedRect(QRectF(x - 2.5, y - 2.5, w + 5, h + 5), 3, 3)
-            # number, outside the pad
-            qp.setFont(mono)
+            # number, outside the pad, font scaled with zoom
+            qp.setFont(T.mono_font(max(6.5, min(11.0, 7.0 * self._zoom))))
             qp.setPen(T.qcolor("txt1" if pin["pos"] == self._selected else "txt3"))
             num = str(pin["pos"])
             if pin["side"] == "L":
-                qp.drawText(QRectF(x - 34, y - 2, 28, h + 4), Qt.AlignRight | Qt.AlignVCenter, num)
+                qp.drawText(QRectF(x - 38, y - 2, 32, h + 4), Qt.AlignRight | Qt.AlignVCenter, num)
             elif pin["side"] == "R":
-                qp.drawText(QRectF(x + w + 6, y - 2, 28, h + 4), Qt.AlignLeft | Qt.AlignVCenter, num)
+                qp.drawText(QRectF(x + w + 6, y - 2, 32, h + 4), Qt.AlignLeft | Qt.AlignVCenter, num)
             elif pin["side"] == "T":
                 qp.drawText(QRectF(x - 6, y - 20, w + 12, 16), Qt.AlignHCenter | Qt.AlignBottom, num)
             else:
@@ -266,24 +310,45 @@ class PinMap(QWidget):
                 return
 
 
-_LEGEND = [("power", "Power"), ("ground", "Ground"), ("core", "Core"),
-           ("service", "Service"), ("lane", "IO Lane"), ("must", "Must-Switch"),
-           ("osc", "Oscillator")]
+def _swatch(cat, kind="fill") -> QLabel:
+    """A legend swatch: fill (net colour), outline/dashed (switch border), dot or
+    notch (marks) — one per encoding dimension so they read as separate layers."""
+    lab = QLabel(); lab.setFixedSize(11, 11)
+
+    def style():
+        if kind == "fill":
+            lab.setStyleSheet(f"background:{T.category(cat)};border-radius:2px;")
+        elif kind == "dot":
+            lab.setStyleSheet(f"background:{T.category(cat)};border-radius:5px;")
+        elif kind == "notch":
+            lab.setStyleSheet(f"background:transparent;border:1px solid {T.t('txt1')};border-radius:2px;")
+        else:
+            st = "dashed" if kind == "dashed" else "solid"
+            lab.setStyleSheet(f"background:transparent;border:2px {st} {T.category(cat)};border-radius:2px;")
+    W.register_restyle(style)
+    return lab
+
+
+def _leg_item(row, sw, label, gap=14):
+    row.addSpacing(gap); row.addWidget(sw); row.addSpacing(6); row.addWidget(W.eyebrow(label))
 
 
 def _legend() -> QWidget:
-    w = QWidget()
-    lay = QHBoxLayout(w); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(0)
-    lay.addStretch(1)
-    for i, (cat, label) in enumerate(_LEGEND):
-        if i:
-            lay.addSpacing(16)
-        dot = QLabel(); dot.setFixedSize(9, 9)
-        W.register_restyle(lambda dot=dot, cat=cat: dot.setStyleSheet(
-            f"background:{T.category(cat)};border-radius:2px;"))
-        lab = W.eyebrow(label)
-        lay.addWidget(dot); lay.addSpacing(6); lay.addWidget(lab)
-    lay.addStretch(1)
+    w = QWidget(); lay = QVBoxLayout(w); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(7)
+    r1 = QHBoxLayout(); r1.setSpacing(0); r1.addStretch(1)
+    r1.addWidget(W.eyebrow("Net Colour"))
+    for cat, label in (("power", "Power"), ("ground", "Ground"), ("core", "Core"),
+                       ("service", "Service"), ("lane", "IO Lane")):
+        _leg_item(r1, _swatch(cat, "fill"), label)
+    r1.addStretch(1); lay.addLayout(r1)
+    r2 = QHBoxLayout(); r2.setSpacing(0); r2.addStretch(1)
+    r2.addWidget(W.eyebrow("Border"))
+    _leg_item(r2, _swatch("must", "outline"), "Must-Switch")
+    _leg_item(r2, _swatch("osc", "dashed"), "Oscillator")
+    r2.addSpacing(22); r2.addWidget(W.eyebrow("Mark"))
+    _leg_item(r2, _swatch("service", "dot"), "5 V-Tolerant")
+    _leg_item(r2, _swatch("fixed", "notch"), "Breakout")
+    r2.addStretch(1); lay.addLayout(r2)
     return w
 
 
@@ -316,10 +381,19 @@ def _authority_panel(ctx, state: BenchState) -> QWidget:
     grid = QHBoxLayout(); grid.setSpacing(16)
     # left: map card
     map_card = W.Card(pad=20)
-    pin_map = PinMap(on_select=lambda pos: _show_pin(pos))
-    map_card.body.addWidget(pin_map, 0, Qt.AlignHCenter)
+    pin_map = PinMap(on_select=lambda pos: _show_pin(pos), base=460)
+    zrow = QHBoxLayout(); zrow.setSpacing(6); zrow.addStretch(1)
+    zrow.addWidget(W.eyebrow("Zoom"))
+    b_zo = W.btn("−", "ghost", "Zoom out", lambda: pin_map.zoom_by(1 / 1.15)); b_zo.setFixedWidth(32)
+    b_zi = W.btn("+", "ghost", "Zoom in", lambda: pin_map.zoom_by(1.15)); b_zi.setFixedWidth(32)
+    zrow.addWidget(b_zo); zrow.addWidget(b_zi)
+    zrow.addWidget(W.btn("Reset", "ghost", "Reset the zoom", lambda: pin_map.set_zoom(1.0)))
+    map_card.body.addLayout(zrow)
+    _area = QScrollArea(); _area.setWidgetResizable(False); _area.setFrameShape(QFrame.NoFrame)
+    _area.setFixedHeight(470); _area.setAlignment(Qt.AlignCenter); _area.setWidget(pin_map)
+    map_card.body.addWidget(_area)
     map_card.body.addWidget(_legend())
-    strip = QHBoxLayout(); strip.setSpacing(26); strip.setContentsMargins(0, 10, 0, 0)
+    strip = QHBoxLayout(); strip.setSpacing(24); strip.setContentsMargins(0, 12, 0, 0)
     strip.addStretch(1)
     stat_cells = {}
     for key, label in (("positions_total", "Positions"), ("must_switch_count", "Must-Switch"),
@@ -481,10 +555,11 @@ def _resolver_panel(ctx, state: BenchState) -> QWidget:
         split = QHBoxLayout(); split.setSpacing(16)
         # left: the resolved pinout, painted from the datasheet-derived pins
         map_card = W.Card(pad=16)
-        pm = PinMap(on_select=None, size=360)
+        pm = PinMap(on_select=None, base=340)
         geo = [{"position": p["pin"], "switch_class": "fixed",
                 "pin_names": {p.get("name", ""): 1}, "breakout": {}} for p in res["pins"]]
-        pm.set_positions(geo, {p["pin"]: _resolved_cat(p) for p in res["pins"]})
+        pm.set_positions(geo, {p["pin"]: {"cat": _resolved_cat(p), "fivev": bool(p.get("five_v_tolerant"))}
+                               for p in res["pins"]})
         map_card.body.addWidget(pm, 0, Qt.AlignHCenter)
         map_card.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Maximum)
         split.addWidget(map_card, 0, Qt.AlignTop)
