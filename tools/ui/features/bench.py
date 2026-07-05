@@ -61,36 +61,38 @@ def _resolved_cat(pn: dict) -> str:
 
 
 
-_NODE_KIND = {"mcu": "MCU Pin", "socket": "ZIF Socket", "switch": "Switch Cell",
-              "resistor": "Series R", "connector": "Connector", "ground": "Ground"}
-
-
-def _node(cfg, kind, name, detail, name_color=None) -> QFrame:
-    """A clean text node in the build map: what the component is, its refdes /
-    part, and the exact pin(s) or contact involved."""
-    card = QFrame(); card.setObjectName("connode"); card.setFixedWidth(158)
-    v = QVBoxLayout(card); v.setContentsMargins(12, 10, 12, 12); v.setSpacing(4); v.setAlignment(Qt.AlignHCenter)
-    kl = W.eyebrow(_NODE_KIND.get(kind, kind)); kl.setAlignment(Qt.AlignHCenter)
-    v.addWidget(kl)
-    nm = QLabel(str(name)); nm.setFont(T.mono_font(11, semibold=True)); nm.setAlignment(Qt.AlignHCenter); nm.setWordWrap(True)
-    v.addWidget(nm)
-    dt = None
-    if detail:
-        dt = QLabel(str(detail).replace(" · ", " ")); dt.setFont(T.mono_font(9))
-        dt.setAlignment(Qt.AlignHCenter); dt.setWordWrap(True)
-        v.addWidget(dt)
+def _node(kind, headline, sub=None, extra=None, headline_color=None) -> QFrame:
+    """A uniform box in the build map. The pin / terminal / contact is the headline
+    (prioritised); the component refdes/part sits under it, with any extra below.
+    Every node is the same size so the whole map stacks evenly."""
+    card = QFrame(); card.setObjectName("connode"); card.setFixedSize(172, 122)
+    v = QVBoxLayout(card); v.setContentsMargins(10, 8, 10, 8); v.setSpacing(3)
+    v.addStretch(1)
+    kl = W.eyebrow(kind); kl.setAlignment(Qt.AlignHCenter); v.addWidget(kl)
+    hl = QLabel(str(headline)); hl.setFont(T.mono_font(13, semibold=True))
+    hl.setAlignment(Qt.AlignHCenter); hl.setWordWrap(True); v.addWidget(hl)
+    subl = exl = None
+    if sub:
+        subl = QLabel(str(sub)); subl.setFont(T.mono_font(9)); subl.setAlignment(Qt.AlignHCenter); subl.setWordWrap(True)
+        v.addWidget(subl)
+    if extra:
+        exl = QLabel(str(extra)); exl.setFont(T.ui_font(8.5)); exl.setAlignment(Qt.AlignHCenter); exl.setWordWrap(True)
+        v.addWidget(exl)
+    v.addStretch(1)
 
     def style():
-        nm.setStyleSheet(f"color:{name_color or T.t('txt1')};background:transparent;")
-        if dt is not None:
-            dt.setStyleSheet(f"color:{T.t('txt2')};background:transparent;")
+        hl.setStyleSheet(f"color:{headline_color or T.t('txt1')};background:transparent;")
+        if subl is not None:
+            subl.setStyleSheet(f"color:{T.t('txt2')};background:transparent;")
+        if exl is not None:
+            exl.setStyleSheet(f"color:{T.t('txt3')};background:transparent;")
         card.setStyleSheet(f"QFrame#connode{{background:{T.t('inset')};border:1px solid {T.t('stroke')};border-radius:8px;}}")
     W.register_restyle(style)
     return card
 
 
 def _arrow() -> QLabel:
-    a = QLabel("→"); a.setFont(T.ui_font(15)); a.setAlignment(Qt.AlignCenter); a.setFixedWidth(20)
+    a = QLabel("→"); a.setFont(T.ui_font(15)); a.setAlignment(Qt.AlignCenter); a.setFixedWidth(18)
     W.register_restyle(lambda: a.setStyleSheet(f"color:{T.t('txt3')};background:transparent;"))
     return a
 
@@ -99,30 +101,52 @@ def _net_cat(net, fallback="lane"):
     return _CAT_FROM_NET.get(sauth._NET_CATEGORY.get(net, fallback), fallback)
 
 
-def _connection_flow(chain, cfg) -> QWidget:
-    box = QWidget(); col = QVBoxLayout(box); col.setContentsMargins(0, 0, 0, 0); col.setSpacing(10)
+def _netclass(net, cat="lane") -> str:
+    """The PCB net class the delivered net belongs to (for the build map). `cat` is
+    the row's real net category (the display net name is not a _NET_CATEGORY key)."""
+    u = str(net).upper()
+    if any(k in u for k in ("SWD", "SWCLK", "SWO", "TDI", "NTRST", "JTMS", "JTCK")):
+        return "SWD"
+    if any(k in u for k in ("USB", "_DP", "_DN", "DP_", "DN_")):
+        return "USB"
+    if cat in ("power", "analog", "ground", "core"):
+        return "Power"
+    if cat == "service":
+        return "Signal"
+    return "Default"
+
+
+def _term_short(t):
+    parts = str(t).split("·")
+    name = parts[0].strip()
+    num = parts[1].replace("Pin", "").strip() if len(parts) > 1 else ""
+    return name, num
+
+
+def _connection_flow(chain, cfg=None) -> QWidget:
+    box = QWidget(); col = QVBoxLayout(box); col.setContentsMargins(0, 0, 0, 0); col.setSpacing(12)
+    pos = chain["pos"]; pin_name = chain["name"] or f"Pin {pos}"
     for r in chain.get("rows", []):
         line = QHBoxLayout(); line.setSpacing(6); line.setAlignment(Qt.AlignLeft)
-        line.addWidget(_node(cfg, "mcu", chain["name"] or f"Pin {chain['pos']}", f"Pin {chain['pos']}"))
-        line.addWidget(_arrow())
-        line.addWidget(_node(cfg, "socket", chain.get("socket", "Socket"), f"Pin {chain['pos']}"))
-        line.addWidget(_arrow())
+        line.addWidget(_node("MCU Pin", f"Pin {pos}", pin_name)); line.addWidget(_arrow())
+        line.addWidget(_node("ZIF Socket", f"Pin {pos}", chain.get("socket", "Socket"))); line.addWidget(_arrow())
         if r["kind"] == "switch":
-            line.addWidget(_node(cfg, "switch", r["cell"],
-                                 f"Channel {r['channel']}\n{r['s_term']}\n→ {r['d_term']}"))
+            sn, snum = _term_short(r["s_term"]); dn, dnum = _term_short(r["d_term"])
+            line.addWidget(_node("Switch Cell", f"{sn} → {dn}", r["cell"],
+                                 f"Channel {r['channel']} Pins {snum}, {dnum}"))
             line.addWidget(_arrow())
         elif r.get("series"):
-            line.addWidget(_node(cfg, "resistor", str(r["series"]).split(" ")[0], "33 Ω series"))
-            line.addWidget(_arrow())
+            line.addWidget(_node("Series R", "33 Ω", str(r["series"]).split(" ")[0])); line.addWidget(_arrow())
         via = r.get("drain_via", "")
         if "Ground Plane" in via:
-            line.addWidget(_node(cfg, "ground", "Ground Plane", "stitching vias"))
+            line.addWidget(_node("Ground", "Plane", "Stitching vias"))
         else:
             contact = via.split("·")[-1].strip() if "·" in via else via
-            line.addWidget(_node(cfg, "connector", chain.get("connector", "Connector"), contact))
+            line.addWidget(_node("Connector", contact, chain.get("connector", "Connector")))
         line.addWidget(_arrow())
-        dcat = r.get("drain_cat", "lane")
-        line.addWidget(W.net_token(r.get("drain_net", ""), _net_cat(r.get("drain_net", ""), dcat)))
+        net = r.get("drain_net", ""); dcat = r.get("drain_cat", "lane")
+        line.addWidget(_node("Delivers", net, f"{_netclass(net, dcat)} Net Class",
+                             headline_color=T.category(_CAT_FROM_NET.get(dcat, "lane"))))
         line.addStretch(1)
         wrap = QWidget(); wrap.setLayout(line); col.addWidget(wrap)
     if chain.get("one_hot"):
