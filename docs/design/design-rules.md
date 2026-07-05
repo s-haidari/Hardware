@@ -124,20 +124,25 @@ saturated (there, color *is* the data). Selection reuses the azure accent, not a
 **Type — native Windows: Segoe UI (Variable) for interface/prose + Consolas / Cascadia Mono
 for all machine data (refdes, nets, pins, terminals so columns align).** Weights **Regular
 and Semibold only** — never Bold, never Light, never Medium. No letterspacing anywhere.
-Sentence case (see §2). Left-aligned. Sizes in pt (Qt); px ≈ pt × 1.333 at 96 dpi. Stay at
-or above the floor: **never below 12px Regular / 14px Semibold** (≈ 9pt / 10.5pt). 120-135%
-line height, 8px grid.
-- Pin hero (signal name): mono ~17pt / Semibold, text_1 — the focal element
-- Stat numbers: mono ~15pt / Semibold, tabular, text_1 (label ~9.5pt Regular, in text_3)
-- Section header: Segoe UI ~12.5pt / Semibold, text_2, with a trailing hairline
+Sentence case (see §2). Left-aligned.
+
+**Format text smartly — hierarchy by role, not one uniform size.** The single most important
+thing (the pin name) is clearly the largest; the payload (delivered nets) is emphasized by
+Semibold + category colour; and **labels, section headers, column headers, units, and
+through-components deliberately RECEDE** (smaller and dimmer than the content they describe).
+A blanket size bump is the mistake to avoid — it flattens the hierarchy. The considered scale
+(pt; px ≈ pt × 1.333):
+- Pin hero (signal name): mono ~15.5pt / Semibold, text_1 — the one focal element
+- Stat numbers: mono ~14pt / Semibold, tabular, text_1 (label ~8.5pt, text_3)
+- Delivered net (payload): mono ~10.5pt / Semibold, in its category colour
 - Group subhead: mono ~10.5pt / Semibold, text_1
-- Primary value / net: ~10.5-11pt (mono for data, Semibold for the delivered net), text_1
-- Secondary / label / side / column header: Segoe UI ~9.5-10.5pt / Regular, text_2 or text_3
-- Detail key: Segoe UI ~10.5pt / Regular, text_2, fixed 140px column
-Mono is reserved STRICTLY for machine values so monospace re-acquires meaning. Enable tabular
-figures wherever digits stack. Deviation note: the pure-Windows guidance recommends a 16px body;
-this dense engineering inspector runs one step tighter (~14px) to keep the pin table scannable,
-while holding the 12px / 14px legibility floor.
+- Value / terminal / side: mono ~9.5-10pt, text_1/text_2
+- Section header: Segoe UI ~11pt / Semibold, text_2, trailing hairline (structure, recedes)
+- Detail key / metadata: Segoe UI ~9pt / Regular, text_2, fixed 140px column
+- Column header / role / through / unit / footnote: ~8-8.5pt, text_3 — the quietest tier
+Mono is reserved STRICTLY for machine values so monospace re-acquires meaning; enable tabular
+figures wherever digits stack. Keep the focal hero and the coloured net loud; keep everything
+that merely labels or structures them quiet.
 
 **Radius:** exactly two. 8px for the one container (signal-path) and menus; 6px for controls,
 the row hover, focus rings, and the single must-switch chip. Stadium pills on data are retired.

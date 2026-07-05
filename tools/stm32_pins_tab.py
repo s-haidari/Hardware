@@ -261,13 +261,13 @@ class _KeyValuePanel(QScrollArea):
         fam = _SVG_FONT.split(",")[0].strip("'")
         for r, (k, v) in enumerate(rows):
             kl = QLabel(str(k))                  # plain dim key, fixed column — no chip
-            kf = QFont(fam); kf.setPointSizeF(12); kf.setWeight(QFont.Normal)
+            kf = QFont(fam); kf.setPointSizeF(9); kf.setWeight(QFont.Normal)
             kl.setFont(kf)
             kl.setStyleSheet(f"color:{_MUT};background:transparent;")
-            kl.setFixedWidth(158)
+            kl.setFixedWidth(140)
             kl.setAlignment(Qt.AlignTop | Qt.AlignLeft)
             vl = QLabel(str(v))
-            vf = QFont(fam); vf.setPointSizeF(12); vf.setWeight(QFont.Normal)
+            vf = QFont(fam); vf.setPointSizeF(9.5); vf.setWeight(QFont.Normal)
             vl.setFont(vf)
             vl.setStyleSheet(f"color:{_TXT};background:transparent;"); vl.setWordWrap(True)
             vl.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -833,7 +833,7 @@ class ConnectionDiagram(QWidget):
         b = self._branches()
         n = len(b[4]) if b else 1
         multiswitch = bool(b) and sum(1 for x in b[4] if x["caption"].startswith("SWITCHED")) > 1
-        return QSize(560, n * 52 + 30 + (24 if multiswitch else 6))
+        return QSize(560, n * 46 + 28 + (22 if multiswitch else 6))
 
     def paintEvent(self, _ev):
         p = QPainter(self)
@@ -850,19 +850,19 @@ class ConnectionDiagram(QWidget):
             return
         conn, kind, name, pcol, branches = info
         n = len(branches)
-        PAD, ROWH = 14, 52
-        contH = n * ROWH + 30
+        PAD, ROWH = 14, 46
+        contH = n * ROWH + 28
 
         # the ONE inset container — rounded, no border, no socket card, no accent bar
         rr = QPainterPath()
         rr.addRoundedRect(QRectF(0.5, 0.5, W - 1, contH - 1), 8, 8)
         p.fillPath(rr, QColor(_CARD))
 
-        of = QFont(monf); of.setPointSizeF(16.0); of.setWeight(QFont.DemiBold)
-        kf = QFont(uif); kf.setPointSizeF(11.5)
-        mf = QFont(monf); mf.setPointSizeF(11.5)
-        nf = QFont(monf); nf.setPointSizeF(12.5); nf.setWeight(QFont.DemiBold)
-        arf = QFont(monf); arf.setPointSizeF(12.0)
+        of = QFont(monf); of.setPointSizeF(14.5); of.setWeight(QFont.DemiBold)
+        kf = QFont(uif); kf.setPointSizeF(9.0)
+        mf = QFont(monf); mf.setPointSizeF(9.0)
+        nf = QFont(monf); nf.setPointSizeF(11.0); nf.setWeight(QFont.DemiBold)
+        arf = QFont(monf); arf.setPointSizeF(10.0)
         fm_o, fm_m, fm_n, fm_ar = (QFontMetricsF(x) for x in (of, mf, nf, arf))
 
         # origin — signal name stated ONCE, vertically centred
@@ -906,26 +906,26 @@ class ConnectionDiagram(QWidget):
                 p.drawEllipse(QRectF(contentx - 4, rcy - 4, 8, 8))
             kindtxt = ("Switched" if br["caption"].startswith("SWITCHED")
                        else ("Default" if "LANE" in br["caption"] else "Direct"))
-            kx = contentx + 13
+            kx = contentx + 12
             p.setFont(kf); p.setPen(QColor(_MUT if not dormant else _FAINT))
-            p.drawText(QRectF(kx, rcy - 10, 70, 20), Qt.AlignLeft | Qt.AlignVCenter, kindtxt)
+            p.drawText(QRectF(kx, rcy - 9, 60, 18), Qt.AlignLeft | Qt.AlignVCenter, kindtxt)
             # delivered net, right-aligned, category colour (or dim when dormant)
             nettxt = expandNet(br["to"])
             netw = fm_n.width(nettxt)
             netx = W - PAD - netw
             p.setFont(arf); p.setPen(QColor(_FAINT))
-            p.drawText(QRectF(netx - arw, rcy - 10, arw, 20), Qt.AlignLeft | Qt.AlignVCenter, arrow)
+            p.drawText(QRectF(netx - arw, rcy - 9, arw, 18), Qt.AlignLeft | Qt.AlignVCenter, arrow)
             p.setFont(nf); p.setPen(QColor(catcol if not dormant else _FAINT))
-            p.drawText(QRectF(netx, rcy - 10, netw + 4, 20), Qt.AlignLeft | Qt.AlignVCenter, nettxt)
+            p.drawText(QRectF(netx, rcy - 9, netw + 4, 18), Qt.AlignLeft | Qt.AlignVCenter, nettxt)
             # mechanism (cell·channel / series R) between the kind and the arrow
-            mx = kx + 74
+            mx = kx + 62
             mmaxw = max(24, (netx - arw - 12) - mx)
             p.setFont(mf); p.setPen(QColor(_MUT if not dormant else _FAINT))
-            p.drawText(QRectF(mx, rcy - 10, mmaxw, 20), Qt.AlignLeft | Qt.AlignVCenter,
+            p.drawText(QRectF(mx, rcy - 9, mmaxw, 18), Qt.AlignLeft | Qt.AlignVCenter,
                        fm_m.elidedText(br.get("via") or "", Qt.ElideRight, mmaxw))
 
         if sum(1 for b in branches if b["caption"].startswith("SWITCHED")) > 1:
-            fnf = QFont(uif); fnf.setPointSizeF(10.0)
+            fnf = QFont(uif); fnf.setPointSizeF(8.5)
             p.setFont(fnf); p.setPen(QColor(_FAINT))
             p.drawText(QRectF(2, contH + 6, W - 4, 15), Qt.AlignLeft,
                        "Only one branch is closed at a time. Firmware drives these as a one-hot group.")
@@ -937,7 +937,7 @@ class _ConnectionLedger(QWidget):
     by hairlines. No cards, no pills, no cell borders. The delivered net is the only
     coloured cell (category-colour mono with a 6px dot); nulls recede to a dim dash."""
 
-    W_SIDE, W_TERM = 112, 120
+    W_SIDE, W_TERM = 92, 100
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -968,10 +968,10 @@ class _ConnectionLedger(QWidget):
         w = QWidget(); w.setObjectName("lhd")
         w.setStyleSheet(f"#lhd{{border-bottom:1px solid {_LINE};}}")
         h = QHBoxLayout(w); h.setContentsMargins(0, 0, 0, 8); h.setSpacing(12)
-        h.addWidget(self._lab("Side", mono=False, size=11, weight=QFont.Normal, color=_FAINT, fixed=self.W_SIDE))
-        h.addWidget(self._lab("Terminal", mono=False, size=11, weight=QFont.Normal, color=_FAINT, fixed=self.W_TERM))
-        h.addWidget(self._lab("Connected Net", mono=False, size=11, weight=QFont.Normal, color=_FAINT), 2)
-        h.addWidget(self._lab("Through", mono=False, size=11, weight=QFont.Normal, color=_FAINT), 3)
+        h.addWidget(self._lab("Side", mono=False, size=8.5, weight=QFont.Normal, color=_FAINT, fixed=self.W_SIDE))
+        h.addWidget(self._lab("Terminal", mono=False, size=8.5, weight=QFont.Normal, color=_FAINT, fixed=self.W_TERM))
+        h.addWidget(self._lab("Connected Net", mono=False, size=8.5, weight=QFont.Normal, color=_FAINT), 2)
+        h.addWidget(self._lab("Through", mono=False, size=8.5, weight=QFont.Normal, color=_FAINT), 3)
         return w
 
     def _subhead(self, r):
@@ -984,31 +984,31 @@ class _ConnectionLedger(QWidget):
             name, role = "Default Card Lane", ("Series Resistor" if r.get("series") else "Direct Route")
         else:
             name, role = "Direct Route", ("Series Resistor" if r.get("series") else "Direct Route")
-        h.addWidget(_Dot(cat, 8))
-        h.addWidget(self._lab(name, mono=True, size=12, weight=QFont.DemiBold, color=_TXT))
+        h.addWidget(_Dot(cat, 7))
+        h.addWidget(self._lab(name, mono=True, size=10.5, weight=QFont.DemiBold, color=_TXT))
         h.addStretch(1)
-        h.addWidget(self._lab(role, mono=False, size=11, weight=QFont.Normal, color=_FAINT))
+        h.addWidget(self._lab(role, mono=False, size=8, weight=QFont.Normal, color=_FAINT))
         return w
 
     def _row(self, glyph, side, term, net, netcat, through):
         w = QWidget(); w.setObjectName("lrw")
         w.setStyleSheet(f"#lrw{{border-top:1px solid {_LINE};}} #lrw:hover{{background:{_CARD};}}")
-        w.setMinimumHeight(40)
+        w.setMinimumHeight(30)
         h = QHBoxLayout(w); h.setContentsMargins(0, 0, 0, 0); h.setSpacing(12)
-        h.addWidget(self._lab(f"{glyph}  {side}", mono=False, size=12, weight=QFont.Normal,
+        h.addWidget(self._lab(f"{glyph}  {side}", mono=False, size=9.5, weight=QFont.Normal,
                               color=_MUT, fixed=self.W_SIDE))
-        h.addWidget(self._lab(term or "—", mono=True, size=12, weight=QFont.Normal,
+        h.addWidget(self._lab(term or "—", mono=True, size=9.5, weight=QFont.Normal,
                               color=(_TXT if term else _FAINT), fixed=self.W_TERM))
-        nc = QWidget(); nh = QHBoxLayout(nc); nh.setContentsMargins(0, 0, 0, 0); nh.setSpacing(8)
+        nc = QWidget(); nh = QHBoxLayout(nc); nh.setContentsMargins(0, 0, 0, 0); nh.setSpacing(7)
         if netcat:
             col = _CAT_COLOR.get(netcat, _MUT)
-            nh.addWidget(_Dot(col, 7))
-            nh.addWidget(self._lab(net, mono=True, size=12, weight=QFont.DemiBold, color=col))
+            nh.addWidget(_Dot(col, 6))
+            nh.addWidget(self._lab(net, mono=True, size=10.5, weight=QFont.DemiBold, color=col))
         else:
-            nh.addWidget(self._lab(net, mono=True, size=12, weight=QFont.Normal, color=_TXT))
+            nh.addWidget(self._lab(net, mono=True, size=10, weight=QFont.Normal, color=_TXT))
         nh.addStretch(1)
         h.addWidget(nc, 2)
-        h.addWidget(self._lab(through or "—", mono=True, size=10.5, weight=QFont.Normal,
+        h.addWidget(self._lab(through or "—", mono=True, size=8, weight=QFont.Normal,
                               color=_FAINT, wrap=True), 3)
         return w
 
@@ -1103,12 +1103,12 @@ class _PinHeaderBar(QWidget):
 
         # line 1 — hero signal name, pin number, then the one class chip (right)
         self._l1.addWidget(self._lab(name or f"Pin {p['position']}", mono=True,
-                                     size=18.5, weight=QFont.DemiBold, color=_TXT))
+                                     size=15.5, weight=QFont.DemiBold, color=_TXT))
         if name:
             self._l1.addWidget(self._lab(f"Pin {p['position']}", mono=True,
-                                         size=12, weight=QFont.Normal, color=_MUT))
+                                         size=10.5, weight=QFont.Normal, color=_MUT))
         self._l1.addStretch(1)
-        chip = self._lab(clabel, mono=False, size=11, weight=QFont.DemiBold, color=ccol)
+        chip = self._lab(clabel, mono=False, size=8.5, weight=QFont.DemiBold, color=ccol)
         chip.setStyleSheet(f"color:{ccol};background:{_wash(ccol)};border-radius:6px;padding:4px 10px;")
         self._l1.addWidget(chip)
 
@@ -1124,10 +1124,10 @@ class _PinHeaderBar(QWidget):
             parts.append((None, "5 V-Tolerant"))
         for i, (dcol, word) in enumerate(parts):
             if i > 0:
-                self._l2.addWidget(self._lab("·", mono=False, size=11.5, weight=QFont.Normal, color=_FAINT))
+                self._l2.addWidget(self._lab("·", mono=False, size=9, weight=QFont.Normal, color=_FAINT))
             if dcol:
-                self._l2.addWidget(_Dot(dcol, 8))
-            self._l2.addWidget(self._lab(word, mono=False, size=11.5, weight=QFont.Normal, color=_MUT))
+                self._l2.addWidget(_Dot(dcol, 7))
+            self._l2.addWidget(self._lab(word, mono=False, size=9, weight=QFont.Normal, color=_MUT))
         self._l2.addStretch(1)
 
 
