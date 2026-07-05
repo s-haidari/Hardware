@@ -53,8 +53,8 @@ class SectionHeader(QWidget):
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 2, 0, 4)
         lay.setSpacing(10)
-        self._label = QLabel(text)          # sentence case, not uppercase
-        self._label.setFont(_font(_UI, 12.5, demibold=True))
+        self._label = QLabel(text)          # Title Case, not uppercase
+        self._label.setFont(_font(_UI, 14.0, demibold=True))
         self._rule = QFrame()
         self._rule.setFixedHeight(1)
         self._rule.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
