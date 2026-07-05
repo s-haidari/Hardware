@@ -23,7 +23,7 @@ from PyQt5.QtWidgets import (
     QStackedWidget, QTableWidget, QTableWidgetItem, QFormLayout, QDoubleSpinBox,
     QFileDialog, QMessageBox, QAbstractItemView, QHeaderView, QSizePolicy,
     QApplication, QColorDialog, QScrollArea, QToolButton, QMenu, QWidgetAction,
-    QGridLayout
+    QGridLayout, QDialog, QDialogButtonBox
 )
 import ui_widgets as uw
 import ui_theme
@@ -48,6 +48,8 @@ from ui_theme import (lucide_icon as _lucide,  # noqa: F401
 import nd_wizard as wiz
 import nd_kicad_checks as kchecks
 import nd_project_health as phealth
+import nd_fab_presets as fabp
+import nd_object_conform as conform
 from nd_netclass_manager import (
     NetClass, NetClassManager, create_vault_standard_template,
     load_vault_standard, save_vault_standard,
@@ -474,8 +476,12 @@ class KiCadToolsWidget(QWidget):
         b_drc = uw.button("Run DRC", "default", _lucide("play", _LU_GREEN))
         b_drc.setToolTip("Run KiCad's Design Rules Check (board) on the selected projects")
         b_drc.clicked.connect(self._run_drc)
+        b_fab = uw.button("Fab Standard…", "default", _lucide("layers", _LU_NEUTRAL))
+        b_fab.setToolTip("Apply an OSH Park design-rule + stackup standard and conform "
+                         "existing objects (text/labels) to it — preview + .bak backup")
+        b_fab.clicked.connect(self._open_fab_standard)
         btns.addWidget(b_prev); btns.addWidget(b_apply); btns.addWidget(b_audit)
-        btns.addWidget(b_erc); btns.addWidget(b_drc); btns.addStretch()
+        btns.addWidget(b_erc); btns.addWidget(b_drc); btns.addWidget(b_fab); btns.addStretch()
         outer.addLayout(btns)
         # actions sit right under the form; the empty room falls to the bottom
         outer.addStretch(1)
@@ -690,6 +696,119 @@ class KiCadToolsWidget(QWidget):
                 self._log_findings(a["findings"])
 
         self._run_heavy("Auditing…", work)
+
+    # ============================================================ FAB STANDARD
+    def _open_fab_standard(self):
+        """Self-contained dialog: pick an OSH Park preset + which object types to
+        conform, preview (writes nothing), then apply (design rules + stackup to the
+        project settings; existing text/labels rewritten, each with a .bak backup)."""
+        pros = self.selected_pro_files()
+        if not pros:
+            QMessageBox.information(self, "Fab Standard", "No projects selected."); return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Fab Standard")
+        v = QVBoxLayout(dlg)
+        v.addWidget(QLabel(f"Apply a fab standard to {len(pros)} selected project(s)."))
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Preset:"))
+        preset_combo = QComboBox()
+        preset_combo.addItems(list(fabp.PRESETS))
+        row.addWidget(preset_combo, 1)
+        v.addLayout(row)
+
+        chk = {}
+        for key, label in (("settings", "Apply design rules + stackup to project settings"),
+                           ("silk", "Conform component/board SILK text"),
+                           ("fab", "Conform FAB-layer text"),
+                           ("copper", "Conform COPPER text"),
+                           ("sch_text", "Conform schematic text"),
+                           ("labels", "Conform net labels")):
+            cb = QCheckBox(label)
+            cb.setChecked(key in ("settings", "silk", "fab", "labels"))
+            chk[key] = cb
+            v.addWidget(cb)
+
+        note = QLabel("Preview shows what would change and writes nothing. Apply makes a "
+                      ".bak of every file first.")
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color:{ui_theme.tc('FG_DIM')};")
+        v.addWidget(note)
+
+        bb = QDialogButtonBox()
+        b_preview = bb.addButton("Preview", QDialogButtonBox.ActionRole)
+        b_apply = bb.addButton("Apply (.bak)", QDialogButtonBox.AcceptRole)
+        bb.addButton(QDialogButtonBox.Cancel)
+        v.addWidget(bb)
+
+        def opts():
+            return {k: cb.isChecked() for k, cb in chk.items()}
+
+        b_preview.clicked.connect(lambda: self._run_fab_standard(
+            pros, fabp.PRESETS[preset_combo.currentText()], opts(), dry_run=True))
+        b_apply.clicked.connect(lambda: (self._run_fab_standard(
+            pros, fabp.PRESETS[preset_combo.currentText()], opts(), dry_run=False), dlg.accept()))
+        bb.rejected.connect(dlg.reject)
+        dlg.exec_()
+
+    def _run_fab_standard(self, pros, preset, o, dry_run):
+        import datetime
+        stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        pcb_targets = {}
+        if o["silk"]:
+            pcb_targets["silk"] = (preset.silk_text_height, preset.silk_text_thickness)
+        if o["fab"]:
+            pcb_targets["fab"] = (preset.fab_text_height, preset.fab_text_thickness)
+        if o["copper"]:
+            pcb_targets["copper"] = (1.5, 0.3)
+        sch_targets = {}
+        if o["sch_text"]:
+            sch_targets["text"] = (1.27, None)
+        if o["labels"]:
+            sch_targets["labels"] = (1.27, None)
+
+        def work():
+            self.log(f"\n=== Fab Standard: {preset.name} "
+                     f"({'preview' if dry_run else 'apply'}) ===")
+            self.log(f"  {preset.verify_note}")
+            for pro in pros:
+                boards = wiz.list_boards(pro.parent)
+                schs = wiz.list_schematics(pro.parent)
+                top = pick_root_schematic(schs, pro) if schs else None
+                # design rules + stackup -> project settings / board
+                if o["settings"] and not dry_run:
+                    try:
+                        from nd_project_settings_manager import ProjectSettingsManager
+                        mgr = ProjectSettingsManager()
+                        if mgr.load_from_project(pro):
+                            mgr.settings = fabp.apply_to_project_settings(mgr.settings, preset)
+                            mgr.save_to_project(pro, backup=True)
+                            self.log(f"  {pro.stem}: design rules applied ({preset.name})")
+                        for b in boards:
+                            txt = b.read_text(encoding="utf-8", errors="replace")
+                            new, ch = conform.set_board_stackup(txt, preset)
+                            if ch:
+                                b.with_suffix(b.suffix + f".{stamp}.bak").write_text(txt, encoding="utf-8")
+                                b.write_text(new, encoding="utf-8", newline="\n")
+                                self.log(f"  {b.name}: stackup applied ({preset.layers}-layer)")
+                    except Exception as e:      # noqa: BLE001
+                        self.log(f"  {pro.stem}: settings/stackup ERROR: {e}")
+                elif o["settings"] and dry_run:
+                    self.log(f"  {pro.stem}: would apply {preset.name} rules + "
+                             f"{preset.layers}-layer stackup to {len(boards)} board(s)")
+                # conform existing text/labels
+                if pcb_targets or sch_targets:
+                    files = ([top] if top else []) + list(boards)
+                    res = conform.conform_project(files, pcb_targets, sch_targets, stamp, dry_run=dry_run)
+                    verb = "would change" if dry_run else "changed"
+                    for f in res["files"]:
+                        if f["changed"]:
+                            self.log(f"  {Path(f['path']).name}: {verb} {f['changed']} "
+                                     f"objects {f['counts']}")
+                    if not res["total"]:
+                        self.log(f"  {pro.stem}: no matching objects to conform")
+
+        self._run_heavy("Applying fab standard…" if not dry_run else "Previewing…", work)
 
     # ============================================================ NET CLASSES
     def _build_netclass_tab(self) -> QWidget:
