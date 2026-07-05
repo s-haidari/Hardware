@@ -929,9 +929,12 @@ def associate_parts_from_cfg(cfg: Dict[str, str], overrides: Optional[dict] = No
 # and every FUTURE download alike — no side index to maintain.
 _PROP_RE = re.compile(r'\(property\s+"((?:[^"\\]|\\.)*)"\s+"((?:[^"\\]|\\.)*)"')
 
-# candidate property names, most-specific first (compared case/sep-insensitively)
-_MPN_KEYS = ("manufacturerpartnumber", "mpn", "mouserpartnumber", "mouserpartno",
-             "partnumber", "partno", "value")
+# candidate property names, most-specific first (compared case/sep-insensitively).
+# _MPN_KEYS ends with 'value' as a last-resort identity for passives; _MPN_KEYS_STRICT
+# drops it, for when only a REAL manufacturer part number will do (BOM MPN column).
+_MPN_KEYS_STRICT = ("manufacturerpartnumber", "mpn", "mouserpartnumber", "mouserpartno",
+                    "partnumber", "partno")
+_MPN_KEYS = _MPN_KEYS_STRICT + ("value",)
 _MFR_KEYS = ("manufacturer", "mfr", "mfg", "brand", "vendor")
 _PLACEHOLDERS = {"", "~", "*", "-", "n/a", "na", "none", "value"}
 
@@ -942,6 +945,18 @@ def extract_symbol_properties(block: str) -> Dict[str, str]:
     for k, v in _PROP_RE.findall(block or ""):
         out[k.replace('\\"', '"')] = v.replace('\\"', '"')
     return out
+
+
+def strict_mpn(props: Dict[str, str]) -> Optional[str]:
+    """A REAL manufacturer part number from a dedicated property (never the Value
+    fallback). None for a generic passive that only carries a value."""
+    norm = {k.lower().replace(" ", "").replace("_", "").replace("-", ""): (v or "").strip()
+            for k, v in (props or {}).items()}
+    for k in _MPN_KEYS_STRICT:
+        v = norm.get(k, "")
+        if v and v.lower() not in _PLACEHOLDERS:
+            return v
+    return None
 
 
 def part_identity(props: Dict[str, str], fallback: str = "") -> Dict[str, Optional[str]]:
@@ -1058,6 +1073,100 @@ def scan_library_grouped(cfg: Dict[str, str], overrides: Optional[dict] = None) 
             "dangling": dangling,
         })
     return rows
+
+
+def _natural_ref(ref: str):
+    """Sort key so R2 < R10 (prefix, then numeric index)."""
+    m = re.match(r"([A-Za-z_]+)(\d+)", ref or "")
+    return (m.group(1), int(m.group(2))) if m else (ref or "", 0)
+
+
+def bom_from_kicad_schematic(sch_path, lookup=None,
+                             enrich_fields=("manufacturer", "datasheet")) -> dict:
+    """Smart BOM from a KiCad 6+/7+ schematic (.kicad_sch), using our identity + enrich
+    features on any KiCad file — not just the cards this tool designs.
+
+    Pulls every real component (skips power / virtual / excluded-from-BOM symbols),
+    reads its properties, resolves the canonical MPN / manufacturer via part_identity
+    (the same logic that groups the library), then groups identical parts — by MPN when
+    present, else value + footprint — with their reference designators and quantity.
+    If a `lookup(mpn) -> {...}` is given (e.g. make_mouser_lookup), it fills BLANK
+    manufacturer / datasheet per group. Read-only; returns {rows, component_count,
+    line_count, csv}."""
+    import csv as _csv
+    import io as _io
+    from fp_render import parse_sexpr
+    root = parse_sexpr(Path(sch_path).read_text(encoding="utf-8", errors="replace"))
+    if not root or root[0] != "kicad_sch":
+        return {"error": "not a KiCad schematic (.kicad_sch)", "rows": [],
+                "component_count": 0, "line_count": 0, "csv": ""}
+
+    comps = []
+    for node in root[1:]:
+        if not (isinstance(node, list) and node and node[0] == "symbol"):
+            continue                                  # only top-level symbol instances
+        lib_id, props, in_bom = "", {}, True
+        for c in node[1:]:
+            if not (isinstance(c, list) and c):
+                continue
+            if c[0] == "lib_id" and len(c) > 1:
+                lib_id = c[1]
+            elif c[0] == "property" and len(c) > 2:
+                props[c[1]] = c[2]
+            elif c[0] == "in_bom" and len(c) > 1:
+                in_bom = c[1] != "no"
+            elif c[0] == "exclude_from_bom":
+                in_bom = False
+        ref = props.get("Reference", "")
+        if not ref or ref.startswith("#") or lib_id.lower().startswith("power:") or not in_bom:
+            continue                                  # power rails / virtual parts
+        comps.append((ref, props))
+
+    groups: dict = {}
+    for ref, props in comps:
+        ident = part_identity(props, fallback=props.get("Value", ""))
+        # MPN column: a dedicated MPN property wins; else, if the part carries a
+        # manufacturer (SnapEDA/Mouser ICs put the MPN in Value), the Value IS the
+        # MPN; a bare passive (value only, no manufacturer) gets no MPN.
+        smpn = strict_mpn(props)
+        if not smpn and ident["manufacturer"]:
+            v = (props.get("Value") or "").strip()
+            smpn = v if v and v.lower() not in _PLACEHOLDERS else None
+        key = smpn or ("VF", props.get("Value", ""), props.get("Footprint", ""))
+        g = groups.setdefault(key, {
+            "mpn": smpn, "manufacturer": ident["manufacturer"],
+            "datasheet": ident["datasheet"], "description": ident["description"],
+            "value": props.get("Value", ""), "footprint": props.get("Footprint", ""), "refs": []})
+        g["refs"].append(ref)
+
+    if lookup:
+        for g in groups.values():
+            if g["mpn"] and any(not g.get(f) for f in enrich_fields):
+                res = lookup(g["mpn"])
+                if res:
+                    for f in enrich_fields:
+                        if not g.get(f) and res.get(f):
+                            g[f] = res[f]
+
+    rows = []
+    for g in groups.values():
+        refs = sorted(g["refs"], key=_natural_ref)
+        rows.append({"refs": refs, "qty": len(refs), "value": g["value"],
+                     "mpn": g["mpn"] or "", "manufacturer": g["manufacturer"] or "",
+                     "footprint": g["footprint"], "datasheet": g["datasheet"] or "",
+                     "description": g["description"] or ""})
+    rows.sort(key=lambda r: (r["value"].lower(), r["footprint"].lower(),
+                             _natural_ref(r["refs"][0]) if r["refs"] else ("", 0)))
+
+    buf = _io.StringIO()
+    w = _csv.writer(buf, lineterminator="\n")
+    w.writerow(["Refs", "Qty", "Value", "MPN", "Manufacturer", "Footprint",
+                "Datasheet", "Description"])
+    for r in rows:
+        w.writerow([",".join(r["refs"]), r["qty"], r["value"], r["mpn"],
+                    r["manufacturer"], r["footprint"], r["datasheet"], r["description"]])
+    return {"rows": rows, "component_count": len(comps), "line_count": len(rows),
+            "csv": buf.getvalue()}
 
 
 def library_health_report(cfg: Dict[str, str], overrides: Optional[dict] = None) -> dict:

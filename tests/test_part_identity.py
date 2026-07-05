@@ -129,5 +129,54 @@ class HealthReportTests(unittest.TestCase):
         self.assertEqual(len(rep["no_manufacturer"]), c["no_manufacturer"])
 
 
+class KicadBomTests(unittest.TestCase):
+    """Smart BOM from any KiCad schematic: skip power/virtual symbols, group by real
+    identity, IC Value-as-MPN vs bare passives, and optional enrichment."""
+
+    _SCH = ('(kicad_sch (version 20230121)\n'
+            '  (symbol (lib_id "Device:R") (property "Reference" "R10" (at 0 0 0)) '
+            '(property "Value" "10k" (at 0 0 0)) (property "Footprint" "R_0402" (at 0 0 0)))\n'
+            '  (symbol (lib_id "Device:R") (property "Reference" "R2" (at 0 0 0)) '
+            '(property "Value" "10k" (at 0 0 0)) (property "Footprint" "R_0402" (at 0 0 0)))\n'
+            '  (symbol (lib_id "MCU_ST:STM32F407VGTx") (property "Reference" "U1" (at 0 0 0)) '
+            '(property "Value" "STM32F407VGT6" (at 0 0 0)) '
+            '(property "MANUFACTURER" "STMicroelectronics" (at 0 0 0)) '
+            '(property "Footprint" "LQFP-100" (at 0 0 0)))\n'
+            '  (symbol (lib_id "power:GND") (property "Reference" "#PWR01" (at 0 0 0)) '
+            '(property "Value" "GND" (at 0 0 0)))\n)\n')
+
+    def _bom(self, lookup=None):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            p = pathlib.Path(td) / "t.kicad_sch"
+            p.write_text(self._SCH, encoding="utf-8")
+            return LM.bom_from_kicad_schematic(str(p), lookup=lookup)
+
+    def test_skips_power_groups_and_natural_sort(self):
+        bom = self._bom()
+        self.assertEqual(bom["component_count"], 3)          # power symbol skipped
+        r = next(x for x in bom["rows"] if x["value"] == "10k")
+        self.assertEqual(r["refs"], ["R2", "R10"])           # R2 < R10, grouped
+        self.assertEqual(r["qty"], 2)
+        self.assertEqual(r["mpn"], "")                       # bare passive: no MPN
+
+    def test_ic_mpn_and_enrich(self):
+        def lookup(mpn):
+            return {"manufacturer": "ST", "datasheet": "http://ds"} if "STM32" in (mpn or "") else None
+        bom = self._bom(lookup=lookup)
+        u = next(x for x in bom["rows"] if x["refs"] == ["U1"])
+        self.assertEqual(u["mpn"], "STM32F407VGT6")          # IC: Value is the MPN
+        self.assertEqual(u["manufacturer"], "STMicroelectronics")
+        self.assertEqual(u["datasheet"], "http://ds")        # blank field enriched
+        self.assertIn("Refs,Qty,Value,MPN", bom["csv"])
+
+    def test_not_a_schematic(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            p = pathlib.Path(td) / "x.kicad_sym"
+            p.write_text("(kicad_symbol_lib)", encoding="utf-8")
+            self.assertEqual(LM.bom_from_kicad_schematic(str(p))["rows"], [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
