@@ -162,15 +162,15 @@ class _Readout(QFrame):
         lay.setContentsMargins(15, 2, 15, 4)
         lay.setSpacing(4)
         self._v = QLabel("–")
-        self._v.setFont(_font(_MONO, 15.0, demibold=True))
+        self._v.setFont(_font(_MONO, 16.5, demibold=True))
         # a small type-coloured DOT before the label (never an underline)
         lrow = QHBoxLayout()
         lrow.setContentsMargins(0, 0, 0, 0)
         lrow.setSpacing(6)
         self._dot = QFrame()
         self._dot.setFixedSize(7, 7)
-        self._l = QLabel(label)                 # sentence case, not uppercase
-        self._l.setFont(_font(_UI, 9.5))
+        self._l = QLabel(label)                 # Title Case, not uppercase
+        self._l.setFont(_font(_UI, 11.0))
         lrow.addWidget(self._dot)
         lrow.addWidget(self._l)
         lrow.addStretch(1)
