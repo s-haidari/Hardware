@@ -311,9 +311,19 @@ class ManagerView(QWidget):
 
     def _apply_filter(self, text):
         text = (text or "").lower()
+        rows = getattr(self, "_rows_view", [])
         for r in range(self.table.rowCount()):
-            it = self.table.item(r, 0)
-            self.table.setRowHidden(r, bool(text) and (it is None or text not in it.text().lower()))
+            if not text:
+                self.table.setRowHidden(r, False)
+                continue
+            g = rows[r] if r < len(rows) else {}
+            # search the part's whole identity, not just the visible Part column:
+            # mpn / manufacturer / datasheet / description / symbols / footprint
+            hay = " ".join(str(x) for x in (
+                g.get("mpn"), g.get("name"), g.get("manufacturer"), g.get("datasheet"),
+                g.get("description"), g.get("footprint"), " ".join(g.get("symbols") or []),
+            ) if x).lower()
+            self.table.setRowHidden(r, text not in hay)
 
     # -- component preview: symbol · footprint · 3D model --
     def _sym_block(self, name):

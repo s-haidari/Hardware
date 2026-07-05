@@ -586,6 +586,115 @@ def rewrite_symbol_footprint(symbol_text: str, nickname: str = FP_NICKNAME) -> s
     return _FP_PROP_RE.sub(repl, symbol_text, count=1)
 
 
+def set_symbol_property(symbol_text: str, key: str, value: str) -> str:
+    """Set (or add) one symbol property, regex-precise. Replaces the value in place if
+    the property exists, else inserts a new hidden property after the Value line. The
+    writer half of enrich-from-MPN; mirrors rewrite_symbol_footprint's precision."""
+    val = str(value).replace("\\", "\\\\").replace('"', '\\"')
+    pat = re.compile(r'(\(property\s+"' + re.escape(key) + r'"\s+")((?:[^"\\]|\\.)*)(")')
+    if pat.search(symbol_text):
+        return pat.sub(lambda m: m.group(1) + val + m.group(3), symbol_text, count=1)
+    anchor = re.search(r'\(property\s+"Value"\s+"(?:[^"\\]|\\.)*"[^\n]*\)', symbol_text)
+    if not anchor:
+        return symbol_text
+    ins = f'\n    (property "{key}" "{val}" (at 0 0 0) (effects (font (size 1.27 1.27)) hide))'
+    return symbol_text[:anchor.end()] + ins + symbol_text[anchor.end():]
+
+
+# Identity field -> the symbol property that carries it (for enrich write-back).
+_ENRICH_PROPERTY = {"manufacturer": "MANUFACTURER", "datasheet": "Datasheet",
+                    "description": "Description", "mpn": "Value"}
+
+
+def enrich_symbol(symbol_text: str, lookup_result: dict,
+                  fields=("manufacturer", "datasheet", "description")) -> tuple:
+    """Fill BLANK identity properties of one symbol from a lookup result. Never
+    overwrites a value that is already present. Returns (new_text, [(field, value)])."""
+    cur = part_identity(extract_symbol_properties(symbol_text))
+    changed = []
+    for f in fields:
+        newv = (lookup_result or {}).get(f)
+        if newv and not cur.get(f):                  # fill blanks only
+            symbol_text = set_symbol_property(symbol_text, _ENRICH_PROPERTY[f], str(newv))
+            changed.append((f, str(newv)))
+    return symbol_text, changed
+
+
+def enrich_library(cfg: Dict[str, str], lookup, log: UILog = None,
+                   fields=("manufacturer", "datasheet", "description"),
+                   dry_run: bool = True) -> dict:
+    """Enrich every symbol's BLANK identity fields from a distributor lookup.
+
+    `lookup(mpn) -> {mpn, manufacturer, datasheet, description}` (or None). Safe by
+    construction: fills blanks only, matches on the symbol's OWN existing MPN, runs
+    under _LIB_LOCK, and snapshots the library to .trash before any write. dry_run=True
+    (default) computes the exact per-symbol changes WITHOUT writing — the caller shows
+    them for confirmation, then calls again with dry_run=False. Returns a report:
+    {changes:[{symbol, mpn, filled:[(field,value)]}], written:bool, symbols:int}."""
+    sym_path = Path(cfg.get("SymbolLib", ""))
+    if not sym_path.exists():
+        return {"error": "no symbol library", "changes": [], "written": False, "symbols": 0}
+    with _LIB_LOCK:
+        text = read_text(sym_path)
+        blocks = extract_symbol_blocks(text)
+        changes, edits = [], []
+        for b in blocks:
+            name = extract_symbol_name(b)
+            ident = part_identity(extract_symbol_properties(b), fallback=name)
+            mpn = ident.get("mpn")
+            res = lookup(mpn) if mpn else None
+            if not res:
+                continue
+            nb, filled = enrich_symbol(b, res, fields)
+            if filled:
+                changes.append({"symbol": name, "mpn": mpn, "filled": filled})
+                edits.append((b, nb))
+        written = False
+        if not dry_run and edits:
+            new_text = text
+            for old, new in edits:
+                new_text = new_text.replace(old, new, 1)
+            _snapshot_then_write(sym_path, new_text, log or _NullLog())
+            written = True
+        return {"changes": changes, "written": written, "symbols": len(blocks)}
+
+
+class _NullLog:
+    def write(self, *_a, **_k):
+        pass
+
+
+def make_mouser_lookup(api_key: str, timeout: int = 8):
+    """A lookup(mpn) -> identity dict backed by the Mouser Search API. Requires a
+    Mouser API key (the user's, from config). Returns None for anything it can't
+    resolve and NEVER raises — a network/auth/parse failure just means 'no data'."""
+    import json as _json
+    import urllib.request
+
+    def lookup(mpn):
+        if not (api_key and mpn):
+            return None
+        try:
+            body = _json.dumps({"SearchByPartRequest": {"mouserPartNumber": mpn,
+                                                        "partSearchOptions": "Exact"}}).encode()
+            req = urllib.request.Request(
+                f"https://api.mouser.com/api/v1/search/partnumber?apiKey={api_key}",
+                data=body, headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                data = _json.loads(r.read().decode())
+            parts = (data.get("SearchResults") or {}).get("Parts") or []
+            if not parts:
+                return None
+            p = parts[0]
+            return {"mpn": p.get("ManufacturerPartNumber"),
+                    "manufacturer": p.get("Manufacturer"),
+                    "datasheet": p.get("DataSheetUrl"),
+                    "description": p.get("Description")}
+        except Exception:                            # noqa: BLE001 — never raise to the UI
+            return None
+    return lookup
+
+
 def footprint_has_model(footprint_text: str) -> bool:
     return "(model" in footprint_text
 
@@ -949,6 +1058,47 @@ def scan_library_grouped(cfg: Dict[str, str], overrides: Optional[dict] = None) 
             "dangling": dangling,
         })
     return rows
+
+
+def library_health_report(cfg: Dict[str, str], overrides: Optional[dict] = None) -> dict:
+    """Roll up scan_library_grouped into a shareable health summary: totals plus the
+    lists that need attention — dangling links, symbols missing a footprint or model,
+    and parts with no manufacturer identity. Returns counts, the offending lists, and
+    a ready-to-share markdown report. Read-only."""
+    rows = scan_library_grouped(cfg, overrides)
+    total = len(rows)
+    dangling = [r for r in rows if r.get("dangling")]
+    miss_fp = [r for r in rows if r.get("has_symbol") and not r.get("has_footprint")]
+    miss_mdl = [r for r in rows if r.get("has_footprint") and not r.get("has_model")]
+    no_mfr = [r for r in rows if not r.get("manufacturer")]
+    complete = [r for r in rows if r.get("has_symbol") and r.get("has_footprint")
+                and r.get("has_model") and not r.get("dangling")]
+    counts = {"parts": total, "complete": len(complete), "dangling": len(dangling),
+              "missing_footprint": len(miss_fp), "missing_model": len(miss_mdl),
+              "no_manufacturer": len(no_mfr)}
+
+    def _names(rs, limit=40):
+        out = [r.get("mpn") or r.get("name") or r.get("footprint") or "?" for r in rs[:limit]]
+        if len(rs) > limit:
+            out.append(f"… and {len(rs) - limit} more")
+        return out
+
+    pct = (100 * len(complete) // total) if total else 0
+    L = ["# Library Health", "",
+         f"**{len(complete)} / {total} parts complete** ({pct}%) — symbol + footprint + 3D model, no dangling links.",
+         "", "## Counts", ""]
+    L += [f"- {k.replace('_', ' ').title()}: {v}" for k, v in counts.items()]
+    for title, rs in (("Dangling (symbol/footprint points at a missing file)", dangling),
+                      ("Missing footprint on disk", miss_fp),
+                      ("Missing 3D model on disk", miss_mdl),
+                      ("No manufacturer identity", no_mfr)):
+        if rs:
+            L += ["", f"## {title} ({len(rs)})", ""] + [f"- {n}" for n in _names(rs)]
+    return {"counts": counts, "dangling": _names(dangling, 10_000),
+            "missing_footprint": _names(miss_fp, 10_000),
+            "missing_model": _names(miss_mdl, 10_000),
+            "no_manufacturer": _names(no_mfr, 10_000),
+            "markdown": "\n".join(L) + "\n"}
 
 
 def repair_library(cfg: Dict[str, str], log: UILog) -> Dict[str, int]:

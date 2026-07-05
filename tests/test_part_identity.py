@@ -65,5 +65,69 @@ class PartIdentityTests(unittest.TestCase):
         self.assertTrue(named, "no row carried a manufacturer from its symbol properties")
 
 
+class EnrichTests(unittest.TestCase):
+    """Enrich-from-MPN: the property writer, fill-blanks-only orchestration, and the
+    snapshot-guarded dry-run library flow."""
+
+    def test_set_symbol_property_replace_and_insert(self):
+        blk = ('(symbol "P" (property "Reference" "U" (at 0 0 0)) '
+               '(property "Value" "P" (at 0 0 0)) (property "Datasheet" "" (at 0 0 0)))')
+        nb = LM.set_symbol_property(blk, "Datasheet", "http://ds/p.pdf")   # replace blank
+        nb = LM.set_symbol_property(nb, "MANUFACTURER", "Acme")            # insert absent
+        p = LM.extract_symbol_properties(nb)
+        self.assertEqual(p["Datasheet"], "http://ds/p.pdf")
+        self.assertEqual(p["MANUFACTURER"], "Acme")
+
+    def test_enrich_symbol_fills_blanks_only(self):
+        blk = ('(symbol "X" (property "Value" "MPN1" (at 0 0 0)) '
+               '(property "MANUFACTURER" "Keep" (at 0 0 0)) (property "Datasheet" "" (at 0 0 0)))')
+        out, changed = LM.enrich_symbol(blk, {"manufacturer": "WRONG",
+                                              "datasheet": "http://ds", "description": "d"})
+        p = LM.extract_symbol_properties(out)
+        self.assertEqual(p["MANUFACTURER"], "Keep")           # never overwrite a value
+        self.assertEqual(p["Datasheet"], "http://ds")         # blank filled
+        self.assertEqual(dict(changed).keys(), {"datasheet", "description"})
+
+    def test_enrich_library_dry_run_then_write(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            sym = pathlib.Path(td) / "Sym.kicad_sym"
+            sym.write_text(
+                '(kicad_symbol_lib\n'
+                '  (symbol "STM32F407VGT6" (property "Value" "STM32F407VGT6" (at 0 0 0)) '
+                '(property "MANUFACTURER" "" (at 0 0 0)))\n)\n', encoding="utf-8")
+            cfg = {"SymbolLib": str(sym), "FootprintLib": td, "ModelLib": td}
+
+            def lookup(mpn):
+                return {"manufacturer": "STMicroelectronics",
+                        "datasheet": "http://st/ds.pdf"} if mpn else None
+
+            before = sym.read_text(encoding="utf-8")
+            dry = LM.enrich_library(cfg, lookup, dry_run=True)
+            self.assertFalse(dry["written"])
+            self.assertEqual(sym.read_text(encoding="utf-8"), before)   # dry run wrote nothing
+            self.assertEqual(len(dry["changes"]), 1)
+            self.assertEqual(dry["changes"][0]["mpn"], "STM32F407VGT6")
+
+            wet = LM.enrich_library(cfg, lookup, dry_run=False)
+            self.assertTrue(wet["written"])
+            self.assertIn("STMicroelectronics", sym.read_text(encoding="utf-8"))
+            self.assertTrue((pathlib.Path(td) / ".trash").exists())     # snapshot taken
+
+
+class HealthReportTests(unittest.TestCase):
+    def test_library_health_report(self):
+        cfg = LM.load_config()
+        if not pathlib.Path(cfg.get("SymbolLib", "")).exists():
+            raise unittest.SkipTest("shared library not present")
+        rep = LM.library_health_report(cfg)
+        c = rep["counts"]
+        self.assertGreaterEqual(c["parts"], c["complete"])
+        self.assertLessEqual(c["complete"], c["parts"])
+        self.assertIn("Library Health", rep["markdown"])
+        self.assertEqual(len(rep["dangling"]), c["dangling"])         # lists match counts
+        self.assertEqual(len(rep["no_manufacturer"]), c["no_manufacturer"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
