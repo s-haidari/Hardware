@@ -199,6 +199,8 @@ def load_config(config_path: Optional[Path] = None) -> Dict[str, str]:
             cfg["Downloads"] = str(Path(dl))
         if data.get("PythonExe"):
             cfg["PythonExe"] = data["PythonExe"]
+        if data.get("MouserApiKey"):
+            cfg["MouserApiKey"] = data["MouserApiKey"]    # secret; gitignored config only
     except Exception as e:
         print(f"WARNING: failed to apply config.json overrides: {e}")
 
@@ -605,23 +607,100 @@ def set_symbol_property(symbol_text: str, key: str, value: str) -> str:
     return symbol_text[:anchor.start()] + ins + symbol_text[anchor.start():]
 
 
-# Identity field -> the symbol property that carries it (for enrich write-back).
+# Enrich field -> the symbol property that carries it (write-back). Volatile data
+# (stock/price/lifecycle) stays in the sourcing REPORT, not the symbol.
 _ENRICH_PROPERTY = {"manufacturer": "MANUFACTURER", "datasheet": "Datasheet",
-                    "description": "Description", "mpn": "Value"}
+                    "description": "Description", "mpn": "Value",
+                    "mouser_pn": "Mouser Part Number"}
 
 
 def enrich_symbol(symbol_text: str, lookup_result: dict,
-                  fields=("manufacturer", "datasheet", "description")) -> tuple:
-    """Fill BLANK identity properties of one symbol from a lookup result. Never
-    overwrites a value that is already present. Returns (new_text, [(field, value)])."""
-    cur = part_identity(extract_symbol_properties(symbol_text))
+                  fields=("manufacturer", "datasheet", "description", "mouser_pn")) -> tuple:
+    """Fill BLANK identity/ordering properties of one symbol from a lookup result.
+    Never overwrites a property that already holds a real value (checks the actual
+    property, so it is fill-blanks-only for every field). Returns
+    (new_text, [(field, value)])."""
+    props = extract_symbol_properties(symbol_text)
     changed = []
     for f in fields:
         newv = (lookup_result or {}).get(f)
-        if newv and not cur.get(f):                  # fill blanks only
-            symbol_text = set_symbol_property(symbol_text, _ENRICH_PROPERTY[f], str(newv))
-            changed.append((f, str(newv)))
+        prop = _ENRICH_PROPERTY.get(f)
+        if not (newv and prop):
+            continue
+        cur = (props.get(prop) or "").strip()
+        if cur and cur.lower() not in _PLACEHOLDERS:
+            continue                                 # already has a real value
+        symbol_text = set_symbol_property(symbol_text, prop, str(newv))
+        changed.append((f, str(newv)))
     return symbol_text, changed
+
+
+def library_sourcing_report(cfg: Dict[str, str], lookup, throttle: float = 0.0) -> dict:
+    """Look up every orderable library part on the distributor and report sourcing
+    health — the payoff of a Mouser key for the library. For each part with a real MPN
+    it records lifecycle (flagging NRND / obsolete / EOL), stock (flagging out-of-stock),
+    unit price, Mouser P/N, lead time, and a suggested replacement for dying parts, then
+    a summary + a shareable markdown report. `lookup` is a make_mouser_lookup callable;
+    results cache per MPN. Read-only (writes nothing). throttle>0 sleeps between calls if
+    the free-tier rate limit bites."""
+    import time
+    sym_path = Path(cfg.get("SymbolLib", ""))
+    if not sym_path.exists():
+        return {"rows": [], "counts": {}, "markdown": "No symbol library."}
+    parts = []
+    for b in extract_symbol_blocks(read_text(sym_path)):
+        props = extract_symbol_properties(b)
+        ident = part_identity(props, fallback=extract_symbol_name(b))
+        mpn = strict_mpn(props) or (ident["mpn"] if ident["manufacturer"] else None)
+        if mpn:
+            parts.append((extract_symbol_name(b), mpn))
+
+    seen, rows = {}, []
+    for name, mpn in parts:
+        if mpn not in seen:
+            seen[mpn] = lookup(mpn)
+            if throttle:
+                time.sleep(throttle)
+        res = seen[mpn]
+        if not res:
+            rows.append({"symbol": name, "mpn": mpn, "found": False})
+            continue
+        life = (res.get("lifecycle") or "").lower()
+        obsolete = any(w in life for w in
+                       ("obsolete", "eol", "end of life", "nrnd", "not recommended", "discontinued"))
+        rows.append({"symbol": name, "mpn": mpn, "found": True,
+                     "mouser_pn": res.get("mouser_pn"), "manufacturer": res.get("manufacturer"),
+                     "lifecycle": res.get("lifecycle"), "stock": res.get("stock") or 0,
+                     "unit_price": res.get("unit_price"), "lead_time": res.get("lead_time"),
+                     "obsolete": obsolete, "in_stock": (res.get("stock") or 0) > 0,
+                     "suggested_replacement": res.get("suggested_replacement")})
+
+    counts = {"parts": len(rows),
+              "found": sum(1 for r in rows if r["found"]),
+              "not_found": sum(1 for r in rows if not r["found"]),
+              "obsolete_nrnd": sum(1 for r in rows if r.get("obsolete")),
+              "out_of_stock": sum(1 for r in rows if r["found"] and not r.get("in_stock"))}
+
+    L = ["# Library Sourcing (Mouser)", "",
+         f"**{counts['found']} / {counts['parts']} parts found** — "
+         f"{counts['obsolete_nrnd']} obsolete/NRND, {counts['out_of_stock']} out of stock, "
+         f"{counts['not_found']} not on Mouser.", ""]
+    flags = [r for r in rows if r.get("obsolete") or (r["found"] and not r.get("in_stock"))]
+    if flags:
+        L += ["## Needs attention", ""]
+        for r in flags:
+            why = []
+            if r.get("obsolete"):
+                why.append(f"lifecycle {r.get('lifecycle')}")
+            if not r.get("in_stock"):
+                why.append("out of stock")
+            rep = f" — replace with {r['suggested_replacement']}" if r.get("suggested_replacement") else ""
+            L.append(f"- **{r['symbol']}** ({r['mpn']}): {', '.join(why)}{rep}")
+        L.append("")
+    nf = [r for r in rows if not r["found"]]
+    if nf:
+        L += ["## Not found on Mouser", ""] + [f"- {r['symbol']} ({r['mpn']})" for r in nf] + [""]
+    return {"rows": rows, "counts": counts, "markdown": "\n".join(L) + "\n"}
 
 
 def enrich_library(cfg: Dict[str, str], lookup, log: UILog = None,
@@ -689,11 +768,31 @@ def make_mouser_lookup(api_key: str, timeout: int = 8):
             parts = (data.get("SearchResults") or {}).get("Parts") or []
             if not parts:
                 return None
-            p = parts[0]
+            # exact MPN match if present, else the first hit
+            up = mpn.strip().upper()
+            p = next((x for x in parts
+                      if (x.get("ManufacturerPartNumber") or "").upper() == up), parts[0])
+            breaks = p.get("PriceBreaks") or []
+            price = (breaks[0].get("Price") if breaks else None)
+            try:
+                stock = int(p.get("AvailabilityInStock") or 0)
+            except (TypeError, ValueError):
+                stock = 0
+            # Mouser leaves LifecycleStatus null for active parts
+            lifecycle = p.get("LifecycleStatus") or "Active"
             return {"mpn": p.get("ManufacturerPartNumber"),
                     "manufacturer": p.get("Manufacturer"),
                     "datasheet": p.get("DataSheetUrl"),
-                    "description": p.get("Description")}
+                    "description": p.get("Description"),
+                    "mouser_pn": p.get("MouserPartNumber"),
+                    "category": p.get("Category"),
+                    "lifecycle": lifecycle,
+                    "rohs": p.get("ROHSStatus"),
+                    "stock": stock,
+                    "lead_time": p.get("LeadTime"),
+                    "unit_price": price,
+                    "url": p.get("ProductDetailUrl"),
+                    "suggested_replacement": p.get("SuggestedReplacement")}
         except Exception:                            # noqa: BLE001 — never raise to the UI
             return None
     return lookup

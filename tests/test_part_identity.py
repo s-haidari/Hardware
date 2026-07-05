@@ -88,6 +88,44 @@ class EnrichTests(unittest.TestCase):
         self.assertEqual(p["Datasheet"], "http://ds")         # blank filled
         self.assertEqual(dict(changed).keys(), {"datasheet", "description"})
 
+    def test_enrich_writes_mouser_part_number(self):
+        blk = '(symbol "X" (property "Value" "MPN1" (at 0 0 0)) (property "Datasheet" "" (at 0 0 0)))'
+        out, changed = LM.enrich_symbol(
+            blk, {"manufacturer": "ST", "datasheet": "http://ds", "mouser_pn": "584-MPN1"})
+        self.assertEqual(LM.extract_symbol_properties(out)["Mouser Part Number"], "584-MPN1")
+        self.assertIn("mouser_pn", dict(changed))
+
+
+class LibrarySourcingTests(unittest.TestCase):
+    def test_flags_obsolete_and_out_of_stock(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            sym = pathlib.Path(td) / "S.kicad_sym"
+            sym.write_text(
+                '(kicad_symbol_lib\n'
+                '  (symbol "ADG714" (property "Value" "ADG714BRUZ-REEL" (at 0 0 0)) '
+                '(property "MANUFACTURER" "ADI" (at 0 0 0)))\n'
+                '  (symbol "OLD" (property "Value" "OLDPART" (at 0 0 0)) '
+                '(property "MANUFACTURER" "X" (at 0 0 0)))\n'
+                '  (symbol "R" (property "Value" "10k" (at 0 0 0)))\n)\n', encoding="utf-8")
+
+            def stub(mpn):
+                if mpn == "ADG714BRUZ-REEL":
+                    return {"lifecycle": "Active", "stock": 4374, "unit_price": "$6.18",
+                            "mouser_pn": "584-ADG714BRUZ-R"}
+                if mpn == "OLDPART":
+                    return {"lifecycle": "Obsolete", "stock": 0, "mouser_pn": "X",
+                            "suggested_replacement": "NEWPART"}
+                return None
+            rep = LM.library_sourcing_report(
+                {"SymbolLib": str(sym), "FootprintLib": td, "ModelLib": td}, stub)
+            c = rep["counts"]
+            self.assertEqual(c["parts"], 2)                   # the bare 10k has no MPN, skipped
+            self.assertEqual(c["obsolete_nrnd"], 1)
+            self.assertEqual(c["out_of_stock"], 1)
+            self.assertIn("NEWPART", rep["markdown"])         # replacement surfaced
+            self.assertIn("OLD", rep["markdown"])
+
     def test_enrich_library_dry_run_then_write(self):
         import tempfile
         with tempfile.TemporaryDirectory() as td:
