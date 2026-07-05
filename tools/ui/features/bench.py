@@ -18,7 +18,8 @@ from pathlib import Path
 from PyQt5.QtCore import Qt, QRectF
 from PyQt5.QtGui import QPainter, QColor, QPen, QPixmap
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-                             QSizePolicy, QComboBox, QGridLayout, QPushButton, QFrame, QScrollArea)
+                             QSizePolicy, QComboBox, QGridLayout, QPushButton, QFrame, QScrollArea,
+                             QFileDialog)
 
 from .. import theme as T
 from .. import widgets as W
@@ -594,9 +595,29 @@ def _outputs_panel(ctx, state: BenchState) -> QWidget:
     lay = QVBoxLayout(root); lay.setContentsMargins(24, 16, 24, 24); lay.setSpacing(14)
     if state.package is None:
         lay.addWidget(W.body("No package loaded.", dim=True)); return root
+    pkg = state.package
     authority = state.authority()
 
-    lay.addWidget(W.eyebrow(f"Card BOM   {state.package}"))
+    bar = QHBoxLayout(); bar.setSpacing(8)
+    bar.addWidget(W.eyebrow(f"Exports   {pkg}")); bar.addStretch(1)
+    b_bom = W.btn("Save Card Bill Of Materials...", "ghost", "Write the card bill of materials as a CSV file")
+    b_net = W.btn("Save KiCad Netlist...", "ghost", "Write the socket netlist in KiCad format")
+    b_bundle = W.btn("Write Authority Bundle...", "primary",
+                     "Write the full bundle (YAML, JSON, TSV, CSV, socket symbol) to a folder")
+    bar.addWidget(b_bom); bar.addWidget(b_net); bar.addWidget(b_bundle)
+    lay.addLayout(bar)
+
+    findings = sauth.validate_socket_symbol(authority)
+    passed = sauth.validate_socket_symbol_ok(findings)
+    chips = [(f["rule"].replace("_", " ").title(), "Pass" if f["ok"] else "Fail",
+              "ok" if f["ok"] else "err") for f in findings]
+    lay.addWidget(W.Verdict(
+        "Pre-Write Checks",
+        "The emitted socket symbol is placeable and routable in KiCad."
+        if passed else "Resolve the failing checks before you write the bundle.",
+        "ok" if passed else "err", chips))
+
+    lay.addWidget(W.eyebrow(f"Card Bill Of Materials   {pkg}"))
     bom = sauth.card_bom(authority)
     rows = []
     for r in bom.get("rows", []):
@@ -608,14 +629,50 @@ def _outputs_panel(ctx, state: BenchState) -> QWidget:
     budget = sauth.current_budget(authority)
     brows = []
     for rail, info in sorted(budget.get("rails", {}).items()):
-        cap = info.get("input_capacity_ma", 0)
+        cap = info.get("input_capacity_ma") or 0
         cap_txt = f"{cap/1000:.2f} A" if cap >= 1000 else f"{cap} mA"
         state_w = W.tag("OK", "ok")
         brows.append([W.net_token(rail, _CAT_FROM_NET.get(sauth._NET_CATEGORY.get(rail, "lane"), "lane")),
-                      f"{len(info.get('direct_pins', []))}", f"{len(info.get('switch_channels', []))}",
+                      f"{info.get('direct_pins', 0)}", f"{info.get('switch_channels', 0)}",
                       cap_txt, state_w])
     lay.addWidget(W.data_table(["Rail", "Direct", "Switched", "Capacity", "State"], brows, stretch_col=0))
     lay.addStretch(1)
+
+    base = str(Path(ctx.cfg.get("RepoRoot") or "."))
+
+    def save_text(title, default_name, filt, builder):
+        fn, _ = QFileDialog.getSaveFileName(root, title, str(Path(base) / default_name), filt)
+        if not fn:
+            return
+        try:
+            Path(fn).write_text(builder(authority), encoding="utf-8", newline="\n")
+            ctx.services.log(f"Wrote {Path(fn).name}.")
+        except Exception as e:  # noqa: BLE001
+            ctx.services.log(f"Write failed: {e}")
+
+    b_bom.clicked.connect(lambda: save_text(
+        "Save Card Bill Of Materials", f"card_bom_{pkg}.csv", "CSV Files (*.csv)", sauth.to_card_bom_csv))
+    b_net.clicked.connect(lambda: save_text(
+        "Save KiCad Netlist", f"{pkg}_socket.net", "KiCad Netlist (*.net)", sauth.to_kicad_netlist))
+
+    def write_bundle():
+        d = QFileDialog.getExistingDirectory(root, "Choose an output folder", base)
+        if not d:
+            return
+
+        def job():
+            c = db.connect(db.default_db_path())
+            try:
+                return sauth.write_authority(c, pkg, Path(d))
+            finally:
+                c.close()
+
+        run_populate(ctx, job,
+                     lambda r, ok2: ctx.services.log(
+                         f"Wrote authority bundle for {pkg}." if ok2 else "Bundle write failed, see status."),
+                     busy=f"Writing authority bundle for {pkg}...")
+
+    b_bundle.clicked.connect(write_bundle)
     return root
 
 
