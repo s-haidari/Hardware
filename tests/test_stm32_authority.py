@@ -308,7 +308,9 @@ class AuthorityTests(unittest.TestCase):
 
     def test_as_built_rail_multiset_matches_card_7c(self):
         """The DB-derived LQFP100 channel map reproduces Card 7C's as-built rail
-        multiset count-for-count — the 'derived, never hand-authored' goal."""
+        multiset count-for-count — the 'derived, never hand-authored' goal. Spec
+        updated 2026-07-05: VREF-/VREFSD- negative references ground to GND, so one
+        channel moves VREF_TGT -> GND (VREF_TGT 6->5, GND 12->13)."""
         from collections import Counter
         a = auth.build(self.conn, "LQFP100")
         rails = Counter()
@@ -316,7 +318,7 @@ class AuthorityTests(unittest.TestCase):
             for ch in p["assignment"].get("channels", []):
                 rails[ch["destination"]] += 1
         self.assertEqual(dict(rails), {
-            "VTARGET": 15, "GND": 12, "VREF_TGT": 6, "VCAP_NODE": 6,
+            "VTARGET": 15, "GND": 13, "VREF_TGT": 5, "VCAP_NODE": 6,
             "SERVICE_OSC_IN": 4, "SERVICE_OSC_OUT": 4, "VSSA_TGT": 3,
             "VDDA_TGT": 3, "VBAT_TGT": 2, "SERVICE_NRST": 2, "SERVICE_BOOT0": 2})
         # LQFP64 stays the Card 7B single-branch map, byte-stable: 30/31/47 on the

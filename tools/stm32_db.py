@@ -159,11 +159,12 @@ def electrical_class(pin: Pin) -> str:
             return "ground"
         if name.startswith("VCAP"):
             return "vcap"
-        # NOTE (audit 2026-07-04): VREF-/VREFSD- are negative references that should
-        # tie to analog ground (VSSA_TGT), not the positive VREF rail. Reclassifying
-        # them here changes the as-built Card 7C rail multiset (pin 48 VREFSD-:
-        # VREF_TGT -> GND) — a change to a physically-built, locked spec. Deferred to
-        # a hardware decision; see docs/design/2026-07-04-codebase-audit.md.
+        # VREF-/VREFSD- are negative references: they tie to analog ground, so they
+        # are grounded and their net resolves to GND (via the ground path -> ID_VSS
+        # -> "GND"). Positive references (VREF+, plain VREF) stay on the VREF rail.
+        # Hardware decision confirmed 2026-07-05: if it's grounded, it's GND.
+        if name.startswith("VREF") and name.rstrip().endswith("-"):
+            return "ground"
         return "power"
     return "io"  # I/O, MonoIO
 
