@@ -57,68 +57,33 @@ def _resolved_cat(pn: dict) -> str:
 
 
 # ── connection diagram (per-pin flow: socket -> switch/series -> connector -> net) ─
-_COMP_GLYPH = {
-    "mcu": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="6" y="6" width="12" height="12" rx="1"/><path d="M9 3v3M15 3v3M9 18v3M15 18v3M3 9h3M3 15h3M18 9h3M18 15h3"/></svg>',
-    "socket": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="4" y="6" width="16" height="12" rx="1"/><path d="M8 6v12M16 6v12"/></svg>',
-    "switch": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><circle cx="5" cy="14" r="1.6"/><circle cx="19" cy="14" r="1.6"/><path d="M6.5 13.5 17 7"/><path d="M5 15.5v3M19 15.5v3"/></svg>',
-    "resistor": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M2 12h3l2-5 3.5 10 3.5-10 2 5h3"/></svg>',
-    "connector": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="4" y="9" width="16" height="8" rx="1"/><path d="M8 9V5M12 9V5M16 9V5"/></svg>',
-    "ground": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M12 4v7M5 11h14M8 14.5h8M10.5 18h3"/></svg>',
-    "wire": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M3 12h18"/></svg>',
-}
-_COMP_KEYWORDS = {
-    "socket": ("ic51", "zif", "socket"),
-    "switch": ("adg714", "adg71"),
-    "resistor": ("0402", "r_0402"),
-    "connector": ("qth", "qsh", "samtec"),
-}
-_FP_CACHE = {}
 
 
-def _comp_pixmap(cfg, kind, size=44):
-    """A real footprint render for this component from the library, or None if the
-    library has no match (then the caller uses a clean type glyph)."""
-    kws = _COMP_KEYWORDS.get(kind)
-    if not kws or not cfg:
-        return None
-    if kind in _FP_CACHE:
-        return _FP_CACHE[kind]
-    pm = None
-    try:
-        import fp_render
-        fpdir = Path(cfg.get("FootprintLib", ""))
-        if fpdir.exists():
-            for f in sorted(fpdir.glob("*.kicad_mod")):
-                if any(k in f.stem.lower() for k in kws):
-                    img = fp_render.render_footprint_image(f, px=size * 2)
-                    if img is not None:
-                        pm = QPixmap.fromImage(img).scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                        break
-    except Exception:  # noqa: BLE001
-        pm = None
-    _FP_CACHE[kind] = pm
-    return pm
+
+
+_NODE_KIND = {"mcu": "MCU Pin", "socket": "ZIF Socket", "switch": "Switch Cell",
+              "resistor": "Series R", "connector": "Connector", "ground": "Ground"}
 
 
 def _node(cfg, kind, name, detail, name_color=None) -> QFrame:
-    card = QFrame(); card.setObjectName("connode"); card.setFixedWidth(136)
-    v = QVBoxLayout(card); v.setContentsMargins(10, 10, 10, 10); v.setSpacing(5); v.setAlignment(Qt.AlignHCenter)
-    gl = QLabel(); gl.setAlignment(Qt.AlignHCenter); gl.setFixedHeight(44)
-    pm = _comp_pixmap(cfg, kind)
-    gl.setPixmap(pm if pm is not None else W.svg_icon(_COMP_GLYPH.get(kind, _COMP_GLYPH["wire"]), 40).pixmap(40, 40))
-    v.addWidget(gl)
-    nm = QLabel(str(name)); nm.setFont(T.mono_font(10, semibold=True)); nm.setAlignment(Qt.AlignHCenter); nm.setWordWrap(True)
+    """A clean text node in the build map: what the component is, its refdes /
+    part, and the exact pin(s) or contact involved."""
+    card = QFrame(); card.setObjectName("connode"); card.setFixedWidth(158)
+    v = QVBoxLayout(card); v.setContentsMargins(12, 10, 12, 12); v.setSpacing(4); v.setAlignment(Qt.AlignHCenter)
+    kl = W.eyebrow(_NODE_KIND.get(kind, kind)); kl.setAlignment(Qt.AlignHCenter)
+    v.addWidget(kl)
+    nm = QLabel(str(name)); nm.setFont(T.mono_font(11, semibold=True)); nm.setAlignment(Qt.AlignHCenter); nm.setWordWrap(True)
     v.addWidget(nm)
     dt = None
     if detail:
-        dt = QLabel(str(detail).replace(" · ", " ")); dt.setFont(T.ui_font(8.5))
+        dt = QLabel(str(detail).replace(" · ", " ")); dt.setFont(T.mono_font(9))
         dt.setAlignment(Qt.AlignHCenter); dt.setWordWrap(True)
         v.addWidget(dt)
 
     def style():
         nm.setStyleSheet(f"color:{name_color or T.t('txt1')};background:transparent;")
         if dt is not None:
-            dt.setStyleSheet(f"color:{T.t('txt3')};background:transparent;")
+            dt.setStyleSheet(f"color:{T.t('txt2')};background:transparent;")
         card.setStyleSheet(f"QFrame#connode{{background:{T.t('inset')};border:1px solid {T.t('stroke')};border-radius:8px;}}")
     W.register_restyle(style)
     return card
@@ -140,7 +105,7 @@ def _connection_flow(chain, cfg) -> QWidget:
         line = QHBoxLayout(); line.setSpacing(6); line.setAlignment(Qt.AlignLeft)
         line.addWidget(_node(cfg, "mcu", chain["name"] or f"Pin {chain['pos']}", f"Pin {chain['pos']}"))
         line.addWidget(_arrow())
-        line.addWidget(_node(cfg, "socket", chain.get("socket", "Socket"), chain.get("zif", "ZIF socket")))
+        line.addWidget(_node(cfg, "socket", chain.get("socket", "Socket"), f"Pin {chain['pos']}"))
         line.addWidget(_arrow())
         if r["kind"] == "switch":
             line.addWidget(_node(cfg, "switch", r["cell"],
