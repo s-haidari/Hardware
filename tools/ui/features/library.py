@@ -20,15 +20,14 @@ import LibraryManager as LM
 
 
 def _asset_flags(has_sym, has_fp, has_mdl) -> QWidget:
-    w = QWidget(); h = QHBoxLayout(w); h.setContentsMargins(0, 0, 0, 0); h.setSpacing(5)
-    for label, on in (("SYM", has_sym), ("FP", has_fp), ("3D", has_mdl)):
-        chip = QLabel(label); chip.setFont(T.mono_font(8, semibold=True)); chip.setAlignment(Qt.AlignCenter)
-        chip.setFixedHeight(20); chip.setFixedWidth(34)
-        W.register_restyle(lambda chip=chip, on=on: chip.setStyleSheet(
-            f"background:{T.t('ctl_hover') if on else 'transparent'};"
-            f"color:{T.t('txt1') if on else T.t('txt3')};border-radius:3px;padding:0 4px;"
-            + ("" if on else f"border:1px solid {T.t('stroke')};")))
-        h.addWidget(chip)
+    """Which assets a part has, spelled out. Present in full ink, missing dimmed."""
+    w = QWidget(); w.setMinimumWidth(210)
+    h = QHBoxLayout(w); h.setContentsMargins(0, 0, 0, 0); h.setSpacing(14)
+    for label, on in (("Symbol", has_sym), ("Footprint", has_fp), ("3D Model", has_mdl)):
+        lab = QLabel(label); lab.setFont(T.ui_font(9))
+        W.register_restyle(lambda lab=lab, on=on: lab.setStyleSheet(
+            f"color:{T.t('txt1') if on else T.t('txt3')};background:transparent;"))
+        h.addWidget(lab)
     h.addStretch(1)
     return w
 
@@ -94,21 +93,21 @@ def _sourcing_panel(ctx, _state) -> QWidget:
                 result.addWidget(W.body("Sourcing report unavailable.", dim=True)); return
             c = rep.get("counts", {})
             for txt, kind in ((f"{c.get('found', 0)} Found", "mut"),
-                              (f"{c.get('not_on_mouser', 0)} Not On Mouser", "warn"),
-                              (f"{c.get('obsolete_nrnd', 0)} NRND Or EOL", "err")):
+                              (f"{c.get('not_on_mouser', 0)} Not on Mouser", "warn"),
+                              (f"{c.get('obsolete_nrnd', 0)} Not Recommended or End of Life", "err")):
                 summary.addWidget(W.tag(txt, kind))
             trows = []
             for r in rep.get("rows", []):
                 on = r.get("on_mouser")
                 life = r.get("lifecycle") or "None"
-                life_w = W.tag("NRND", "err") if r.get("obsolete") else (W.body(life) if life != "None" else W.body("None", dim=True))
+                life_w = W.tag("Not Recommended", "err") if r.get("obsolete") else (W.body(life) if life != "None" else W.body("None", dim=True))
                 price = r.get("unit_price")
                 trows.append([W.body(str(r.get("mpn", "")), mono=True), W.body(str(r.get("manufacturer") or ""), dim=True),
                               W.tag("Yes", "ok") if on else W.tag("No", "warn"), life_w,
                               str(r.get("stock", "")), f"${price:.2f}" if price else "None",
                               W.body(str(r.get("lead_time") or "None"), dim=True)])
             result.addWidget(W.data_table(
-                ["Part Number", "Manufacturer", "On Mouser", "Lifecycle", "Stock", "Unit", "Lead"],
+                ["Part Number", "Manufacturer", "On Mouser", "Lifecycle", "Stock", "Unit Price", "Lead Time"],
                 trows, stretch_col=0), 1)
 
         run_populate(ctx, lambda: LM.library_sourcing_report(ctx.cfg, lookup), populate,

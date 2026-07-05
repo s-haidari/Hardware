@@ -16,7 +16,7 @@ from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit
 
 from .. import theme as T
 from .. import widgets as W
-from ..util import LogSink, run_populate, clear_layout
+from ..util import LogSink, run_populate, clear_layout, sentence
 from .. import feature as F
 
 import nd_wizard
@@ -31,6 +31,11 @@ import nd_git
 import fp_render
 
 _SEV = {"error": "err", "warning": "warn", "exclusion": "mut", "info": "mut"}
+_KIND_LABEL = {
+    "no_footprint": "No Footprint", "duplicate_ref": "Duplicate Reference",
+    "pin_pad_mismatch": "Pin / Pad Mismatch", "no_mpn": "No Manufacturer Part Number",
+    "unannotated": "Unannotated", "no_3d_model": "No 3D Model", "missing_3d_model": "No 3D Model",
+}
 
 
 # ── shared project state ─────────────────────────────────────────────────────
@@ -113,8 +118,8 @@ def _health_panel(ctx, state) -> QWidget:
     bar = QHBoxLayout(); bar.setSpacing(8)
     summary = QHBoxLayout(); summary.setSpacing(8)
     bar.addLayout(summary); bar.addStretch(1)
-    b_erc = W.btn("Run ERC", "default", "Run electrical rule check via kicad-cli")
-    b_drc = W.btn("Run DRC", "default", "Run design rule check via kicad-cli")
+    b_erc = W.btn("Run Electrical Rules Check", "default", "Run the electrical rules check through the KiCad command line tool")
+    b_drc = W.btn("Run Design Rules Check", "default", "Run the design rules check through the KiCad command line tool")
     b_audit = W.btn("Audit", "primary", "Audit the schematic for missing footprints, MPNs and mismatches")
     bar.addWidget(b_erc); bar.addWidget(b_drc); bar.addWidget(b_audit)
     lay.addLayout(bar)
@@ -148,13 +153,12 @@ def _health_panel(ctx, state) -> QWidget:
                          (f"{bs.get('warning', 0)} Warnings", "warn")])
             rows = []
             for f in res.get("findings", []):
-                kind = str(f.get("kind", "")).replace("_", " ").title()
+                raw = str(f.get("kind", ""))
+                kind = _KIND_LABEL.get(raw, raw.replace("_", " ").title())
                 sev = f.get("severity", "info")
-                detail = str(f.get("detail", ""))
-                detail = detail[:1].upper() + detail[1:]
                 rows.append([W.body(str(f.get("ref", "")), mono=True), W.body(kind),
-                             W.body(detail), W.tag(sev.title(), _SEV.get(sev, "mut"))])
-            result.addWidget(W.data_table(["Ref", "Kind", "Detail", "Severity"], rows, stretch_col=2), 1)
+                             W.body(sentence(f.get("detail", ""))), W.tag(sev.title(), _SEV.get(sev, "mut"))])
+            result.addWidget(W.data_table(["Reference", "Kind", "Detail", "Severity"], rows, stretch_col=2), 1)
 
         run_populate(ctx, lambda: phealth.audit_schematic(sch, fp_dirs, mdl_dirs), populate, busy="Auditing schematic...")
 
@@ -177,9 +181,8 @@ def _health_panel(ctx, state) -> QWidget:
             rows = []
             for f in res.get("findings", []):
                 sev = f.get("severity", "info")
-                msg = str(f.get("message", "")); msg = msg[:1].upper() + msg[1:]
                 rows.append([W.tag(sev.title(), _SEV.get(sev, "mut")), W.body(str(f.get("rule", "")), mono=True),
-                             W.body(msg), W.body(str(f.get("where", "")), dim=True)])
+                             W.body(sentence(f.get("message", ""))), W.body(str(f.get("where", "")), dim=True)])
             if not rows:
                 result.addWidget(W.body(f"{kind.upper()} clean.", dim=True))
             else:
@@ -202,8 +205,8 @@ def _bom_panel(ctx, state) -> QWidget:
     root = QWidget(); lay = QVBoxLayout(root); lay.setContentsMargins(24, 16, 24, 24); lay.setSpacing(14)
     bar = QHBoxLayout(); bar.setSpacing(8)
     summary = QHBoxLayout(); summary.setSpacing(8); bar.addLayout(summary); bar.addStretch(1)
-    b_sch = W.btn("From Schematic", "ghost", "Build a BOM from the project root schematic")
-    b_con = W.btn("Consolidated BOM", "primary", "Merge the BOM across every discovered project")
+    b_sch = W.btn("From Schematic", "ghost", "Build a bill of materials from the project root schematic")
+    b_con = W.btn("Consolidated Bill of Materials", "primary", "Merge the bill of materials across every discovered project")
     bar.addWidget(b_sch); bar.addWidget(b_con)
     lay.addLayout(bar)
     result = QVBoxLayout(); lay.addLayout(result, 1); lay.addStretch(1)
@@ -364,7 +367,7 @@ def _netclass_panel(ctx, state) -> QWidget:
                      str(nc.via_diameter), str(nc.via_drill),
                      W.body(str(nc.diff_pair_width) if nc.diff_pair_width else "None",
                             dim=not nc.diff_pair_width, mono=bool(nc.diff_pair_width))])
-    lay.addWidget(W.data_table(["Net Class", "Clearance", "Track", "Via", "Drill", "Diff Pair"], rows, stretch_col=0))
+    lay.addWidget(W.data_table(["Net Class", "Clearance", "Track", "Via", "Drill", "Differential Pair"], rows, stretch_col=0))
     lay.addWidget(W.eyebrow("Values In Millimetres"))
     status = QVBoxLayout(); lay.addLayout(status); lay.addStretch(1)
 
@@ -526,11 +529,11 @@ class ProjectsFeature(F.Feature):
             header = W.hstack(W.eyebrow("Project"), combo, spacing=8)
         panels = [
             ("Health", lambda c: _health_panel(c, state)),
-            ("BOM", lambda c: _bom_panel(c, state)),
+            ("Bill of Materials", lambda c: _bom_panel(c, state)),
             ("Rename", lambda c: W.scroll_body(_rename_panel(c, state))),
             ("Net Classes", lambda c: W.scroll_body(_netclass_panel(c, state))),
             ("Board Setup", lambda c: W.scroll_body(_boardsetup_panel(c, state))),
-            ("Fab Standard", lambda c: W.scroll_body(_fab_panel(c, state))),
+            ("Fabrication Standard", lambda c: W.scroll_body(_fab_panel(c, state))),
             ("Git", lambda c: W.scroll_body(_git_panel(c, state))),
         ]
         return W.Workspace(ctx, "Projects", panels, header=header)

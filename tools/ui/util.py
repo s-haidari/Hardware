@@ -38,6 +38,19 @@ def run_populate(ctx, job, populate, busy: str = None):
     ctx.services.run_async(_job, done_cb=_done)
 
 
+def sentence(text: str) -> str:
+    """Format backend detail text as a real sentence: spelled-out words, a leading
+    capital, and a trailing period. Applied to audit / ERC / DRC detail strings."""
+    s = str(text).strip()
+    if not s:
+        return s
+    s = s.replace(" vs ", " versus ").replace(" w/ ", " with ")
+    s = s[0].upper() + s[1:]
+    if s[-1] not in ".!?":
+        s += "."
+    return s
+
+
 def clear_layout(lay):
     while lay.count():
         it = lay.takeAt(0)

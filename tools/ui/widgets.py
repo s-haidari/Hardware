@@ -23,6 +23,20 @@ from PyQt5.QtWidgets import (QWidget, QLabel, QFrame, QHBoxLayout, QVBoxLayout,
 
 from . import theme as T
 
+def svg_icon(svg: str, size: int = 18, color: str = "#8b8b91"):
+    """Render an inline SVG string to a QIcon tinted `color`. Neutral gray by
+    default so it reads on both themes without re-tinting."""
+    from PyQt5.QtGui import QIcon, QPixmap, QPainter
+    try:
+        from PyQt5.QtSvg import QSvgRenderer
+    except Exception:  # noqa: BLE001
+        return QIcon()
+    r = QSvgRenderer(bytearray(svg.replace("currentColor", color), encoding="utf-8"))
+    pm = QPixmap(size, size); pm.fill(Qt.transparent)
+    p = QPainter(pm); r.render(p); p.end()
+    return QIcon(pm)
+
+
 # ── retheme registry (colour-bearing widgets) ────────────────────────────────
 _RESTYLERS: List[Callable[[], None]] = []
 
@@ -97,7 +111,7 @@ def token(text: str, dim: bool = False) -> QLabel:
     lab.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Maximum)
     register_restyle(lambda: lab.setStyleSheet(
         f"background:{T.t('tok')};color:{T.t('txt3') if dim else T.t('txt1')};"
-        f"border-radius:4px;padding:1px 7px;"))
+        f"border-radius:4px;padding:2px 7px;"))     # 2px vertical so descenders (y, g, p) never clip
     return lab
 
 
@@ -105,7 +119,7 @@ def net_token(text: str, cat: str) -> QWidget:
     """A net name: category dot + category-coloured mono, in a subtle chip."""
     w = QWidget()
     lay = QHBoxLayout(w)
-    lay.setContentsMargins(7, 1, 8, 1)
+    lay.setContentsMargins(8, 2, 9, 2)
     lay.setSpacing(6)
     dot = QLabel()
     dot.setFixedSize(7, 7)
@@ -136,6 +150,17 @@ def btn(text: str, kind: str = "default", tip: str = "", on_click: Optional[Call
         b.setToolTip(tip)
     if on_click:
         b.clicked.connect(lambda: on_click())
+    return b
+
+
+def token_button(text: str, on_click: Callable, tip: str = "") -> QPushButton:
+    """A clickable machine identifier (e.g. an MCU part number) styled like a token."""
+    b = QPushButton(text)
+    b.setObjectName("tokbtn")
+    b.setCursor(Qt.PointingHandCursor)
+    if tip:
+        b.setToolTip(tip)
+    b.clicked.connect(lambda: on_click(text))
     return b
 
 
@@ -381,6 +406,13 @@ class Workspace(QWidget):
         for _ in self._panels:
             self._stack.addWidget(QWidget())   # placeholders, built on first show
         self._select(0)
+
+    def select_panel(self, title: str):
+        """Switch to a sub-panel by its title (used for cross-panel navigation)."""
+        for i, (name, _) in enumerate(self._panels):
+            if name == title:
+                self._select(i)
+                return
 
     def _select(self, k: int):
         for i, b in enumerate(self._tabs):

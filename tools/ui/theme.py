@@ -177,6 +177,9 @@ QPushButton#subtab[selected="true"] {{ color: {c['txt1']}; font-weight: 600;
 QPushButton#seg {{ background: transparent; border: none; border-radius: 3px;
     color: {c['txt2']}; padding: 4px 12px; font-family: {MONO_STACK}; font-size: 12px; }}
 QPushButton#seg[selected="true"] {{ background: {c['card']}; color: {c['txt1']}; font-weight: 600; }}
+QPushButton#tokbtn {{ background: {c['tok']}; border: none; border-radius: 4px;
+    color: {c['txt1']}; padding: 3px 9px; font-family: {MONO_STACK}; font-size: 12px; }}
+QPushButton#tokbtn:hover {{ background: {c['ctl_hover']}; }}
 
 QLineEdit, QPlainTextEdit, QTextEdit {{ background: {c['ctl']}; border: 1px solid {c['stroke']};
     border-radius: 4px; color: {c['txt1']}; padding: 5px 10px; selection-background-color: {c['accent']}; }}

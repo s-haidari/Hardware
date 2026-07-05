@@ -16,11 +16,12 @@ from typing import List, Optional
 from PyQt5.QtCore import Qt, QRectF
 from PyQt5.QtGui import QPainter, QColor, QPen
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-                             QSizePolicy, QComboBox)
+                             QSizePolicy, QComboBox, QGridLayout, QPushButton)
 
 from .. import theme as T
 from .. import widgets as W
 from .. import feature as F
+from ..util import clear_layout, run_populate
 
 import stm32_db as db
 import stm32_authority as sauth
@@ -40,6 +41,19 @@ def _pin_category(p: dict) -> str:
     return _CAT_FROM_NET.get(sauth._NET_CATEGORY.get(dest, "lane"), "lane")
 
 
+def _resolved_cat(pn: dict) -> str:
+    """Category colour for a resolved-part pin, from its action / destination."""
+    act = pn.get("action")
+    if act == "rail_conflict":
+        return "must"
+    if act == "service":
+        return "service"
+    if act == "ground":
+        return "ground"
+    dest = pn.get("dest", "")
+    return _CAT_FROM_NET.get(sauth._NET_CATEGORY.get(dest, "lane"), "lane")
+
+
 # ── shared package state ─────────────────────────────────────────────────────
 class BenchState:
     def __init__(self):
@@ -56,6 +70,8 @@ class BenchState:
         except Exception as e:  # noqa: BLE001
             self.error = str(e)
         self._refreshers = []
+        self.goto_resolver = None       # set by BenchFeature: navigate to a resolved chip
+        self.goto_authority_pin = None  # set by BenchFeature: jump to a pin on the map
 
     def authority(self):
         if self.package is None:
@@ -80,22 +96,26 @@ class BenchState:
 class PinMap(QWidget):
     SIZE = 460
 
-    def __init__(self, on_select, parent=None):
+    def __init__(self, on_select, size=460, parent=None):
         super().__init__(parent)
         self._on_select = on_select
+        self._size = size
         self._geo = {"body": (0, 0, 0, 0), "pins": []}
         self._catof = {}
         self._selected = None
-        self.setFixedSize(self.SIZE, self.SIZE)
+        self.setFixedSize(size, size)
         self.setCursor(Qt.PointingHandCursor)
 
-    def set_authority(self, authority):
-        positions = authority["positions"] if authority else []
-        self._geo = pins.pin_map_geometry(positions, self.SIZE, self.SIZE)
-        self._catof = {p["position"]: _pin_category(p) for p in positions}
+    def set_positions(self, geo_positions, catof):
+        self._geo = pins.pin_map_geometry(geo_positions, self._size, self._size)
+        self._catof = dict(catof)
         if self._selected not in self._catof:
             self._selected = None
         self.update()
+
+    def set_authority(self, authority):
+        positions = authority["positions"] if authority else []
+        self.set_positions(positions, {p["position"]: _pin_category(p) for p in positions})
 
     def select(self, pos):
         self._selected = pos
@@ -203,8 +223,8 @@ def _authority_panel(ctx, state: BenchState) -> QWidget:
     strip.addStretch(1)
     stat_cells = {}
     for key, label in (("positions_total", "Positions"), ("must_switch_count", "Must-Switch"),
-                       ("cells_as_built", "ADG714 Cells"), ("channel_count", "Channels"),
-                       ("osc_optional_count", "Osc Optional")):
+                       ("cells_as_built", "Switch Cells"), ("channel_count", "Channels"),
+                       ("osc_optional_count", "Oscillator Optional")):
         c = _stat("0", label); strip.addWidget(c); stat_cells[key] = c
     strip.addStretch(1)
     map_card.body.addLayout(strip)
@@ -305,6 +325,7 @@ def _authority_panel(ctx, state: BenchState) -> QWidget:
 
     state.on_change(refresh)
     refresh()
+    ctx.bus.on("bench.jump_pin", lambda pos: (pin_map.select(pos), _show_pin(pos)))
     return root
 
 
@@ -328,39 +349,49 @@ def _resolver_panel(ctx, state: BenchState) -> QWidget:
     result_holder = QVBoxLayout()
 
     def resolve():
-        while result_holder.count():
-            it = result_holder.takeAt(0)
-            if it.widget():
-                it.widget().deleteLater()
+        clear_layout(result_holder)
         mpn = edit.text().strip()
         if not mpn:
             return
         try:
             res = sauth.resolve_part(state.conn, mpn)
         except Exception as e:  # noqa: BLE001
-            result_holder.addWidget(W.body(f"Could not resolve: {e}", dim=True))
+            result_holder.addWidget(W.body(f"Could not resolve {mpn}: {e}", dim=True))
             return
         if not res:
             result_holder.addWidget(W.body(f"No match for {mpn}.", dim=True))
             return
         result_holder.addWidget(W.eyebrow(f"{res['part']}   {res['package']}   {len(res['pins'])} Pins"))
+        split = QHBoxLayout(); split.setSpacing(16)
+        # left: the resolved pinout, painted from the datasheet-derived pins
+        map_card = W.Card(pad=16)
+        pm = PinMap(on_select=None, size=360)
+        geo = [{"position": p["pin"], "switch_class": "fixed",
+                "pin_names": {p.get("name", ""): 1}, "breakout": {}} for p in res["pins"]]
+        pm.set_positions(geo, {p["pin"]: _resolved_cat(p) for p in res["pins"]})
+        map_card.body.addWidget(pm, 0, Qt.AlignHCenter)
+        map_card.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Maximum)
+        split.addWidget(map_card, 0, Qt.AlignTop)
+        # right: the clean per-pin table (the datasheet pinout, remade)
         rows = []
         for pn in res["pins"][:400]:
             action = pn.get("action", "").replace("_", " ").title()
             act_w = W.tag("Rail Conflict", "err") if pn.get("action") == "rail_conflict" else W.body(action)
-            dest = W.body(str(pn.get("dest", "")), mono=True)
-            ch = ", ".join(f"Cell {s['cell']} Ch {s['channel']}" for s in pn.get("close_switches", []))
+            ch = ", ".join(f"Cell {s['cell']} Channel {s['channel']}" for s in pn.get("close_switches", []))
             fv = pn.get("five_v_tolerant")
             fv_w = W.tag("5 V", "ok") if fv else W.body("No" if fv is False else "None", dim=True)
-            rows.append([str(pn["pin"]), W.body(str(pn.get("name", "")), mono=True), act_w, dest,
+            rows.append([str(pn["pin"]), W.body(str(pn.get("name", "")), mono=True), act_w,
+                         W.body(str(pn.get("dest", "")), mono=True),
                          W.body(ch or "None", dim=not ch, mono=bool(ch)), fv_w])
         tbl = W.data_table(["Pin", "Name", "Action", "Destination", "Close Switches", "5 V"], rows, stretch_col=3)
-        result_holder.addWidget(tbl, 1)
+        split.addWidget(tbl, 1)
+        result_holder.addLayout(split, 1)
 
     bar.addWidget(W.btn("Resolve", "primary", "Resolve the part number", resolve))
     bar.addWidget(W.body("Exact silicon, not the package union.", dim=True))
     bar.addStretch(1)
     edit.returnPressed.connect(resolve)
+    ctx.bus.on("bench.resolve", lambda m: (edit.setText(str(m)), resolve()))
     lay.addLayout(bar)
     lay.addLayout(result_holder, 1)
     return root
@@ -380,7 +411,7 @@ def _outputs_panel(ctx, state: BenchState) -> QWidget:
     for r in bom.get("rows", []):
         rows.append([W.body(str(r.get("refdes", "")), mono=True), W.body(str(r.get("mpn", "")), mono=True),
                      W.body(str(r.get("role", ""))), str(r.get("qty", ""))])
-    lay.addWidget(W.data_table(["Refdes", "Part Number", "Role", "Qty"], rows, stretch_col=2))
+    lay.addWidget(W.data_table(["Reference", "Part Number", "Role", "Quantity"], rows, stretch_col=2))
 
     lay.addWidget(W.eyebrow("Current Budget   Rails"))
     budget = sauth.current_budget(authority)
@@ -397,65 +428,156 @@ def _outputs_panel(ctx, state: BenchState) -> QWidget:
     return root
 
 
-# ── Profiles panel (representative ladder; per-package tiers) ─────────────────
-_PROFILES = [
-    (1, "Baseline", 78, 100, ["F405", "F407", "F415", "F417", "F205", "F207"],
-     "Foundation card wiring. Every profile extends this.", 18, 24, "ok", "Buildable"),
-    (2, "Extended", 16, 20, ["F427", "F429", "F437", "F439"],
-     "Adds the VCAP_DSI split and two extra channels on Cell 2.", 20, 26, "ok", "Buildable"),
-    (3, "Full", 6, 8, ["F469", "F479"],
-     "Adds the DSI regulator rail and minority VDD handling on Pin 1.", 21, 27, "warn", "1 Conflict"),
-]
+# ── Profiles panel (real authority: one baseline fabric + minority divergences) ─
+def _flow_tokens(items, make=None, per_row: int = 8) -> QWidget:
+    """Wrap tokens across rows so a long list never runs off the panel. `make`
+    builds each widget (defaults to a plain token)."""
+    make = make or (lambda x: W.token(str(x)))
+    box = QWidget(); col = QVBoxLayout(box); col.setContentsMargins(0, 0, 0, 0); col.setSpacing(6)
+    row = QHBoxLayout(); row.setSpacing(6); col.addLayout(row)
+    per = 0
+    for it in items:
+        if per >= per_row:
+            row = QHBoxLayout(); row.setSpacing(6); col.addLayout(row); per = 0
+        row.addWidget(make(it)); per += 1
+    for r in range(col.count()):
+        lo = col.itemAt(r).layout()
+        if lo:
+            lo.addStretch(1)
+    return box
+
+
+def _chip_grid(items, make, cols: int = 5) -> QWidget:
+    """Uniform grid of chips: every column equal width so the chips stack evenly."""
+    w = QWidget(); g = QGridLayout(w)
+    g.setContentsMargins(0, 0, 0, 0); g.setHorizontalSpacing(6); g.setVerticalSpacing(6)
+    for i, it in enumerate(items):
+        b = make(it)
+        b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        g.addWidget(b, i // cols, i % cols)
+    for c in range(cols):
+        g.setColumnStretch(c, 1)
+    if not items:
+        g.addWidget(W.body("None.", dim=True), 0, 0)
+    return w
+
+
+def _switch_pill(pos, name, cat, roles, on_click) -> QPushButton:
+    """A clickable pill for a switching pin: category-coloured name + its roles."""
+    b = QPushButton(f"{name}   {roles}" if roles else name)
+    b.setObjectName("switchpill")
+    b.setCursor(Qt.PointingHandCursor)
+    b.setToolTip(f"Pin {pos}: {roles or name}. Click to view it on the map.")
+
+    def style():
+        col = T.category(cat)
+        b.setStyleSheet(
+            f"QPushButton#switchpill{{background:{T.t('tok')};border:none;border-radius:4px;"
+            f"color:{col};padding:5px 11px;text-align:left;font-family:{T.MONO_STACK};font-size:12px;}}"
+            f"QPushButton#switchpill:hover{{background:{T.t('ctl_hover')};}}")
+    W.register_restyle(style)
+    b.clicked.connect(lambda: on_click(pos))
+    return b
 
 
 def _profiles_panel(ctx, state: BenchState) -> QWidget:
     root = QWidget()
     lay = QVBoxLayout(root); lay.setContentsMargins(24, 16, 24, 24); lay.setSpacing(14)
-    pkg = state.package or "Package"
+    if state.error or state.package is None:
+        lay.addWidget(W.body("No package loaded.", dim=True)); lay.addStretch(1); return root
+    try:
+        a = state.authority()
+    except Exception as e:  # noqa: BLE001
+        lay.addWidget(W.body(f"Could not build the authority: {e}", dim=True)); lay.addStretch(1); return root
+    man = a.get("manifest", {}); roll = a.get("rollup", {})
+    parts = man.get("supported_parts", []) or []
+    fams = man.get("supported_families", []) or []
+
     top = QHBoxLayout(); top.setSpacing(8)
-    for txt in (pkg, f"{len(_PROFILES)} Profiles", "128 Chips Covered"):
+    for txt in (state.package, f"{man.get('part_count', len(parts))} Supported Parts", f"{len(fams)} Families"):
         top.addWidget(W.tag(txt, "mut"))
-    top.addStretch(1); top.addWidget(W.eyebrow("Cumulative Coverage"))
+    top.addStretch(1)
     lay.addLayout(top)
-    # coverage bar
-    bar = QWidget(); bh = QHBoxLayout(bar); bh.setContentsMargins(0, 0, 0, 0); bh.setSpacing(2)
-    bar.setFixedHeight(36)
-    for n, name, pct, *_ in _PROFILES:
-        seg = QLabel(f"P{n}  {pct}%"); seg.setFont(T.mono_font(9, semibold=True))
-        seg.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
-        seg.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        W.register_restyle(lambda seg=seg, n=n: seg.setStyleSheet(
-            f"background:{T.t(f'seg{n}')};color:{T.t('surface')};padding:0 12px;"))
-        bh.addWidget(seg, pct)
-    lay.addWidget(bar)
-    for n, name, pct, chips, fam, adds, must, ch, kind, build in _PROFILES:
-        card = W.Card(pad=16)
-        top = QHBoxLayout(); top.setSpacing(12)
-        idx = QLabel(str(n)); idx.setFont(T.mono_font(14, semibold=True)); idx.setFixedSize(32, 32)
-        idx.setAlignment(Qt.AlignCenter)
-        W.register_restyle(lambda idx=idx: idx.setStyleSheet(
-            f"background:{T.t('tok')};color:{T.t('txt1')};border-radius:6px;"))
-        namecol = QVBoxLayout(); namecol.setSpacing(1)
-        nlab = QLabel(name); nlab.setFont(T.ui_font(10, semibold=True))
-        W.register_restyle(lambda nlab=nlab: nlab.setStyleSheet(f"color:{T.t('txt1')};background:transparent;"))
-        namecol.addWidget(nlab)
-        namecol.addWidget(W.eyebrow("Baseline Foundation" if n == 1 else f"Extends Profile {n-1}"))
-        top.addWidget(idx); top.addLayout(namecol); top.addStretch(1)
-        cov = QLabel(f"{pct}%"); cov.setFont(T.mono_font(15, semibold=True))
-        W.register_restyle(lambda cov=cov: cov.setStyleSheet(f"color:{T.t('txt1')};background:transparent;"))
-        top.addWidget(cov)
-        card.body.addLayout(top)
-        fam_row = QHBoxLayout(); fam_row.setSpacing(6)
-        for f in fam:
-            fam_row.addWidget(W.token(f))
-        fam_row.addStretch(1)
-        card.body.addLayout(fam_row)
-        foot = QHBoxLayout()
-        foot.addWidget(W.tag(build, kind))
-        foot.addStretch(1)
-        foot.addWidget(W.body(f"{must} Must-Switch, {ch} Channels", dim=True))
-        card.body.addLayout(foot)
-        lay.addWidget(card)
+
+    # baseline fabric
+    card = W.Card(pad=16)
+    ttl = QLabel("Baseline Switch Fabric"); ttl.setFont(T.ui_font(10, semibold=True))
+    W.register_restyle(lambda: ttl.setStyleSheet(f"color:{T.t('txt1')};background:transparent;"))
+    card.body.addWidget(ttl)
+    card.body.addWidget(W.dl([
+        ("Must-Switch Positions", W.body(str(roll.get("must_switch_count", 0)), mono=True)),
+        ("Switch Channels", W.body(str(roll.get("channel_count", 0)), mono=True)),
+        ("Switch Cells", W.body(str(roll.get("cells_as_built", 0)), mono=True)),
+        ("Oscillator Optional", W.body(str(roll.get("osc_optional_count", 0)), mono=True)),
+    ], key_width=200))
+    lay.addWidget(card)
+
+    # switching pins (clickable, category-coloured, jump to the map)
+    switch_pins = [p for p in a["positions"] if p.get("switch_class") == "must_switch"]
+    lay.addWidget(W.eyebrow(f"Switching Pins ({len(switch_pins)})"))
+
+    def pill_for(p):
+        name = next(iter(p["pin_names"]), f"Pin {p['position']}")
+        roles = "/".join(list(p.get("role_set", {}).keys())[:2])
+        return _switch_pill(p["position"], name, _pin_category(p), roles,
+                            lambda pos: state.goto_authority_pin(pos) if state.goto_authority_pin else None)
+    lay.addWidget(_chip_grid(switch_pins, pill_for, cols=4))
+
+    lay.addWidget(W.eyebrow("Supported Families"))
+    lay.addWidget(_flow_tokens(fams))
+
+    # chips grouped by profile — computed off the GUI thread (a resolve per part)
+    lay.addWidget(W.eyebrow("Chips by Profile"))
+    prof_box = QVBoxLayout(); prof_box.setSpacing(12); lay.addLayout(prof_box)
+    prof_box.addWidget(W.body("Grouping supported chips by profile...", dim=True))
+
+    def compute():
+        # SQLite connections are thread-bound, so open a fresh one in this worker
+        conn = db.connect(db.default_db_path())
+        try:
+            tiers = {}
+            for mpn in parts:
+                try:
+                    r = sauth.resolve_part(conn, mpn)
+                except Exception:  # noqa: BLE001
+                    r = None
+                confs = (r.get("rail_conflicts") or []) if r else []
+                sig = tuple(sorted((c.get("needs", ""), c.get("name", "")) for c in confs))
+                tiers.setdefault(sig, []).append(mpn)
+            return tiers
+        finally:
+            conn.close()
+
+    def populate(tiers, ok):
+        clear_layout(prof_box)
+        if not tiers:
+            prof_box.addWidget(W.body("Could not group the chips.", dim=True)); return
+        ordered = sorted(tiers.items(), key=lambda kv: (len(kv[0]), -len(kv[1])))
+        for n, (sig, mpns) in enumerate(ordered, 1):
+            pcard = W.Card(pad=16)
+            head = QHBoxLayout(); head.setSpacing(10)
+            badge = QLabel(str(n)); badge.setFont(T.mono_font(13, semibold=True))
+            badge.setFixedSize(28, 28); badge.setAlignment(Qt.AlignCenter)
+            W.register_restyle(lambda b=badge: b.setStyleSheet(
+                f"background:{T.t('tok')};color:{T.t('txt1')};border-radius:6px;"))
+            head.addWidget(badge)
+            name = "Baseline" if not sig else "Needs " + ", ".join(f"{nm} ({nd})" for nd, nm in sig)
+            nlab = QLabel(name); nlab.setFont(T.ui_font(10, semibold=True))
+            W.register_restyle(lambda nl=nlab: nl.setStyleSheet(f"color:{T.t('txt1')};background:transparent;"))
+            head.addWidget(nlab)
+            head.addWidget(W.tag("Fully Supported" if not sig else "Divergent", "ok" if not sig else "warn"))
+            head.addStretch(1)
+            pct = round(100 * len(mpns) / max(1, len(parts)))
+            head.addWidget(W.body(f"{len(mpns)} Chips ({pct}%)", dim=True))
+            pcard.body.addLayout(head)
+            pcard.body.addWidget(_chip_grid(
+                sorted(mpns),
+                lambda m: W.token_button(str(m), lambda x: state.goto_resolver(x) if state.goto_resolver else None,
+                                         "View this chip's pinout"),
+                cols=5))
+            prof_box.addWidget(pcard)
+
+    run_populate(ctx, compute, populate, busy="Grouping supported chips by profile...")
     lay.addStretch(1)
     return root
 
@@ -478,12 +600,23 @@ class BenchFeature(F.Feature):
             combo.currentTextChanged.connect(state.set_package)
             header = W.hstack(W.eyebrow("Package"), combo, spacing=8)
         panels = [
-            ("Authority", lambda c: W.scroll_body(_authority_panel(c, state))),
+            ("Overview", lambda c: W.scroll_body(_authority_panel(c, state))),
             ("Profiles", lambda c: W.scroll_body(_profiles_panel(c, state))),
-            ("Part Resolver", lambda c: _resolver_panel(c, state)),
-            ("Card Outputs", lambda c: W.scroll_body(_outputs_panel(c, state))),
+            ("MCU Pinout Viewer", lambda c: _resolver_panel(c, state)),
+            ("Exports", lambda c: W.scroll_body(_outputs_panel(c, state))),
         ]
-        return W.Workspace(ctx, "Bench", panels, header=header)
+        ws = W.Workspace(ctx, "Bench", panels, header=header)
+
+        def goto_resolver(mpn):
+            ws.select_panel("MCU Pinout Viewer")     # builds the viewer + its bus handler
+            ctx.bus.emit("bench.resolve", mpn)       # then resolve the clicked chip
+
+        def goto_authority_pin(pos):
+            ws.select_panel("Overview")
+            ctx.bus.emit("bench.jump_pin", pos)
+        state.goto_resolver = goto_resolver
+        state.goto_authority_pin = goto_authority_pin
+        return ws
 
 
 F.register(BenchFeature())
