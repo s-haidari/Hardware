@@ -46,6 +46,8 @@ from ui_theme import (lucide_icon as _lucide,  # noqa: F401
 
 
 import nd_wizard as wiz
+import nd_kicad_checks as kchecks
+import nd_project_health as phealth
 from nd_netclass_manager import (
     NetClass, NetClassManager, create_vault_standard_template,
     load_vault_standard, save_vault_standard,
@@ -462,10 +464,18 @@ class KiCadToolsWidget(QWidget):
         b_apply = uw.button("Apply (Creates .bak)", "primary", _lucide("pencil", _LU_GREEN))
         b_apply.setToolTip("Apply the operation, saving a .bak backup of every file first")
         b_apply.clicked.connect(lambda: self._run_rename(apply=True))
+        b_audit = uw.button("Audit", "default", _lucide("stethoscope", _LU_NEUTRAL))
+        b_audit.setToolTip("Health audit of the selected projects — unannotated / duplicate "
+                           "refs, missing footprints, pin/pad mismatches, no MPN (no kicad-cli)")
+        b_audit.clicked.connect(self._run_audit)
         b_erc = uw.button("Run ERC", "default", _lucide("play", _LU_GREEN))
-        b_erc.setToolTip("Run KiCad's Electrical Rules Check on the selected projects")
+        b_erc.setToolTip("Run KiCad's Electrical Rules Check (schematic) on the selected projects")
         b_erc.clicked.connect(self._run_erc)
-        btns.addWidget(b_prev); btns.addWidget(b_apply); btns.addWidget(b_erc); btns.addStretch()
+        b_drc = uw.button("Run DRC", "default", _lucide("play", _LU_GREEN))
+        b_drc.setToolTip("Run KiCad's Design Rules Check (board) on the selected projects")
+        b_drc.clicked.connect(self._run_drc)
+        btns.addWidget(b_prev); btns.addWidget(b_apply); btns.addWidget(b_audit)
+        btns.addWidget(b_erc); btns.addWidget(b_drc); btns.addStretch()
         outer.addLayout(btns)
         # actions sit right under the form; the empty room falls to the bottom
         outer.addStretch(1)
@@ -592,34 +602,94 @@ class KiCadToolsWidget(QWidget):
 
         self._run_heavy("Applying rename…" if apply else "Previewing rename…", work)
 
+    def _log_findings(self, findings, limit=60):
+        """Severity-ranked findings to the log (shared by ERC / DRC / audit)."""
+        icon = {"error": "[E]", "warning": "[W]", "info": "[i]", "exclusion": "[-]"}
+        for f in findings[:limit]:
+            sev = f.get("severity", "warning")
+            rule = f.get("rule") or f.get("kind") or ""
+            msg = f.get("message") or f.get("detail") or ""
+            where = f.get("where") or f.get("ref") or ""
+            self.log(f"  {icon.get(sev, '[?]')} {rule}: {msg}" + (f"  @ {where}" if where else ""))
+        if len(findings) > limit:
+            self.log(f"  … and {len(findings) - limit} more")
+
     def _run_erc(self):
         pros = self.selected_pro_files()
         if not pros:
             QMessageBox.information(self, "ERC", "No projects selected."); return
         kdir = wiz_find_kicad_cli()
         if not kdir:
-            QMessageBox.warning(self, "ERC", "kicad-cli not found (install KICAD)."); return
+            QMessageBox.warning(self, "ERC", "kicad-cli not found (install KiCad)."); return
+
         def work():
-            self.log("\n=== ERC (kicad-cli) ===")
+            self.log("\n=== ERC (structured) ===")
             for pro in pros:
                 schs = wiz.list_schematics(pro.parent)
                 if not schs:
                     continue
-                # Auto-pick the root sheet (stem matches the .kicad_pro) without
-                # prompting — wiz.pick_top_schematic() calls input() and would
-                # hang or raise on this worker thread.
                 top = pick_root_schematic(schs, pro)
-                self.log(f"ERC: {top.name}")
-                try:
-                    proc = subprocess.run([str(kdir), "sch", "erc", str(top)],
-                                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                          text=True, encoding="utf-8", creationflags=_NO_WINDOW)
-                    for line in (proc.stdout or "").splitlines()[-12:]:
-                        self.log("  " + line)
-                except Exception as e:
-                    self.log(f"  ERROR: {e}")
+                res = kchecks.run_erc(top, str(kdir))
+                if not res["ok"]:
+                    self.log(f"ERC {top.name}: {res['error']}")
+                    continue
+                s = res["summary"]
+                self.log(f"ERC {top.name}: {s['errors']} errors, {s['warnings']} warnings, "
+                         f"{s['total']} total")
+                self._log_findings(res["findings"])
 
         self._run_heavy("Running ERC…", work)
+
+    def _run_drc(self):
+        pros = self.selected_pro_files()
+        if not pros:
+            QMessageBox.information(self, "DRC", "No projects selected."); return
+        kdir = wiz_find_kicad_cli()
+        if not kdir:
+            QMessageBox.warning(self, "DRC", "kicad-cli not found (install KiCad)."); return
+
+        def work():
+            self.log("\n=== DRC (board, structured) ===")
+            for pro in pros:
+                boards = wiz.list_boards(pro.parent)
+                if not boards:
+                    self.log(f"DRC {pro.stem}: no .kicad_pcb found")
+                    continue
+                board = boards[0]
+                res = kchecks.run_drc(board, str(kdir))
+                if not res["ok"]:
+                    self.log(f"DRC {board.name}: {res['error']}")
+                    continue
+                s = res["summary"]
+                self.log(f"DRC {board.name}: {s['errors']} errors, {s['warnings']} warnings, "
+                         f"{s['total']} total")
+                self._log_findings(res["findings"])
+
+        self._run_heavy("Running DRC…", work)
+
+    def _run_audit(self):
+        pros = self.selected_pro_files()
+        if not pros:
+            QMessageBox.information(self, "Audit", "No projects selected."); return
+
+        def work():
+            self.log("\n=== Project Health Audit ===")
+            for pro in pros:
+                schs = wiz.list_schematics(pro.parent)
+                if not schs:
+                    self.log(f"Audit {pro.stem}: no schematic found")
+                    continue
+                top = pick_root_schematic(schs, pro)
+                # local .pretty footprint libs + 3D models next to the project enable
+                # the pin/pad and model checks; schematic-only checks always run.
+                fp_dirs = [str(pro.parent)]
+                a = phealth.audit_schematic(str(top), footprint_dirs=fp_dirs, model_dirs=fp_dirs)
+                s = a["counts"]["by_severity"]
+                self.log(f"Audit {a['project']}: {a['healthy']}/{a['components']} healthy — "
+                         f"{s['error']} errors, {s['warning']} warnings, {s['info']} notes")
+                self._log_findings(a["findings"])
+
+        self._run_heavy("Auditing…", work)
 
     # ============================================================ NET CLASSES
     def _build_netclass_tab(self) -> QWidget:
