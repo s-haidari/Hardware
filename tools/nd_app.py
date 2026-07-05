@@ -20,7 +20,7 @@ from pathlib import Path
 from PyQt5.QtCore import Qt, QObject, pyqtSignal
 from PyQt5.QtGui import QFontDatabase, QFont, QPalette, QColor
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame, QApplication,
-                             QTableWidgetItem, QHeaderView, QAbstractItemView)
+                             QLabel, QTableWidgetItem, QHeaderView, QAbstractItemView)
 
 import ui_theme
 import fluent_theme
@@ -64,34 +64,35 @@ class ShellServices:
         threading.Thread(target=worker, daemon=True).start()
 
 
-# ── grayscale readout fascia ────────────────────────────────────────────────
+# ── readout fascia ──────────────────────────────────────────────────────────
 def _readout(specs):
-    """One bench-meter row of (key, LABEL, value). Returns (card, {key: value_label})."""
-    card = SimpleCardWidget()
-    lay = QHBoxLayout(card)
-    lay.setContentsMargins(0, 0, 0, 0)
+    """A borderless bench-meter row: a big value over a small dim label, cells set
+    apart by whitespace (Quiet Instrument — no card, no divider rules). Returns
+    (widget, {key: value_label})."""
+    w = QWidget()
+    lay = QHBoxLayout(w)
+    lay.setContentsMargins(0, 2, 0, 6)
     lay.setSpacing(0)
     cells = {}
-    for i, (key, label, val) in enumerate(specs):
+    mono = ui_theme.MONO_FONT_STACK[0]
+    for key, label, val in specs:
         cell = QWidget()
         cl = QVBoxLayout(cell)
-        cl.setContentsMargins(16, 10, 16, 10)
-        cl.setSpacing(3)
+        cl.setContentsMargins(0, 0, 44, 0)
+        cl.setSpacing(2)
+        v = QLabel(str(val))
+        vf = QFont(mono); vf.setPointSizeF(17); vf.setWeight(QFont.DemiBold)
+        v.setFont(vf)
+        v.setStyleSheet(f"color:{ui_theme.tc('FG')};background:transparent;")
         cap = CaptionLabel(label)
         cap.setTextColor(ui_theme.tc("FG_DIM"), ui_theme.tc("FG_DIM"))
-        v = StrongBodyLabel(str(val))
-        v.setFont(QFont("JetBrains Mono", 13))
-        cl.addWidget(cap)
+        cf = cap.font(); cf.setPointSizeF(11); cap.setFont(cf)
         cl.addWidget(v)
+        cl.addWidget(cap)
         lay.addWidget(cell)
         cells[key] = v
-        if i < len(specs) - 1:
-            sep = QFrame()
-            sep.setFixedWidth(1)
-            sep.setStyleSheet(f"background:{ui_theme.tc('BORDER')};")
-            lay.addWidget(sep)
     lay.addStretch(1)
-    return card, cells
+    return w, cells
 
 
 def _section(text: str) -> QWidget:
@@ -189,8 +190,8 @@ class ManagerView(QWidget):
         root.addLayout(vc)
 
         self.table = TableWidget()
-        self.table.setBorderVisible(True)
-        self.table.setBorderRadius(6)
+        self.table.setBorderVisible(False)
+        self.table.setBorderRadius(0)
         self.table.verticalHeader().hide()
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
