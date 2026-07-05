@@ -19,3 +19,6 @@ claims:
   pin_dest_5: SERVICE_OSC_IN     # PF0/PD0/PH0 oscillator in
   pin_dest_6: SERVICE_OSC_OUT    # PF1/PD1/PH1 oscillator out
   pin_dest_12: VSSA_TGT          # VSSA / VSSA/VREF- -> analog ground
+  # Minority-rail conflicts (drift-gate rev 3): dominant-policy pins that drop a real
+  # minority rail. Acknowledged here so a NEW/moved conflict fails the gate.
+  minority_conflicts: [1, 13]    # pin 1 VBAT drops VTARGET(3 parts); pin 13 VDDA drops VREF(2)

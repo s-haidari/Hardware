@@ -309,8 +309,9 @@ class AuthorityTests(unittest.TestCase):
     def test_as_built_rail_multiset_matches_card_7c(self):
         """The DB-derived LQFP100 channel map reproduces Card 7C's as-built rail
         multiset count-for-count — the 'derived, never hand-authored' goal. Spec
-        updated 2026-07-05: VREF-/VREFSD- negative references ground to GND, so one
-        channel moves VREF_TGT -> GND (VREF_TGT 6->5, GND 12->13)."""
+        updates: rev 2 (2026-07-05) VREF-/VREFSD- ground to GND (VREF_TGT 6->5,
+        GND 12->13); rev 3 (2026-07-05) VCAP_DSI splits onto its own node, so pin 56
+        moves VCAP_NODE -> VCAP_DSI_NODE (VCAP_NODE 6->5, VCAP_DSI_NODE new 1)."""
         from collections import Counter
         a = auth.build(self.conn, "LQFP100")
         rails = Counter()
@@ -318,7 +319,7 @@ class AuthorityTests(unittest.TestCase):
             for ch in p["assignment"].get("channels", []):
                 rails[ch["destination"]] += 1
         self.assertEqual(dict(rails), {
-            "VTARGET": 15, "GND": 13, "VREF_TGT": 5, "VCAP_NODE": 6,
+            "VTARGET": 15, "GND": 13, "VREF_TGT": 5, "VCAP_NODE": 5, "VCAP_DSI_NODE": 1,
             "SERVICE_OSC_IN": 4, "SERVICE_OSC_OUT": 4, "VSSA_TGT": 3,
             "VDDA_TGT": 3, "VBAT_TGT": 2, "SERVICE_NRST": 2, "SERVICE_BOOT0": 2})
         # LQFP64 stays the Card 7B single-branch map, byte-stable: 30/31/47 on the
@@ -620,19 +621,47 @@ class FabricLogicTests(unittest.TestCase):
         lines = auth.authority_diff(a, b)
         self.assertTrue(any(f"pin {sw['position']} route:" in ln for ln in lines), lines)
 
-    def test_current_budget_capacities(self):
+    def test_current_budget_counts_both_paths(self):
+        """current_budget accounts for BOTH direct socket pins and switch channels,
+        references the real per-family device supply draw (not a flat guess), and does
+        NOT false-flag VTARGET/GND when a direct pin feeds them. (Audit A1.)"""
         a = auth.build(self.conn, "LQFP100")
         cb = a["card_materials"]["current_budget"]
         self.assertEqual(cb["per_channel_ma"], auth.ADG714_CHANNEL_MA)
-        # capacities = channels x rating, and the fabric's rails are all present
-        rails = {}
+        # switch-channel counts match the actual fabric, capacity = channels x rating
+        chans = {}
+        direct = {}
         for p in a["positions"]:
-            for c in p["assignment"].get("channels", []):
-                rails[c["destination"]] = rails.get(c["destination"], 0) + 1
-        self.assertEqual({k: v["channels"] for k, v in cb["rails"].items()}, rails)
-        for v in cb["rails"].values():
-            self.assertEqual(v["capacity_ma"], v["channels"] * auth.ADG714_CHANNEL_MA)
-        self.assertIn("verify", cb["note"])                   # the assumption is labelled
+            cs = p["assignment"].get("channels") or []
+            if cs:
+                for c in cs:
+                    chans[c["destination"]] = chans.get(c["destination"], 0) + 1
+            else:
+                net = p["assignment"].get("destination") or p["assignment"].get("net")
+                if net and net != db.TARGET_NET[db.ID_IO]:
+                    direct[net] = direct.get(net, 0) + 1
+        for rail, r in cb["rails"].items():
+            self.assertEqual(r["switch_channels"], chans.get(rail, 0))
+            self.assertEqual(r["direct_pins"], direct.get(rail, 0))
+            self.assertEqual(r["switched_capacity_ma"], r["switch_channels"] * auth.ADG714_CHANNEL_MA)
+        # real datasheet draw, not the flat fallback
+        self.assertEqual(cb["draw_reference_source"], "datasheet worst-family supply total")
+        self.assertEqual(cb["draw_reference_ma"], max(cb["per_family_supply_ma"].values()))
+        # VTARGET has a direct pin here, so it must NOT be flagged as a brownout
+        self.assertGreaterEqual(cb["rails"]["VTARGET"]["direct_pins"], 1)
+        self.assertFalse([f for f in cb["findings"] if f.startswith("VTARGET")])
+
+    def test_current_budget_flags_switch_only_supply(self):
+        """If VTARGET reaches the target ONLY through thin switch channels below the
+        device draw, current_budget flags it — the real hazard the old check missed."""
+        a = auth.build(self.conn, "LQFP64")
+        # synthesise a card where VTARGET is delivered by a single 30 mA channel only
+        for p in a["positions"]:
+            net = p["assignment"].get("destination") or p["assignment"].get("net")
+            if p["assignment"].get("kind") == "direct" and net == "VTARGET":
+                p["assignment"] = {"kind": "direct", "net": "CARD_LANE"}   # drop the direct feed
+        cb = auth.current_budget(a)
+        self.assertTrue([f for f in cb["findings"] if f.startswith("VTARGET")], cb["findings"])
 
     def test_leaded_packages_build_and_pass_drc(self):
         """The unlock sweep: every leaded/QFN package in the DB builds a fabric
@@ -654,6 +683,96 @@ class FabricLogicTests(unittest.TestCase):
         finally:
             self.conn.execute("UPDATE meta SET value=? WHERE key='classifier_rev'",
                               (str(db.CLASSIFIER_REV),))
+
+    def test_vcap_dsi_split_from_core(self):
+        """A4: VCAP_DSI routes to its own node, never shared with core VCAP, and no
+        single pin ties both regulator outputs together."""
+        a = auth.build(self.conn, "LQFP100")
+        dsi_pins, core_pins = [], []
+        for p in a["positions"]:
+            dests = {c["destination"] for c in (p["assignment"].get("channels") or [])}
+            dests |= {p["assignment"].get("net"), p["assignment"].get("destination")}
+            if "VCAP_DSI_NODE" in dests:
+                dsi_pins.append(p["position"])
+            if "VCAP_NODE" in dests:
+                core_pins.append(p["position"])
+            self.assertFalse("VCAP_NODE" in dests and "VCAP_DSI_NODE" in dests,
+                             f"pin {p['position']} ties both VCAP regulators")
+        self.assertTrue(dsi_pins, "expected a VCAP_DSI position on LQFP100 (F469/F479)")
+        self.assertFalse(set(dsi_pins) & set(core_pins))
+
+    def test_minority_rail_conflicts_surfaced(self):
+        """A3: dominant-policy dropped rails are no longer silent — they appear in
+        fabric_warnings and a lint claim can pin the acknowledged set."""
+        a = auth.build(self.conn, "LQFP64")
+        mc = a["fabric_warnings"]["minority_rail_conflicts"]
+        by_pos = {c["position"]: c for c in mc}
+        self.assertIn(1, by_pos)                       # pin 1: VBAT on many, VDD on 3
+        self.assertEqual(by_pos[1]["routed_to"], "VBAT_TGT")
+        self.assertTrue(any(d["net"] == "VTARGET" for d in by_pos[1]["dropped"]))
+        # a claim acknowledging the exact set passes; a wrong set drifts
+        good = auth.lint_card(a, {"minority_conflicts": sorted(by_pos)})
+        self.assertTrue(all(f["ok"] for f in good), good)
+        bad = auth.lint_card(a, {"minority_conflicts": [999]})
+        self.assertFalse(all(f["ok"] for f in bad))
+
+    def test_boot1_strap_modeled(self):
+        """A5: BOOT1 (PB2) is surfaced as a strap for F1/F2/F4 so the operator can
+        actually reach the ROM bootloader."""
+        bs = auth.build(self.conn, "LQFP64")["extraction_access"]["boot_straps"]
+        self.assertEqual(bs["boot0"]["level_for_bootloader"], "high")
+        self.assertEqual(bs["boot1"]["pin"], "PB2")
+        self.assertEqual(bs["boot1"]["level_for_bootloader"], "low")
+        self.assertTrue(bs["boot1"]["positions"], "expected a PB2 boot-strap position")
+
+    def test_socket_symbol_validates(self):
+        """A6: unlocked packages now carry a real footprint and validate; a package
+        with no mapped footprint is caught, not silently shipped empty."""
+        for pkg in ("LQFP64", "LQFP100", "LQFP144", "TSSOP20"):
+            if pkg not in db.list_packages(self.conn):
+                continue
+            a = auth.build(self.conn, pkg)
+            bad = [f for f in auth.validate_socket_symbol(a) if not f["ok"]]
+            self.assertEqual(bad, [], f"{pkg}: {bad}")
+        # a package with no footprint mapping fails the footprint rule
+        a = auth.build(self.conn, "LQFP64")
+        saved = dict(auth._KICAD_FOOTPRINT)
+        try:
+            auth._KICAD_FOOTPRINT.pop("LQFP64", None)
+            findings = {f["rule"]: f for f in auth.validate_socket_symbol(a)}
+            self.assertFalse(findings["footprint_mapped"]["ok"])
+        finally:
+            auth._KICAD_FOOTPRINT.clear()
+            auth._KICAD_FOOTPRINT.update(saved)
+
+    def test_unknown_claim_field_fails(self):
+        """A7: an unrecognized claim key fails the gate instead of silently passing."""
+        a = auth.build(self.conn, "LQFP64")
+        findings = auth.lint_card(a, {"cells_as_built_typo": 2})
+        self.assertEqual(len(findings), 1)
+        self.assertIs(findings[0]["ok"], False)
+
+    def test_source_digest_present(self):
+        """A8: the DB carries a CubeMX content hash so snapshots are distinguishable."""
+        sd = db.source_digest(self.conn)
+        self.assertTrue(sd["sha256"] and len(sd["sha256"]) == 64)
+        self.assertGreater(sd["file_count"], 0)
+        self.assertEqual(
+            auth.build(self.conn, "LQFP64")["manifest"]["db_source_sha256"], sd["sha256"])
+
+    def test_cli_gates_before_write(self):
+        """A2: the headless CLI writes NOTHING when the drift gate fails."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            claims = Path(td) / "bad.yaml"
+            claims.write_text("package: LQFP64\nclaims:\n  positions_total: 999\n",
+                              encoding="utf-8")
+            out = Path(td) / "out"
+            out.mkdir()
+            rc = auth.main(["--db", str(self.dbp), "--out", str(out),
+                            "--packages", "LQFP64", "--lint", str(claims)])
+            self.assertEqual(rc, 1)
+            self.assertEqual(list(out.iterdir()), [], "files were written despite drift")
 
 
 if __name__ == "__main__":

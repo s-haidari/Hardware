@@ -167,6 +167,14 @@ FAMILY_NOT_5V: dict = {
 _OSC_CAVEAT_PINS = {"PC14", "PC15", "PH0", "PH1"}   # FT except in oscillator mode
 _GPIO_NAME = re.compile(r"^P[A-Z]\d+$")
 
+# BOOT1 strap (audit A5): entering the system ROM bootloader needs BOOT0=1 AND
+# BOOT1=0. Where BOOT1 is a real PIN it is the alternate function of PB2 — but
+# CubeMX exposes PB2 as a bare GPIO, so this must come from a silicon table, not
+# the XML. Only families where BOOT1 is a physical pin are listed; F0/F3/F7 use an
+# nBOOT1 OPTION BIT (no pin strap) and are deliberately absent.
+# Sources: RM0008 (F1) §3.4, RM0033 (F2) §2.4, RM0090 (F4) §2.4 — BOOT1 = PB2.
+BOOT1_PIN = {"STM32F1": "PB2", "STM32F2": "PB2", "STM32F4": "PB2"}
+
 _DEBUG_ROLE = {"swclk": "SWCLK", "swdio": "SWDIO", "swo": "SWO", "jtag_extra": "JTAG"}
 _ANALOG_SUPPLY = {"power_vdda", "power_vref"}
 
@@ -497,10 +505,23 @@ def _extraction_access(positions: list) -> dict:
     cs20 = [{"hdr_pin": pin, "signal": sig, "net": net or "NC",
              "target_pos": (first(net) if net and net != "GND" else None)}
             for pin, sig, net in CORESIGHT20]
+    # Both boot straps needed to reach the ROM bootloader (audit A5): BOOT0 high on
+    # its service net, and — on F1/F2/F4 — BOOT1 (PB2) held low via its card lane.
+    boot0_pos = sorted(p["position"] for p in positions
+                       if "SERVICE_BOOT0" in p["breakout"]["service_nets"])
+    boot1_pos = sorted(p["position"] for p in positions if p["tags"].get("is_boot1"))
     return {
         "coresight20": cs20,
         "bootloader_uart": {"tx_pos": first("UART_BOOT_TX"), "rx_pos": first("UART_BOOT_RX")},
         "usb_dfu": {"dp_pos": first("USB_DP_TGT"), "dn_pos": first("USB_DN_TGT")},
+        "boot_straps": {
+            "boot0": {"net": "SERVICE_BOOT0", "level_for_bootloader": "high",
+                      "positions": boot0_pos},
+            "boot1": {"pin": "PB2", "level_for_bootloader": "low", "positions": boot1_pos,
+                      "note": ("F1/F2/F4: hold PB2 low (via its CARD_LANE) for ROM-bootloader "
+                               "entry; F0/F3/F7 use the nBOOT1 option bit, no pin strap"
+                               if boot1_pos else "no PB2 boot-strap position in this package")},
+        },
         "service_breakout_count": sum(1 for p in positions if p["breakout"]["service_nets"]),
         "debug_positions": sorted(p["position"] for p in positions if p["tags"]["is_debug"]),
         "trace_positions": sorted(p["position"] for p in positions if p["breakout"]["trace"]),
@@ -532,6 +553,20 @@ def card_materials(authority: dict) -> dict:
             "role": "Regulator VCAP",
             "note": f"required for {', '.join(vcap_fams)} sockets (VCAP_1/VCAP_2); "
                     f"F0/F1/F3 have no VCAP pin (DNP/harmless)",
+        })
+    # VCAP_DSI is a SEPARATE regulator output (F469/F479) on its own node — its own
+    # cap, never shared with the core VCAP cap. (Audit A4.)
+    has_dsi = any(
+        (c.get("destination") == "VCAP_DSI_NODE" for c in (p["assignment"].get("channels") or []))
+        or p["assignment"].get("net") == "VCAP_DSI_NODE"
+        or p["assignment"].get("destination") == "VCAP_DSI_NODE"
+        for p in authority["positions"])
+    if has_dsi:
+        items.append({
+            "ref": "C_VCAP_DSI", "part": "2.2uF ceramic X7R (ESR<2ohm)", "qty": 1,
+            "role": "DSI regulator VCAP",
+            "note": "separate DSI-PHY 1.2V regulator cap on VCAP_DSI_NODE (F469/F479 "
+                    "sockets); must NOT share the core VCAP node",
         })
     if n_vdd:
         items.append({
@@ -570,6 +605,11 @@ def lint_card(authority: dict, claims: dict) -> list:
         "osc_optional_count": (r["osc_optional_count"], ""),
         "fixed_count": (r["fixed_count"], ""),
         "positions_total": (r["positions_total"], ""),
+        # The sorted positions that drop a minority rail — a card acknowledges its
+        # known conflict set so a NEW one (a regression) fails the gate. (Audit A3.)
+        "minority_conflicts": (
+            sorted(p["position"] for p in authority["positions"] if p.get("rail_conflicts")),
+            "dominant-policy pins that drop a minority rail"),
     }
     net_key = {"SWDIO_PARENT": "swdio_pos", "SWCLK_PARENT": "swclk_pos", "SWO_PARENT": "swo_pos",
                "TDI_PARENT": "tdi_pos", "NTRST_PARENT": "ntrst_pos", "SERVICE_NRST": "nrst_pos"}
@@ -611,12 +651,20 @@ def lint_card(authority: dict, claims: dict) -> list:
                              "ok": str(claimed) == actual, "detail": "per-pin routing"})
             continue
         if field not in actuals:
+            # An unrecognized key is a FAILURE, not a silent pass. Previously this
+            # returned ok=None and run_lint only failed on ok is False, so a typo or
+            # a future rollup-key rename turned an assertion into a no-op the author
+            # never noticed. (Fixes audit A7.)
             findings.append({"field": field, "claimed": claimed, "actual": None,
-                             "ok": None, "detail": "unknown field (not checked)"})
+                             "ok": False, "detail": "unknown claim field (not a checkable key)"})
             continue
         actual, detail = actuals[field]
+        # list-valued claims (e.g. minority_conflicts) compare order-independently
+        ok = (sorted(claimed) == sorted(actual)
+              if isinstance(actual, list) and isinstance(claimed, list)
+              else claimed == actual)
         findings.append({"field": field, "claimed": claimed, "actual": actual,
-                         "ok": claimed == actual, "detail": detail})
+                         "ok": ok, "detail": detail})
     return findings
 
 
@@ -703,32 +751,97 @@ def fabric_drc_ok(findings) -> bool:
 # must check against their MCU's datasheet; it is labelled as such in the output.
 ADG714_CHANNEL_MA = 30
 
-def current_budget(authority: dict, assumed_target_draw_ma: int = 240) -> dict:
-    """Per-rail current capacity of the switch fabric. Returns {rails: {rail:
-    {channels, capacity_ma}}, assumed_target_draw_ma, findings, note}."""
-    per_rail: dict = {}
+def current_budget(authority: dict, assumed_target_draw_ma: int = None) -> dict:
+    """Per-rail power-delivery picture, honest about BOTH paths to the target: the
+    DIRECT socket pins (short copper, fed from the parent through the rail's 2 A
+    connector contacts) and the thin ADG714 switch channels (~30 mA each).
+
+    The previous version counted only switch channels and called that the rail's
+    capacity — so it printed a false brownout on VTARGET/GND (which are delivered
+    mostly by direct pins it never counted) while missing the genuine hazard: a
+    power rail whose ONLY path to the target is one 30 mA channel. This version
+    flags exactly that case, and references the real worst-case per-family device
+    supply total from the datasheet electrical block instead of a flat guess.
+    Pass assumed_target_draw_ma to override the reference. (Fixes audit A1.)"""
+    switched: dict = {}      # rail -> ADG714 channel count
+    direct: dict = {}        # rail -> direct socket-pin count
     for p in authority["positions"]:
-        for c in p["assignment"].get("channels", []):
-            per_rail[c["destination"]] = per_rail.get(c["destination"], 0) + 1
-    rails = {rail: {"channels": n, "capacity_ma": n * ADG714_CHANNEL_MA}
-             for rail, n in sorted(per_rail.items())}
+        a = p["assignment"]
+        chans = a.get("channels") or []
+        if chans:
+            for c in chans:
+                switched[c["destination"]] = switched.get(c["destination"], 0) + 1
+        else:
+            net = a.get("destination") or a.get("net")
+            if net and net != db.TARGET_NET[db.ID_IO]:      # skip generic per-pin lanes
+                direct[net] = direct.get(net, 0) + 1
+
+    contact_ma = int(CONNECTOR.get("amp_per_contact", 2)) * 1000
+    elec = authority.get("electrical", {})
+    draws = {f: v for f, v in {**(elec.get("supply_total_ma") or {}),
+                               **(elec.get("f4_subline_supply_ma") or {})}.items() if v}
+    worst_draw = max(draws.values(), default=None)
+    draw_ref = assumed_target_draw_ma or worst_draw or 240
+
+    rails: dict = {}
+    for rail in sorted(set(switched) | set(direct)):
+        contacts = RAIL_CONTACT.get(rail, [])
+        if rail == "GND":
+            feed, in_cap = "ground_plane", None       # solid plane — not contact-limited
+        elif rail in ("VCAP_NODE", "VCAP_DSI_NODE"):
+            feed, in_cap = "local_cap", None           # local decoupling — no parent feed
+        elif contacts:
+            feed, in_cap = "connector", len(contacts) * contact_ma
+        else:
+            feed, in_cap = "none", 0
+        rails[rail] = {
+            "feed": feed,
+            "connector_contacts": contacts,
+            "input_capacity_ma": in_cap,
+            "direct_pins": direct.get(rail, 0),
+            "switch_channels": switched.get(rail, 0),
+            "switched_capacity_ma": switched.get(rail, 0) * ADG714_CHANNEL_MA,
+        }
+
     findings = []
+    # The real hazard: the MAIN supply (VTARGET=VDD) or return (GND) reaches the
+    # target ONLY through thin switch channels (no direct pin). Only these two carry
+    # the full device supply — the analog/backup rails (VDDA/VREF/VBAT) draw far less
+    # and a single channel suffices, so they are reported but never gated against the
+    # device draw. Rails WITH a direct pin are copper-fed and never flagged.
     for rail in ("VTARGET", "GND"):
-        cap = rails.get(rail, {}).get("capacity_ma", 0)
-        if cap and cap < assumed_target_draw_ma:
+        r = rails.get(rail)
+        if r and r["direct_pins"] == 0 and r["switch_channels"] > 0 \
+                and r["switched_capacity_ma"] < draw_ref:
             findings.append(
-                f"{rail}: capacity {cap} mA ({rails[rail]['channels']} channels x "
-                f"{ADG714_CHANNEL_MA} mA) is below the assumed target draw of "
-                f"{assumed_target_draw_ma} mA — parallel more channels or verify the draw.")
+                f"{rail}: reaches the target ONLY through {r['switch_channels']} ADG714 "
+                f"channel(s) = {r['switched_capacity_ma']} mA, below the ~{draw_ref} mA "
+                f"device draw; add a direct pin or parallel more channels.")
+    # Connector feed sanity for the main supply (won't fire on a healthy 2-contact
+    # VTARGET; catches a rail with too few contacts for the draw).
+    rv = rails.get("VTARGET")
+    if rv and rv["input_capacity_ma"] is not None and rv["input_capacity_ma"] < draw_ref:
+        findings.append(
+            f"VTARGET: connector feed {rv['input_capacity_ma']} mA "
+            f"({len(rv['connector_contacts'])} x {contact_ma} mA) is below the "
+            f"~{draw_ref} mA reference draw.")
+
     return {
         "per_channel_ma": ADG714_CHANNEL_MA,
-        "assumed_target_draw_ma": assumed_target_draw_ma,
+        "per_contact_ma": contact_ma,
+        "draw_reference_ma": draw_ref,
+        "draw_reference_source": ("override" if assumed_target_draw_ma
+                                  else "datasheet worst-family supply total" if worst_draw
+                                  else "fallback assumption (no per-family data)"),
+        "per_family_supply_ma": draws,
         "rails": rails,
         "findings": findings,
-        "note": ("Capacities are channels x the ADG714 continuous rating "
-                 f"(~{ADG714_CHANNEL_MA} mA per channel — verify against the datasheet "
-                 "revision you stock). The target draw is an assumption; check it "
-                 "against the socketed MCU's datasheet at your clock/voltage."),
+        "note": ("Direct socket pins deliver through the rail's 2 A connector contacts "
+                 "(short copper); ADG714 channels are ~30 mA each. Only VTARGET and GND "
+                 "(the full device supply / return) are gated against the draw, and only "
+                 "when their sole path to the target is switch channels; analog/backup "
+                 "rails are reported but not gated. Verify ratings against the ADG714 "
+                 "revision and connector you stock."),
     }
 
 
@@ -826,7 +939,7 @@ RAIL_CONTACT = {
     "VBAT_TGT": ["LA-33"], "VDDA_TGT": ["RA-20"], "VREF_TGT": ["RA-22"], "VSSA_TGT": ["RA-24"],
     "VTARGET": ["RA-16", "RA-18"], "SERVICE_BOOT0": ["RA-14"],
     "SERVICE_NRST": ["LA-7"], "SERVICE_OSC_IN": ["RA-10"], "SERVICE_OSC_OUT": ["RA-12"],
-    "GND": [], "VCAP_NODE": [],
+    "GND": [], "VCAP_NODE": [], "VCAP_DSI_NODE": [],
 }
 # Shared control/power bus (frozen SPI2 harness): signal -> (ADG714 pin, connector contact, controller pin).
 ADG714_BUS = [
@@ -848,7 +961,7 @@ SERVICE_CONTACT = {
 _NET_CATEGORY = {
     "VTARGET": "power", "VBAT_TGT": "power",
     "VDDA_TGT": "analog", "VREF_TGT": "analog",
-    "GND": "ground", "VSSA_TGT": "ground", "VCAP_NODE": "core",
+    "GND": "ground", "VSSA_TGT": "ground", "VCAP_NODE": "core", "VCAP_DSI_NODE": "core",
     "SWDIO_PARENT": "service", "SWCLK_PARENT": "service", "SWO_PARENT": "service",
     "SERVICE_NRST": "service", "TDI_PARENT": "service", "NTRST_PARENT": "service",
     "SERVICE_BOOT0": "service", "UART_BOOT_TX": "service", "UART_BOOT_RX": "service",
@@ -1308,7 +1421,7 @@ def build(conn: sqlite3.Connection, package: str) -> dict:
 
     positions = []
     for d in sorted(rep.decisions, key=lambda d: d.pin):
-        pin_names = dict(sorted(names.get(d.pin, {}).items(), key=lambda kv: -kv[1]))
+        pin_names = dict(sorted(names.get(d.pin, {}).items(), key=lambda kv: (-kv[1], kv[0])))
         if d.switch_class == db.SWITCH_MUST:
             chans = adg_ch.get(d.pin, [])
             assignment = {"kind": "switched", "channels": chans,
@@ -1343,6 +1456,21 @@ def build(conn: sqlite3.Connection, package: str) -> dict:
             assignment["adg714"] = next(
                 (c for c in _chans if c.get("destination") == _dest),
                 _chans[0] if _chans else None)
+        # Minority-rail conflict: under the dominant policy a must-switch pin gets ONE
+        # channel, so a real power/return rail that a MINORITY of parts put on this pin
+        # is dropped — those parts would tie that rail to the routed one. VSS is excluded
+        # (the open channel already serves the grounded variant). Surface it so the
+        # misroute is never silent; the drift gate can pin the acknowledged set. (Audit A3.)
+        rail_conflicts = []
+        if assignment.get("kind") == "switched":
+            actual_rails = {c["destination"] for c in (assignment.get("channels") or [])}
+            for ident, net in sorted(d.target_nets.items()):
+                if ident in (db.ID_IO, db.ID_VSS) or ident not in db._RAIL_OR_RETURN:
+                    continue
+                if net not in actual_rails:
+                    rail_conflicts.append({"identity": ident, "net": net,
+                                           "mcu_count": d.identities.get(ident, 0),
+                                           "routed_to": assignment.get("destination")})
         tags = _position_tags(roles_at.get(d.pin, set()), fam_names.get(d.pin, set()))
         tags["is_trace"] = breakout["trace"]
         text = " ".join(tokens)
@@ -1350,12 +1478,15 @@ def build(conn: sqlite3.Connection, package: str) -> dict:
         tags["is_usb"] = "USB" in text
         five_v = _five_v(fam_names.get(d.pin, set()), periph.get(d.pin, []))
         tags["is_5v_tolerant"] = five_v["tolerant"] if five_v else None
+        # BOOT1 strap: this position is PB2 on a family where BOOT1 is a real pin.
+        tags["is_boot1"] = any(nm == "PB2" and BOOT1_PIN.get(fam) == "PB2"
+                               for (fam, nm) in fam_names.get(d.pin, set()))
 
         positions.append({
             "position": d.pin,
             "side": d.side,
             "pin_names": pin_names,
-            "role_set": {k: v for k, v in sorted(d.identities.items(), key=lambda kv: -kv[1])},
+            "role_set": {k: v for k, v in sorted(d.identities.items(), key=lambda kv: (-kv[1], kv[0]))},
             "pin_type_set": sorted({t for t in [d.role_label] if t}),
             "peripherals": periph.get(d.pin, []),
             "five_v": five_v,
@@ -1368,6 +1499,7 @@ def build(conn: sqlite3.Connection, package: str) -> dict:
             "conflict_nets": sorted(set(d.target_nets.values())) if d.needs_switch else [],
             "assignment": assignment,
             "minority_roles": d.minority_identities,
+            "rail_conflicts": rail_conflicts,
             "variant_note": _variant_note(pin_names),
         })
 
@@ -1390,6 +1522,7 @@ def build(conn: sqlite3.Connection, package: str) -> dict:
     incl_osc = rep.must_switch_count + rep.osc_optional_count
     src = conn.execute(
         "SELECT path, imported_at FROM source_artifact ORDER BY id DESC LIMIT 1").fetchone()
+    _src_digest = db.source_digest(conn)
     data = {
         "package": package,
         "schema_version": 4,
@@ -1403,6 +1536,11 @@ def build(conn: sqlite3.Connection, package: str) -> dict:
             # the same DB, so outputs stay byte-stable.
             "db_source_path": src[0] if src else None,
             "db_imported_at": src[1] if src else None,
+            # Content identity of the CubeMX source (audit A8): distinguishes DBs
+            # built from different snapshots that share a path + stamp.
+            "db_source_sha256": _src_digest.get("sha256"),
+            "db_source_file_count": _src_digest.get("file_count"),
+            "classifier_rev": db.CLASSIFIER_REV,
             "channel_policy": policy,
         },
         "rollup": {
@@ -1420,6 +1558,16 @@ def build(conn: sqlite3.Connection, package: str) -> dict:
         },
         "electrical": electrical,
         "extraction_access": _extraction_access(positions),
+        "fabric_warnings": {
+            # Dominant-policy pins that drop a real minority rail (audit A3). Not an
+            # error — the card is a legitimate dominant build — but it must be VISIBLE
+            # and the affected parts named, never silently misrouted.
+            "minority_rail_conflicts": [
+                {"position": p["position"], "routed_to": p["assignment"].get("destination"),
+                 "dropped": p["rail_conflicts"]}
+                for p in positions if p.get("rail_conflicts")
+            ],
+        },
         "positions": positions,
     }
     data["card_materials"] = card_materials(data)
@@ -1445,11 +1593,21 @@ def raw_tsv(conn: sqlite3.Connection, package: str) -> str:
 # card schematic starts from the derived per-pin nets, never hand-authored. Stock
 # LQFP footprint referenced (no land pattern reinvented). KiCad 6+ S-expression.
 # ─────────────────────────────────────────────────────────────────────────────
+# Stock KiCad library footprints (Package_QFP / Package_SO), one per package the
+# engine builds. Previously only LQFP64/100 were mapped, so every other package
+# silently emitted an EMPTY Footprint property = an unplaceable symbol. (Audit A6.)
 _KICAD_FOOTPRINT = {
+    "LQFP32": "Package_QFP:LQFP-32_7x7mm_P0.8mm",
+    "LQFP48": "Package_QFP:LQFP-48_7x7mm_P0.5mm",
     "LQFP64": "Package_QFP:LQFP-64_10x10mm_P0.5mm",
     "LQFP100": "Package_QFP:LQFP-100_14x14mm_P0.5mm",
+    "LQFP144": "Package_QFP:LQFP-144_20x20mm_P0.5mm",
+    "LQFP176": "Package_QFP:LQFP-176_24x24mm_P0.5mm",
+    "LQFP208": "Package_QFP:LQFP-208_28x28mm_P0.5mm",
+    "TSSOP20": "Package_SO:TSSOP-20_4.4x6.5mm_P0.65mm",
 }
-_POWER_NETS = {"VTARGET", "VDDA_TGT", "VREF_TGT", "VBAT_TGT", "VCAP_NODE", "GND", "VSSA_TGT"}
+_POWER_NETS = {"VTARGET", "VDDA_TGT", "VREF_TGT", "VBAT_TGT", "VCAP_NODE",
+               "VCAP_DSI_NODE", "GND", "VSSA_TGT"}
 
 
 def _sx(s) -> str:
@@ -1510,6 +1668,38 @@ def to_kicad_symbol(authority: dict) -> str:
         + "\n".join(pins) + "\n"
         '    )\n  )\n)\n'
     )
+
+
+def validate_socket_symbol(authority: dict) -> list:
+    """Structural check on the EMITTED socket symbol (re-parsed from to_kicad_symbol,
+    so it catches emitter bugs too): a real footprint is referenced, and the symbol's
+    pin-number set is exactly 1..N for the package's N positions matching the stock
+    footprint's pad count. A symbol with an empty footprint or the wrong pin count is
+    unplaceable / unroutable in KiCad. Returns [{rule, ok, detail}]. (Audit A6.)"""
+    pkg = authority["package"]
+    n = len(authority["positions"])
+    fp = _KICAD_FOOTPRINT.get(pkg, "")
+    sym = to_kicad_symbol(authority)
+    pin_numbers = sorted(int(x) for x in re.findall(r'\(number "(\d+)"', sym))
+    findings = []
+
+    def add(rule, ok, detail=""):
+        findings.append({"rule": rule, "ok": bool(ok), "detail": detail})
+
+    add("footprint_mapped", bool(fp),
+        fp or f"no KiCad footprint mapped for {pkg} (symbol would be unplaceable)")
+    add("symbol_pins_contiguous", pin_numbers == list(range(1, n + 1)),
+        f"{n} pins, numbers {'1..'+str(n) if pin_numbers == list(range(1, n+1)) else pin_numbers[:6]}")
+    if fp:
+        m = re.search(r"-(\d+)", fp.split(":")[-1])
+        pad_n = int(m.group(1)) if m else None
+        add("pin_count_matches_footprint_pads", pad_n == n,
+            f"symbol {n} pins vs footprint {fp} {pad_n} pads")
+    return findings
+
+
+def validate_socket_symbol_ok(findings) -> bool:
+    return all(f["ok"] for f in findings)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1666,6 +1856,17 @@ def load_claims(path) -> dict:
         if indented and not in_claims:
             continue
         if val:
+            if val.startswith("[") and val.endswith("]"):
+                inner = val[1:-1].strip()
+                items = [x.strip() for x in inner.split(",")] if inner else []
+                out = []
+                for x in items:
+                    try:
+                        out.append(int(x))
+                    except ValueError:
+                        out.append(x)
+                claims[key] = out
+                continue
             try:
                 claims[key] = int(val)
             except ValueError:
@@ -1726,6 +1927,32 @@ def main(argv=None) -> int:
     conn = db.connect(dbp)
     try:
         packages = [p.strip() for p in args.packages.split(",") if p.strip()]
+
+        # GATE BEFORE WRITE: run every structural + drift check first, and write
+        # nothing if any fails. Previously the exports were written and only THEN
+        # linted, so the CI / vault-sync path could land a drifting or malformed
+        # authority the GUI would have refused. (Fixes audit A2.)
+        drc_ok = True
+        for pkg in packages:
+            a = build(conn, pkg)
+            bad = [f for f in fabric_drc(a) if not f["ok"]]
+            for f in bad:
+                print(f"FABRIC DRC FAIL [{pkg}] {f['rule']}: {f['detail']}")
+            sym_bad = [f for f in validate_socket_symbol(a) if not f["ok"]]
+            for f in sym_bad:
+                print(f"SYMBOL VALIDATION FAIL [{pkg}] {f['rule']}: {f['detail']}")
+            drc_ok = drc_ok and not bad and not sym_bad
+        lint_ok, lint_lines = (True, [])
+        if args.lint:
+            lint_ok, lint_lines = run_lint(conn, args.lint)
+            print("\n".join(lint_lines))
+        if not drc_ok:
+            print("FABRIC DRC FAILED — nothing written.")
+            return 1
+        if not lint_ok:
+            print("DRIFT DETECTED — a build card disagrees with the authority; nothing written.")
+            return 1
+
         if not args.lint_only:
             outs = [Path(o) for o in (args.out or ["."])]
             for out in outs:
@@ -1735,11 +1962,6 @@ def main(argv=None) -> int:
                     print(f"{pkg} -> {out}  ({len(summary['files'])} files; "
                           f"{r['channel_count']} channels, cells {r['cells_min']}/{r['cells_as_built']})")
         if args.lint:
-            ok, lines = run_lint(conn, args.lint)
-            print("\n".join(lines))
-            if not ok:
-                print("DRIFT DETECTED — a build card disagrees with the authority.")
-                return 1
             print("Drift gate: all claims match the authority.")
         return 0
     finally:

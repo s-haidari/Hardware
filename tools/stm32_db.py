@@ -137,7 +137,9 @@ def parse_mcu_xml(path: Path) -> McuData:
 # revision whenever classification/routing rules change; build_database stamps it
 # into the DB and stm32_authority.build() refuses a mismatched database.
 #   rev 2 (2026-07-05): VREF-/VREFSD- negative references ground to GND.
-CLASSIFIER_REV = 2
+#   rev 3 (2026-07-05): VCAP_DSI (DSI-PHY regulator on F469/F479) split onto its
+#     own node, never shared with the core VCAP_1/VCAP_2 regulator output.
+CLASSIFIER_REV = 3
 
 _PORT = re.compile(r"^P([A-Z])(\d{1,2})")
 
@@ -201,7 +203,12 @@ def roles(pin: Pin) -> list:
     elif ec == "ground":
         out.append(("ground", "ground"))
     elif ec == "vcap":
-        out.append(("vcap", "local_card"))
+        # VCAP_DSI (DSI-PHY regulator, F469/F479) is a distinct role so it folds to
+        # its own switch identity and never shares the core VCAP node. (Audit A4.)
+        if "DSI" in name:
+            out.append(("vcap_dsi", "local_card"))
+        else:
+            out.append(("vcap", "local_card"))
     elif ec == "reset":
         out.append(("reset_nrst", "service"))
     elif ec == "boot":
@@ -316,6 +323,17 @@ def build_database(source_dir: Path, db_path: Path, *,
         packages: dict = {}
         files = sorted(p for p in source_dir.glob("*.xml") if p.name != "families.xml")
         total = len(files)
+        # Content identity of the CubeMX source (audit A8): a sha256 over the sorted
+        # (name, bytes) of every input XML, so two DBs built from different snapshots
+        # are distinguishable and a golden --check can refuse a changed source. This
+        # is the provenance the bare path + stamp could not give.
+        import hashlib
+        _h = hashlib.sha256()
+        for _f in files:
+            _h.update(_f.name.encode("utf-8") + b"\0" + _f.read_bytes() + b"\0")
+        for _k, _v in (("source_sha256", _h.hexdigest()),
+                       ("source_file_count", str(len(files)))):
+            conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?,?)", (_k, _v))
         for i, f in enumerate(files):
             if progress and i % 25 == 0:
                 progress(i, total, f.stem)
@@ -386,13 +404,30 @@ def classifier_rev(conn: sqlite3.Connection) -> int:
         return 0
 
 
+def source_digest(conn: sqlite3.Connection) -> dict:
+    """Content identity of the CubeMX source this DB was built from (audit A8):
+    {sha256, file_count}. Either may be None on a pre-A8 database."""
+    def g(key):
+        try:
+            r = conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+            return r[0] if r else None
+        except sqlite3.Error:
+            return None
+    fc = g("source_file_count")
+    return {"sha256": g("source_sha256"), "file_count": int(fc) if fc else None}
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Switch engine — which target-socket pins need an ADG714 cell (the canonical rule)
 # ─────────────────────────────────────────────────────────────────────────────
 ID_VDD, ID_VDDA, ID_VREF, ID_VBAT = "VDD", "VDDA", "VREF", "VBAT"
 ID_VSS, ID_VCAP, ID_BOOT, ID_NRST, ID_OSC, ID_IO = "VSS", "VCAP", "BOOT", "NRST", "OSC", "IO"
+# VCAP_DSI is the SEPARATE 1.2V DSI-PHY regulator output on F469/F479 — its own
+# node, never tied to the core VCAP_1/VCAP_2 regulator (that would short two
+# independent regulator outputs through the socket). (Fixes audit A4.)
+ID_VCAP_DSI = "VCAP_DSI"
 
-_RAIL_OR_RETURN = {ID_VDD, ID_VDDA, ID_VREF, ID_VBAT, ID_VSS, ID_VCAP}
+_RAIL_OR_RETURN = {ID_VDD, ID_VDDA, ID_VREF, ID_VBAT, ID_VSS, ID_VCAP, ID_VCAP_DSI}
 _SERVICE_CRITICAL = {ID_BOOT, ID_NRST}
 
 # Canonical destination nets, confirmed against the vault Connector Contract /
@@ -401,7 +436,8 @@ _SERVICE_CRITICAL = {ID_BOOT, ID_NRST}
 # osc_optional / per-card, so the label is advisory).
 TARGET_NET = {
     ID_VDD: "VTARGET", ID_VDDA: "VDDA_TGT", ID_VREF: "VREF_TGT", ID_VBAT: "VBAT_TGT",
-    ID_VSS: "GND", ID_VCAP: "VCAP_NODE", ID_BOOT: "SERVICE_BOOT0", ID_NRST: "SERVICE_NRST",
+    ID_VSS: "GND", ID_VCAP: "VCAP_NODE", ID_VCAP_DSI: "VCAP_DSI_NODE",
+    ID_BOOT: "SERVICE_BOOT0", ID_NRST: "SERVICE_NRST",
     ID_OSC: "SERVICE_OSC_IN", ID_IO: "CARD_LANE",
 }
 
@@ -437,7 +473,7 @@ def switch_identity(role_name: str, role_class: str) -> str:
     if rc == "ground":
         return ID_VSS
     if "vcap" in rn:
-        return ID_VCAP
+        return ID_VCAP_DSI if "dsi" in rn else ID_VCAP
     if rn == "boot" or rn.startswith("boot"):
         return ID_BOOT
     if "rst" in rn or "reset" in rn:
@@ -467,7 +503,7 @@ class SwitchDecision:
 
     @property
     def role_label(self) -> str:
-        return "|".join(sorted(self.identities, key=lambda i: -self.identities[i]))
+        return "|".join(sorted(self.identities, key=lambda i: (-self.identities[i], i)))
 
     @property
     def primary_target_net(self) -> str:
@@ -479,7 +515,10 @@ class SwitchDecision:
         # switched branch goes to the role only the switch can serve — e.g.
         # VCAP|VSS pins land on the VCAP node (Card 7B channels 6/7 and 2-1).
         pool = [i for i in non_io if i != ID_VSS] or non_io
-        best = max(pool, key=lambda i: self.identities[i])
+        # Deterministic tie-break: highest MCU count, ties broken by identity name.
+        # Without the secondary key a true count tie resolved by incidental SQLite
+        # row order, so the routed rail could change with the query plan. (Audit A9.)
+        best = max(pool, key=lambda i: (self.identities[i], i))
         # per-pin overrides (e.g. the oscillator OUT side) live in target_nets
         return self.target_nets.get(best, TARGET_NET[best])
 
@@ -494,7 +533,7 @@ def _cell_for(identities: dict, needs_switch: bool) -> str:
         return CELL_POWER_ONLY
     if only == ID_VSS:
         return CELL_GROUND_ONLY
-    if only == ID_VCAP:
+    if only in {ID_VCAP, ID_VCAP_DSI}:
         return CELL_VCAP_ONLY
     if only == ID_OSC:
         return CELL_OSC_LOCAL
@@ -511,7 +550,7 @@ def classify_pin(pin: int, side: str, identities: dict, total_mcus: int,
             dominant_identity=ID_IO, minority_identities=[], needs_switch=False,
             switch_class=SWITCH_NONE, cell_required=CELL_NC, target_nets={})
 
-    dominant = max(identities, key=lambda i: identities[i])
+    dominant = max(identities, key=lambda i: (identities[i], i))   # deterministic tie-break
     floor = max(MINORITY_MIN, int(total_mcus * MINORITY_PCT)) if total_mcus else MINORITY_MIN
     minority = sorted(i for i, n in identities.items() if n < floor)
 
@@ -596,6 +635,7 @@ def pin_identity_histograms(conn: sqlite3.Connection, package: str) -> tuple:
         JOIN mcu_package_pin p ON p.id = pr.mcu_package_pin_id
         JOIN mcu m             ON m.id = p.mcu_id
         WHERE m.package_name = ?
+        ORDER BY p.physical_pin_number, pr.role_name, pr.role_class, p.mcu_id
         """,
         (package,),
     ).fetchall()

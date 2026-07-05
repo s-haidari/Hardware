@@ -2341,19 +2341,21 @@ class Stm32PinsWidget(QWidget):
                     f"{drift}\n\nFix the build cards or the claims files, then save again.")
                 self.status.setText("Vault save aborted: drift gate failed (nothing written).")
                 return
-            # Fabric DRC on every package being written: structural rules that hold
-            # with or without a claims file. A violation aborts before any write.
+            # Fabric DRC + socket-symbol validation on every package being written:
+            # structural rules that hold with or without a claims file. A violation
+            # aborts before any write.
             for pkg in pkgs:
-                findings = sauth.fabric_drc(sauth.build(conn, pkg))
-                bad = [f for f in findings if not f["ok"]]
+                a = sauth.build(conn, pkg)
+                bad = [f for f in sauth.fabric_drc(a) if not f["ok"]]
+                bad += [f for f in sauth.validate_socket_symbol(a) if not f["ok"]]
                 if bad:
                     detail = "\n".join(f"{f['rule']}: {f['detail']}" for f in bad)
                     QMessageBox.warning(
                         self, "Generate → Vault",
-                        f"Switch-fabric DRC FAILED for {pkg} — nothing was written:"
+                        f"DRC / symbol validation FAILED for {pkg} — nothing was written:"
                         f"\n\n{detail}")
                     self.status.setText(
-                        f"Vault save aborted: fabric DRC failed for {pkg} (nothing written).")
+                        f"Vault save aborted: {pkg} failed validation (nothing written).")
                     return
             # remember the previous authorities so the save can say WHAT changed
             olds = {}

@@ -15,3 +15,5 @@ claims:
   pin_rails_13: SERVICE_OSC_IN+SERVICE_OSC_OUT   # OSC_OUT pin channel set
   pin_rails_48: GND+VCAP_NODE                    # VREFSD- grounds (rev 2), VCAP role
   pin_rails_20: VREF_TGT+VSSA_TGT                # VREF+ rail, VREF- -> analog ground
+  pin_rails_56: VCAP_DSI_NODE                     # VCAP_DSI split onto its own node (rev 3)
+  minority_conflicts: []                          # per_role policy: every rail gets a channel
