@@ -522,12 +522,13 @@ class KiCadToolsWidget(QWidget):
             samples = []
             changes = []                     # audit records; consumed by the JSON audit trail below
             self.log(f"\n=== {'APPLY' if apply else 'PREVIEW'}: {self.op_combo.currentText()} ===")
+            # Pass 1 — read-only preview over every file: counts + samples, no writes.
             for pro in pros:
                 proj = pro.parent
                 if do_labels or do_refs:
                     for sch in wiz.list_schematics(proj):
                         counts, smp, rec = wiz.schematic_preview_and_apply(
-                            sch, op, tag_or_find, repl=repl, apply=apply,
+                            sch, op, tag_or_find, repl=repl, apply=False,
                             touch_refs=do_refs, touch_labels=do_labels)
                         for k in totals:
                             totals[k] += counts.get(k, 0)
@@ -535,7 +536,8 @@ class KiCadToolsWidget(QWidget):
                         changes += rec
                 if do_pcb:
                     for brd in wiz.list_boards(proj):
-                        cnt, smp, rec = wiz.pcb_preview_and_apply(brd, op, tag_or_find, repl=repl, apply=apply)
+                        cnt, smp, rec = wiz.pcb_preview_and_apply(
+                            brd, op, tag_or_find, repl=repl, apply=False)
                         totals["pcb_ref"] += cnt
                         samples += smp
                         changes += rec
@@ -546,7 +548,33 @@ class KiCadToolsWidget(QWidget):
             if not any(totals.values()):
                 self.log("  No matching changes.")
             elif apply:
-                self.log("Applied. Backups (.bak) created next to modified files.")
+                # Pass 2 — all-or-nothing apply via the wizard's atomic machinery:
+                # every transform stages in memory first (a locked or unreadable file
+                # aborts before any write), and a failed write rolls every file back
+                # from its .bak. No project is ever left half-renamed.
+                from datetime import datetime as _dt
+                tasks = []
+                for pro in pros:
+                    proj = pro.parent
+                    if do_labels or do_refs:
+                        for sch in wiz.list_schematics(proj):
+                            tasks.append((sch, wiz._make_sch_task(
+                                sch, op, tag_or_find, repl, do_refs, do_labels)))
+                    if do_pcb:
+                        for brd in wiz.list_boards(proj):
+                            tasks.append((brd, wiz._make_pcb_task(brd, op, tag_or_find, repl)))
+                stamp = _dt.now().strftime("%Y%m%d_%H%M%S")
+                try:
+                    applied, backups = wiz.apply_transforms_atomically(tasks, stamp)
+                except wiz.ApplyError as e:
+                    self.log(f"APPLY ABORTED during {e.stage} of {e.path.name}: {e.original}")
+                    self.log("All-or-nothing: no files were left modified "
+                             "(any partial write was rolled back from its .bak).")
+                    changes = []             # nothing landed; write no audit trail
+                else:
+                    changes = applied        # audit exactly what was written
+                    self.log(f"Applied {len(applied)} change(s) across {len(backups)} file(s). "
+                             "Backups (.bak) created next to modified files.")
             # JSON audit trail (same records + location the CLI wizard writes)
             if changes:
                 try:

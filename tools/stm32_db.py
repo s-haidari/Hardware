@@ -132,6 +132,13 @@ def parse_mcu_xml(path: Path) -> McuData:
 # ─────────────────────────────────────────────────────────────────────────────
 # Classify — a pin's electrical class, canonical name, and roles
 # ─────────────────────────────────────────────────────────────────────────────
+# Classification runs at DATABASE BUILD time (electrical_class / roles are stored),
+# so a DB built by an older classifier silently keeps the old routing. Bump this
+# revision whenever classification/routing rules change; build_database stamps it
+# into the DB and stm32_authority.build() refuses a mismatched database.
+#   rev 2 (2026-07-05): VREF-/VREFSD- negative references ground to GND.
+CLASSIFIER_REV = 2
+
 _PORT = re.compile(r"^P([A-Z])(\d{1,2})")
 
 
@@ -298,6 +305,10 @@ def build_database(source_dir: Path, db_path: Path, *,
     conn = sqlite3.connect(db_path)
     try:
         conn.executescript(_SCHEMA)
+        # provenance stamp: which classifier built this DB (checked at read time)
+        conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+        conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?,?)",
+                     ("classifier_rev", str(CLASSIFIER_REV)))
         art = conn.execute("INSERT INTO source_artifact (path, imported_at) VALUES (?,?)",
                            (str(source_dir), stamp)).lastrowid
 
@@ -358,6 +369,15 @@ def connect(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def classifier_rev(conn: sqlite3.Connection) -> int:
+    """The classifier revision that built this DB (0 = pre-stamp database)."""
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key='classifier_rev'").fetchone()
+        return int(row[0]) if row else 0
+    except sqlite3.Error:
+        return 0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -559,32 +579,35 @@ def pin_identity_histograms(conn: sqlite3.Connection, package: str) -> tuple:
     """(pin -> {identity: mcu_count}, pin -> side, total_mcus)."""
     total_mcus = int(conn.execute(
         "SELECT COUNT(*) FROM mcu WHERE package_name = ?", (package,)).fetchone()[0])
+    # Per-row (pin, role, mcu) so identity counts are DISTINCT-MCU exact: several
+    # role_names can fold into one switch identity, and a per-role max() undercounts
+    # while a sum() double-counts MCUs that carry more than one of those roles.
     rows = conn.execute(
         """
-        SELECT p.physical_pin_number, p.lqfp_side, pr.role_name, pr.role_class,
-               COUNT(DISTINCT p.mcu_id)
+        SELECT DISTINCT p.physical_pin_number, p.lqfp_side, pr.role_name,
+               pr.role_class, p.mcu_id
         FROM pin_role pr
         JOIN mcu_package_pin p ON p.id = pr.mcu_package_pin_id
         JOIN mcu m             ON m.id = p.mcu_id
         WHERE m.package_name = ?
-        GROUP BY p.physical_pin_number, p.lqfp_side, pr.role_name, pr.role_class
         """,
         (package,),
     ).fetchall()
 
-    hist: dict = {}
+    ident_mcus: dict = {}
     sides: dict = {}
     osc_sides: dict = {}
-    for pin, side, role_name, role_class, n in rows:
+    for pin, side, role_name, role_class, mcu_id in rows:
         pin = int(pin)
         ident = switch_identity(role_name, role_class)
-        bucket = hist.setdefault(pin, {})
-        bucket[ident] = max(bucket.get(ident, 0), int(n))
+        ident_mcus.setdefault(pin, {}).setdefault(ident, set()).add(mcu_id)
         sides.setdefault(pin, side or "")
         if role_name == "oscillator_hse_out":
             osc_sides.setdefault(pin, set()).add("out")
         elif role_name == "oscillator_hse_in":
             osc_sides.setdefault(pin, set()).add("in")
+    hist = {pin: {ident: len(mcus) for ident, mcus in buckets.items()}
+            for pin, buckets in ident_mcus.items()}
     return hist, sides, total_mcus, osc_sides
 
 

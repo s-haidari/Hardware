@@ -14,3 +14,8 @@ claims:
   tdi_pos: 50                # PA15 -> TDI_PARENT
   ntrst_pos: 56              # PB4  -> NTRST_PARENT
   nrst_pos: 7                # NRST -> SERVICE_NRST (contact LA-7)
+  # Per-pin routing claims (drift-gate rev 2): aggregate counts can all match while
+  # an individual pin routes to the wrong rail — these pin these routes down.
+  pin_dest_5: SERVICE_OSC_IN     # PF0/PD0/PH0 oscillator in
+  pin_dest_6: SERVICE_OSC_OUT    # PF1/PD1/PH1 oscillator out
+  pin_dest_12: VSSA_TGT          # VSSA / VSSA/VREF- -> analog ground

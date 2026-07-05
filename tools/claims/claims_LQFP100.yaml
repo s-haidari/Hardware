@@ -9,3 +9,9 @@ claims:
   osc_optional_count: 3
   adg714_cells: 8            # as built (Card 7C: 59 channels across 8 cells)
   adg714_cells_min: 6        # minimum (Card 7F: ceil(43 / 8))
+  # Per-pin routing claims (drift-gate rev 2): aggregate counts can all match while
+  # an individual pin routes to the wrong rail — these pin these routes down.
+  pin_rails_12: SERVICE_OSC_IN+SERVICE_OSC_OUT   # OSC_IN pin channel set
+  pin_rails_13: SERVICE_OSC_IN+SERVICE_OSC_OUT   # OSC_OUT pin channel set
+  pin_rails_48: GND+VCAP_NODE                    # VREFSD- grounds (rev 2), VCAP role
+  pin_rails_20: VREF_TGT+VSSA_TGT                # VREF+ rail, VREF- -> analog ground

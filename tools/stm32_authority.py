@@ -577,8 +577,39 @@ def lint_card(authority: dict, claims: dict) -> list:
         k = net_key.get(c.get("net"))
         if k and c.get("target_pos"):
             actuals[k] = (c["target_pos"], "from CoreSight-20 map")
+    # Per-pin routing claims — the aggregate counts above can all match while an
+    # individual pin routes to the wrong rail (proven: a stale pre-rev-2 DB passed
+    # the count checks with VREF- still on VREF_TGT). Claim forms:
+    #   pin_dest_<N>:  the single delivered net of a fixed/service/lane pin
+    #   pin_rails_<N>: the sorted '+'-joined channel rail set of a switched pin
+    pos_map = {p["position"]: p for p in authority["positions"]}
+
+    def _pin_actual(pos: int, want_rails: bool) -> str:
+        p = pos_map.get(pos)
+        if p is None:
+            return ""
+        chans = p["assignment"].get("channels") or []
+        if chans:
+            rails = "+".join(sorted({c["destination"] for c in chans}))
+            if want_rails:
+                return rails
+            single = p["assignment"].get("destination") or p["assignment"].get("net")
+            return single or rails
+        return (p["assignment"].get("destination") or p["assignment"].get("net") or "")
+
     findings = []
     for field, claimed in claims.items():
+        m = re.fullmatch(r"pin_(dest|rails)_(\d+)", field)
+        if m:
+            pos = int(m.group(2))
+            if pos not in pos_map:
+                findings.append({"field": field, "claimed": claimed, "actual": None,
+                                 "ok": False, "detail": "no such position"})
+                continue
+            actual = _pin_actual(pos, want_rails=(m.group(1) == "rails"))
+            findings.append({"field": field, "claimed": str(claimed), "actual": actual,
+                             "ok": str(claimed) == actual, "detail": "per-pin routing"})
+            continue
         if field not in actuals:
             findings.append({"field": field, "claimed": claimed, "actual": None,
                              "ok": None, "detail": "unknown field (not checked)"})
@@ -1095,6 +1126,15 @@ _SWITCH_MD = {db.SWITCH_MUST: "must", db.SWITCH_OSC_OPTIONAL: "osc", db.SWITCH_N
 
 
 def build(conn: sqlite3.Connection, package: str) -> dict:
+    # Stale-database guard: classification/routing rules run at DB build time, so a
+    # DB stamped by an older classifier would silently emit outdated routing (the
+    # exact drift class the gate exists to kill). Refuse it with a clear remedy.
+    rev = db.classifier_rev(conn)
+    if rev != db.CLASSIFIER_REV:
+        raise ValueError(
+            f"This database was built by classifier revision {rev or 'pre-1'}; the "
+            f"current rules are revision {db.CLASSIFIER_REV}. Rebuild the database "
+            f"(Build Database) so the routing reflects the current classification.")
     rep = db.package_report(conn, package)
     fam_names = _families_at(conn, package)
     blob, ecs = _blob_at(conn, package)
@@ -1267,12 +1307,9 @@ def _sx(s) -> str:
 
 
 def _pin_kind(p: dict, net: str) -> str:
-    """KiCad electrical type for a socket pin from its net + switch class."""
-    if net in _POWER_NETS:
-        return "power_in"
-    if p["switch_class"] != db.SWITCH_NONE:
-        return "bidirectional"       # routed through the ADG714 mux
-    return "bidirectional"           # generic card lane / IO
+    """KiCad electrical type for a socket pin from its net: power nets are
+    power_in; everything else (switched or lane) is bidirectional."""
+    return "power_in" if net in _POWER_NETS else "bidirectional"
 
 
 def to_kicad_symbol(authority: dict) -> str:

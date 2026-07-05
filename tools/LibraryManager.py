@@ -464,28 +464,29 @@ def dedupe_symbol_library(symbol_lib_path: Path, log: UILog) -> int:
     Returns the number of duplicate blocks removed.
     """
     try:
-        text = read_text(symbol_lib_path)
-        blocks = extract_symbol_blocks(text)
-        seen: set = set()
-        kept: List[str] = []
-        removed = 0
-        for b in blocks:
-            nm = extract_symbol_name(b)
-            if nm in seen:
-                removed += 1
-                continue
-            seen.add(nm)
-            kept.append(b)
-        if removed:
-            new_text = insert_blocks_into_target(
-                '(kicad_symbol_lib (version 20211014) (generator "LibraryManager.py")\n)\n',
-                kept
-            )
-            write_text(symbol_lib_path, new_text)
-            log.write(f"Removed {removed} duplicate symbol(s); kept {len(kept)} unique.")
-        else:
-            log.write("No duplicate symbols to remove.")
-        return removed
+        with _LIB_LOCK:                      # never interleave with a watcher import
+            text = read_text(symbol_lib_path)
+            blocks = extract_symbol_blocks(text)
+            seen: set = set()
+            kept: List[str] = []
+            removed = 0
+            for b in blocks:
+                nm = extract_symbol_name(b)
+                if nm in seen:
+                    removed += 1
+                    continue
+                seen.add(nm)
+                kept.append(b)
+            if removed:
+                new_text = insert_blocks_into_target(
+                    '(kicad_symbol_lib (version 20211014) (generator "LibraryManager.py")\n)\n',
+                    kept
+                )
+                write_text(symbol_lib_path, new_text)
+                log.write(f"Removed {removed} duplicate symbol(s); kept {len(kept)} unique.")
+            else:
+                log.write("No duplicate symbols to remove.")
+            return removed
     except Exception as e:
         log.write(f"ERROR removing duplicates: {e}")
         return 0
@@ -874,45 +875,46 @@ def repair_library(cfg: Dict[str, str], log: UILog) -> Dict[str, int]:
     register the libraries + env var. Returns a counts dict."""
     result = {"symbols_fixed": 0, "footprints_fixed": 0, "footprints_no_model": 0}
 
-    # 1) symbol -> footprint nickname
-    sym_path = Path(cfg["SymbolLib"])
-    if sym_path.exists():
-        text = read_text(sym_path)
-        blocks = extract_symbol_blocks(text)
-        new_blocks = []
-        for b in blocks:
-            nb = rewrite_symbol_footprint(b, FP_NICKNAME)
-            if nb != b:
-                result["symbols_fixed"] += 1
-            new_blocks.append(nb)
-        if result["symbols_fixed"]:
-            new_text = insert_blocks_into_target(
-                '(kicad_symbol_lib (version 20211014) (generator "LibraryManager.py")\n)\n',
-                new_blocks)
-            write_text(sym_path, new_text)
+    with _LIB_LOCK:                          # never interleave with a watcher import
+        # 1) symbol -> footprint nickname
+        sym_path = Path(cfg["SymbolLib"])
+        if sym_path.exists():
+            text = read_text(sym_path)
+            blocks = extract_symbol_blocks(text)
+            new_blocks = []
+            for b in blocks:
+                nb = rewrite_symbol_footprint(b, FP_NICKNAME)
+                if nb != b:
+                    result["symbols_fixed"] += 1
+                new_blocks.append(nb)
+            if result["symbols_fixed"]:
+                new_text = insert_blocks_into_target(
+                    '(kicad_symbol_lib (version 20211014) (generator "LibraryManager.py")\n)\n',
+                    new_blocks)
+                write_text(sym_path, new_text)
 
-    # 2) footprint -> 3D model line
-    fp_dir = Path(cfg["FootprintLib"])
-    mdl_dir = Path(cfg["ModelLib"])
-    model_files = [p for p in mdl_dir.glob("*")
-                   if p.suffix.lower() in (".step", ".stp", ".wrl")] if mdl_dir.exists() else []
-    unmatched: List[str] = []
-    if fp_dir.exists():
-        for fp in sorted(fp_dir.glob("*.kicad_mod")):
-            m = match_model_for_footprint(fp.stem, model_files)
-            t = read_text(fp)
-            if m is None:
-                if not footprint_has_model(t):
-                    unmatched.append(fp.stem)
-                continue
-            nt = ensure_footprint_model(t, m.name)
-            if nt != t:
-                write_text(fp, nt)
-                result["footprints_fixed"] += 1
-    result["footprints_no_model"] = len(unmatched)
+        # 2) footprint -> 3D model line
+        fp_dir = Path(cfg["FootprintLib"])
+        mdl_dir = Path(cfg["ModelLib"])
+        model_files = [p for p in mdl_dir.glob("*")
+                       if p.suffix.lower() in (".step", ".stp", ".wrl")] if mdl_dir.exists() else []
+        unmatched: List[str] = []
+        if fp_dir.exists():
+            for fp in sorted(fp_dir.glob("*.kicad_mod")):
+                m = match_model_for_footprint(fp.stem, model_files)
+                t = read_text(fp)
+                if m is None:
+                    if not footprint_has_model(t):
+                        unmatched.append(fp.stem)
+                    continue
+                nt = ensure_footprint_model(t, m.name)
+                if nt != t:
+                    write_text(fp, nt)
+                    result["footprints_fixed"] += 1
+        result["footprints_no_model"] = len(unmatched)
 
-    # 3) register in KiCad
-    register_libraries(cfg, log)
+        # 3) register in KiCad
+        register_libraries(cfg, log)
 
     log.write(f"Repair: {result['symbols_fixed']} symbol footprint link(s) fixed, "
               f"{result['footprints_fixed']} footprint model line(s) fixed.")
@@ -988,6 +990,15 @@ def expand_zip_to_folder(zip_path: Path, dest_root: Path, log: UILog) -> Optiona
     except Exception as e:
         log.write(f"ERROR expand zip {zip_path}: {e}")
     return None
+
+# One lock for every mutation of the shared library (the symbol file, the
+# footprint/model dirs, and the follow-up git commit). The watcher spawns one
+# thread per new ZIP: without this, two parallel imports read-modify-write
+# MySymbols.kicad_sym concurrently and the last writer silently drops the other's
+# symbols, while their commits race on git's index.lock. RLock because the batch
+# path (process_existing_zips) holds it across its per-zip process_zip calls.
+_LIB_LOCK = threading.RLock()
+
 
 def merge_symbols(target_path: Path, sources: List[Path], log: UILog):
     if not sources:
@@ -1131,18 +1142,21 @@ def process_zip(zip_path: Path, cfg: Dict[str, str], log: UILog, commit: bool = 
     if not wait_file_ready(zip_path):
         log.write(f"Zip not ready: {zip_path}")
         return
-    part_dir = expand_zip_to_folder(zip_path, Path(cfg["Downloads"]), log)
-    if part_dir is None:
-        return
-    move_files(part_dir, cfg, log)
-    remove_part_artifacts(zip_path, part_dir, log)
-    log.write(f"Done processing {base}")
-    # Single-zip path (e.g. the watcher) commits immediately; batch runs skip this
-    # and commit once at the end (commit=False).
-    if commit:
-        commit_msg = f"Auto-update: processed {zip_path.name}"
-        if git_stage_commit(cfg, log, message=commit_msg):
-            git_push(cfg, log)
+    # Serialize the whole import: the watcher runs one thread per new ZIP, and the
+    # library merge + git commit must never interleave between imports.
+    with _LIB_LOCK:
+        part_dir = expand_zip_to_folder(zip_path, Path(cfg["Downloads"]), log)
+        if part_dir is None:
+            return
+        move_files(part_dir, cfg, log)
+        remove_part_artifacts(zip_path, part_dir, log)
+        log.write(f"Done processing {base}")
+        # Single-zip path (e.g. the watcher) commits immediately; batch runs skip
+        # this and commit once at the end (commit=False).
+        if commit:
+            commit_msg = f"Auto-update: processed {zip_path.name}"
+            if git_stage_commit(cfg, log, message=commit_msg):
+                git_push(cfg, log)
 
 def process_existing_zips(cfg: Dict[str, str], log: UILog, refresh_cb=None, progress_cb=None):
     zips = list(Path(cfg["Downloads"]).glob("*.zip"))
@@ -1153,20 +1167,21 @@ def process_existing_zips(cfg: Dict[str, str], log: UILog, refresh_cb=None, prog
         return
     total = len(zips)
     names = []
-    for i, z in enumerate(zips, 1):
-        if progress_cb:
-            progress_cb(i, total, z.stem)
-        names.append(z.stem)
-        process_zip(z, cfg, log, commit=False)   # defer git to one batch commit
-    # One commit + one push for the whole batch.
-    if names:
-        if len(names) == 1:
-            msg = f"Auto-update: processed {names[0]}"
-        else:
-            shown = ", ".join(names[:6]) + ("…" if len(names) > 6 else "")
-            msg = f"Auto-update: processed {len(names)} parts ({shown})"
-        if git_stage_commit(cfg, log, message=msg):
-            git_push(cfg, log)
+    with _LIB_LOCK:                              # hold across the batch + its one commit
+        for i, z in enumerate(zips, 1):
+            if progress_cb:
+                progress_cb(i, total, z.stem)
+            names.append(z.stem)
+            process_zip(z, cfg, log, commit=False)   # defer git to one batch commit
+        # One commit + one push for the whole batch.
+        if names:
+            if len(names) == 1:
+                msg = f"Auto-update: processed {names[0]}"
+            else:
+                shown = ", ".join(names[:6]) + ("…" if len(names) > 6 else "")
+                msg = f"Auto-update: processed {len(names)} parts ({shown})"
+            if git_stage_commit(cfg, log, message=msg):
+                git_push(cfg, log)
     if refresh_cb:
         refresh_cb()
 

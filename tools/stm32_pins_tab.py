@@ -2279,10 +2279,11 @@ class Stm32PinsWidget(QWidget):
         out = QFileDialog.getExistingDirectory(self, "Choose output folder for the pin data")
         if not out:
             return
+        # export what the user is looking at (the vault save keeps the canonical set)
+        pkgs = [self._loaded_package or self.pkg_combo.currentText()]
         conn = sdb.connect(self.db_path)
         try:
-            written = [sauth.write_authority(conn, pkg, Path(out))
-                       for pkg in ("LQFP64", "LQFP100")]
+            written = [sauth.write_authority(conn, pkg, Path(out)) for pkg in pkgs]
         except Exception as e:
             QMessageBox.warning(self, "Generate", f"Generate failed:\n{e}")
             return
@@ -2317,20 +2318,33 @@ class Stm32PinsWidget(QWidget):
                     out[nm] = hashlib.sha256(f.read_bytes()).hexdigest()
             return out
 
+        # the canonical dataset pair, plus the selected package when it differs
+        pkgs = list(dict.fromkeys(
+            ["LQFP64", "LQFP100",
+             self._loaded_package or self.pkg_combo.currentText()]))
         conn = sdb.connect(self.db_path)
         try:
-            # hash what's there so the save can report changed vs unchanged
-            probe = [f"pinout_authority_{p}.json" for p in ("LQFP64", "LQFP100")]
-            before = {str(v): _hashes(v, probe) for v in vdirs}
-            written = [sauth.write_authority(conn, pkg, vdir)
-                       for vdir in vdirs for pkg in ("LQFP64", "LQFP100")]
-            # Drift gate at save time: a vault copy that contradicts the build
-            # cards' claims must never land silently.
+            # Drift gate FIRST: a vault copy that contradicts the build cards'
+            # claims must never land at all (previously the files were written and
+            # the warning came after — the contradiction had already landed).
             claims_dir = Path(__file__).resolve().parent / "claims"
             claim_files = sorted(claims_dir.glob("claims_*.yaml"))
             lint_ok, lint_lines = (True, [])
             if claim_files:
                 lint_ok, lint_lines = sauth.run_lint(conn, claim_files)
+            if not lint_ok:
+                drift = "\n".join(ln for ln in lint_lines if "DRIFT" in ln)
+                QMessageBox.warning(
+                    self, "Generate → Vault",
+                    "Drift gate FAILED — nothing was written to the vault:\n\n"
+                    f"{drift}\n\nFix the build cards or the claims files, then save again.")
+                self.status.setText("Vault save aborted: drift gate failed (nothing written).")
+                return
+            # hash what's there so the save can report changed vs unchanged
+            probe = [f"pinout_authority_{p}.json" for p in pkgs]
+            before = {str(v): _hashes(v, probe) for v in vdirs}
+            written = [sauth.write_authority(conn, pkg, vdir)
+                       for vdir in vdirs for pkg in pkgs]
             changed = []
             for v in vdirs:
                 after = _hashes(v, probe)
@@ -2347,12 +2361,6 @@ class Stm32PinsWidget(QWidget):
             conn.close()
         n = sum(len(w["files"]) for w in written)
         dests = " and ".join(str(v) for v in vdirs)
-        if not lint_ok:
-            drift = "\n".join(ln for ln in lint_lines if "DRIFT" in ln)
-            QMessageBox.warning(
-                self, "Generate → Vault",
-                f"Wrote {n} files, but the drift gate found card/authority "
-                f"mismatches:\n\n{drift}\n\nFix the build cards or the claims files.")
         what = "no content changes" if not changed else "changed: " + ", ".join(changed)
         msg = (f"Wrote {n} pin-data files to {dests} ({what}). "
                + ("Drift gate: all claims match." if lint_ok else "DRIFT DETECTED — see warning."))
