@@ -502,13 +502,9 @@ def _authority_panel(ctx, state: BenchState) -> QWidget:
         budget_ok = not budget.get("findings")
         chips = [("Fabric DRC", f"{passed} / {len(findings)}", "ok" if ok else "err"),
                  ("Current Budget", "OK" if budget_ok else "Check", "ok" if budget_ok else "warn")]
-        conflicts = authority.get("fabric_warnings", {}).get("minority_rail_conflicts", [])
-        if conflicts:
-            chips.append(("Minority Conflict", str(len(conflicts)), "warn"))
         title = "Buildable" if ok else "Not Buildable"
-        sub = ("One or more minority-rail conflicts to resolve"
-               if conflicts else "All structural rules pass")
-        verdict_holder.addWidget(W.Verdict(title, sub, "ok" if ok and not conflicts else "warn", chips))
+        sub = "All structural rules pass" if ok else "Structural rules need attention"
+        verdict_holder.addWidget(W.Verdict(title, sub, "ok" if ok else "warn", chips))
         # default selection
         first = authority["positions"][0]["position"] if authority["positions"] else None
         if first is not None:

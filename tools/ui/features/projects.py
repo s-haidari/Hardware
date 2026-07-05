@@ -12,8 +12,10 @@ import subprocess
 from pathlib import Path
 
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QComboBox,
-                             QCheckBox, QDoubleSpinBox, QSpinBox, QGridLayout, QScrollArea, QFrame)
+                             QCheckBox, QDoubleSpinBox, QSpinBox, QGridLayout, QScrollArea, QFrame,
+                             QColorDialog, QPushButton)
 
 from .. import theme as T
 from .. import widgets as W
@@ -389,13 +391,37 @@ def _netclass_panel(ctx, state) -> QWidget:
     grid.addWidget(W.eyebrow("Net Class"), 0, 0)
     for c, (_f, label) in enumerate(_NC_FIELDS, start=1):
         h = W.eyebrow(label); h.setWordWrap(True); h.setAlignment(Qt.AlignHCenter)
-        h.setFixedWidth(120 if label.startswith("Differential") else 98)
+        h.setFixedWidth(108 if label.startswith("Differential") else 92)
         grid.addWidget(h, 0, c, Qt.AlignHCenter)
     grid.addWidget(W.eyebrow("Priority"), 0, len(_NC_FIELDS) + 1)
+
+    recolor: dict = {}   # class name -> [callables that re-read nc.color]
+
+    def _swatch(nc):
+        btn = QPushButton(); btn.setObjectName("ncswatch"); btn.setFixedSize(24, 18)
+        btn.setCursor(Qt.PointingHandCursor); btn.setToolTip("Click to change this class colour")
+        def paint():
+            btn.setStyleSheet(f"QPushButton#ncswatch{{background:{nc.color};"
+                              f"border:1px solid {T.t('stroke')};border-radius:4px;}}")
+        def pick():
+            col = QColorDialog.getColor(QColor(nc.color), root, f"{nc.name} Colour")
+            if col.isValid():
+                nc.color = col.name()
+                paint()
+                for fn in recolor.get(nc.name, []):
+                    fn()
+        btn.clicked.connect(pick); W.register_restyle(paint); paint()
+        return btn
+
+    def _name_cell(nc, name):
+        w = QWidget(); h = QHBoxLayout(w); h.setContentsMargins(0, 0, 0, 0); h.setSpacing(8)
+        h.addWidget(_swatch(nc)); h.addWidget(W.body(name, mono=True))
+        return w
+
     rows_map = {}
     for r, name in enumerate(mgr.list_netclasses(), start=1):
         nc = mgr.net_classes[name]
-        grid.addWidget(W.body(name, mono=True), r, 0)
+        grid.addWidget(_name_cell(nc, name), r, 0)
         spins = {}
         for c, (f, _label) in enumerate(_NC_FIELDS, start=1):
             sp = _spin(getattr(nc, f, 0.0)); grid.addWidget(sp, r, c); spins[f] = sp
@@ -403,9 +429,30 @@ def _netclass_panel(ctx, state) -> QWidget:
         grid.addWidget(pr, r, len(_NC_FIELDS) + 1); spins["priority"] = pr
         rows_map[name] = spins
     area = QScrollArea(); area.setWidgetResizable(True); area.setFrameShape(QFrame.NoFrame)
-    area.setWidget(grid_w); area.setMaximumHeight(340)
+    area.setWidget(grid_w); area.setFixedHeight(300)
     lay.addWidget(area)
     lay.addWidget(W.eyebrow("Values In Millimetres, Aligned To OSH Park And KiCad Design Rules"))
+
+    # Member nets: which nets fall in each class, colour-coded and editable.
+    lay.addWidget(W.eyebrow("Member Nets By Class"))
+    mem = W.Card(pad=14)
+    net_edits = {}
+    for name in mgr.list_netclasses():
+        nc = mgr.net_classes[name]
+        row = QHBoxLayout(); row.setSpacing(10)
+        lab = QLabel(name); lab.setFont(T.mono_font(10)); lab.setFixedWidth(96)
+        def _col(lab=lab, nc=nc):
+            lab.setStyleSheet(f"color:{nc.color};background:transparent;")
+        W.register_restyle(_col); _col()
+        recolor.setdefault(nc.name, []).append(_col)
+        edit = QLineEdit(", ".join(nc.patterns or []))
+        edit.setPlaceholderText("Net names or patterns, comma separated")
+        edit.setToolTip("The nets assigned to this class. Edit and Sync to write them into the projects.")
+        net_edits[name] = edit
+        row.addWidget(lab); row.addWidget(edit, 1)
+        mem.body.addLayout(row)
+    lay.addWidget(mem)
+
     status = QVBoxLayout(); lay.addLayout(status); lay.addStretch(1)
 
     def apply_edits():
@@ -413,6 +460,8 @@ def _netclass_panel(ctx, state) -> QWidget:
             nc = mgr.net_classes[name]
             for f, sp in spins.items():
                 setattr(nc, f, int(sp.value()) if f == "priority" else float(sp.value()))
+        for name, edit in net_edits.items():
+            mgr.net_classes[name].patterns = [s.strip() for s in edit.text().split(",") if s.strip()]
 
     def validate():
         clear_layout(status); apply_edits()
