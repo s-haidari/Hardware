@@ -138,21 +138,31 @@ class ManagerView(QWidget):
         bar = QHBoxLayout()
         bar.setSpacing(8)
         self.btn_refresh = PrimaryPushButton("Refresh")
+        self.btn_refresh.setToolTip("Rescan the shared library and rebuild the parts table")
         self.btn_refresh.clicked.connect(self.refresh)
         bar.addWidget(self.btn_refresh)
-        for label, slot in [("Import ZIPs", self._process_zips),
-                            ("Clean Leftovers", self._clean),
-                            ("Repair", self._repair),
-                            ("Remove Duplicates", self._dedupe),
-                            ("Register Libraries", self._register),
-                            ("Render Board", self._render_board)]:
+        for label, slot, tip in [
+                ("Import ZIPs", self._process_zips,
+                 "Import component ZIPs (symbol, footprint, and 3D model) into the shared library"),
+                ("Clean Leftovers", self._clean,
+                 "Delete orphaned files left behind by removed or renamed parts"),
+                ("Repair", self._repair,
+                 "Fix broken symbol, footprint, and 3D-model links across the library"),
+                ("Remove Duplicates", self._dedupe,
+                 "Remove duplicate symbols from the symbol library"),
+                ("Register Libraries", self._register,
+                 "Register the symbol and footprint libraries in KiCad's library tables"),
+                ("Render Board", self._render_board,
+                 "Render a .kicad_pcb board to an image using kicad-cli")]:
             b = PushButton(label)
+            b.setToolTip(tip)
             b.clicked.connect(slot)
             bar.addWidget(b)
         bar.addStretch(1)
         self.git_lbl = CaptionLabel("")
         self.git_lbl.setTextColor(ui_theme.tc("FG_DIM"), ui_theme.tc("FG_DIM"))
         self.btn_commit = PushButton("Commit")
+        self.btn_commit.setToolTip("Commit the shared-library changes to git")
         self.btn_commit.clicked.connect(self._commit)
         bar.addWidget(self.git_lbl)
         bar.addWidget(self.btn_commit)
@@ -161,14 +171,18 @@ class ManagerView(QWidget):
         # view controls: grouped toggle + filter
         vc = QHBoxLayout()
         vc.setSpacing(8)
-        vc.addWidget(BodyLabel("Group by Component"))
+        _grp = BodyLabel("Group by Component")
+        vc.addWidget(_grp)
         self.group_sw = SwitchButton()
         self.group_sw.setChecked(True)
+        self.group_sw.setToolTip("Group one part's symbol, footprint, and 3D model into a single row, "
+                                 "or list every library file separately")
         self.group_sw.checkedChanged.connect(lambda *_: self.refresh())
         vc.addWidget(self.group_sw)
         vc.addStretch(1)
         self.search = SearchLineEdit()
         self.search.setPlaceholderText("Filter Parts…")
+        self.search.setToolTip("Filter the table by part name")
         self.search.setFixedWidth(300)
         self.search.textChanged.connect(self._apply_filter)
         vc.addWidget(self.search)
@@ -180,12 +194,40 @@ class ManagerView(QWidget):
         self.table.verticalHeader().hide()
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.setToolTip("Click a part to preview its symbol, footprint, and 3D model below")
+        self.table.itemSelectionChanged.connect(self._on_row)
         root.addWidget(self.table, 1)
+
+        # component preview: symbol, footprint, and 3D model side by side
+        root.addWidget(_section("Preview"))
+        prev = QHBoxLayout()
+        prev.setSpacing(12)
+        self.pv_symbol = LM.PreviewView()
+        self.pv_footprint = LM.PreviewView()
+        self.pv_model = LM.PreviewView()
+        for title, pv, tip in [
+                ("Symbol", self.pv_symbol, "Schematic symbol for the selected part"),
+                ("Footprint", self.pv_footprint, "PCB footprint: pads, courtyard, and silkscreen"),
+                ("3D Model", self.pv_model, "3D model — drag to rotate, scroll to zoom")]:
+            pane = QVBoxLayout()
+            pane.setSpacing(6)
+            cap = CaptionLabel(title)
+            cap.setTextColor(ui_theme.tc("FG_DIM"), ui_theme.tc("FG_DIM"))
+            cf = cap.font(); cf.setPointSizeF(11); cap.setFont(cf)
+            pv.setToolTip(tip)
+            pv.setMinimumHeight(200)
+            pv.show_text("Select a part")
+            pane.addWidget(cap)
+            pane.addWidget(pv, 1)
+            holder = QWidget(); holder.setLayout(pane)
+            prev.addWidget(holder, 1)
+        root.addLayout(prev)
 
         root.addWidget(_section("Log"))
         self.log = PlainTextEdit()
         self.log.setReadOnly(True)
-        self.log.setFixedHeight(120)
+        self.log.setFixedHeight(90)
         root.addWidget(self.log)
 
         self._groups = []
@@ -201,6 +243,7 @@ class ManagerView(QWidget):
 
     def refresh(self):
         grouped = self.group_sw.isChecked()
+        self._sym_blocks = None          # library may have changed; rebuild the block cache lazily
         try:
             if grouped:
                 self._groups = LM.scan_library_grouped(self.cfg)
@@ -216,6 +259,7 @@ class ManagerView(QWidget):
         self.table.setColumnCount(len(cols))
         self.table.setHorizontalHeaderLabels(cols)
         rows = [g for g in self._groups if g.get("footprint") is not None]
+        self._rows_view = rows           # table row index -> group dict (for the preview)
         self.table.setRowCount(len(rows))
         n_fp = n_mdl = n_sym = 0
         for r, g in enumerate(rows):
@@ -239,6 +283,7 @@ class ManagerView(QWidget):
         self._ro["dupes"].setText("0")
 
     def _render_flat(self, rows, summary):
+        self._rows_view = []             # flat view has no grouped part to preview
         cols = ["Name", "Type", "Status"]
         self.table.setColumnCount(len(cols))
         self.table.setHorizontalHeaderLabels(cols)
@@ -258,6 +303,68 @@ class ManagerView(QWidget):
         for r in range(self.table.rowCount()):
             it = self.table.item(r, 0)
             self.table.setRowHidden(r, bool(text) and (it is None or text not in it.text().lower()))
+
+    # -- component preview: symbol · footprint · 3D model --
+    def _sym_block(self, name):
+        """The S-expression text for one symbol, from a lazily-built name -> block cache."""
+        blocks = getattr(self, "_sym_blocks", None)
+        if blocks is None:
+            blocks = {}
+            try:
+                txt = Path(self.cfg["SymbolLib"]).read_text(encoding="utf-8", errors="replace")
+                for b in LM.extract_symbol_blocks(txt):
+                    blocks[LM.extract_symbol_name(b)] = b
+            except Exception:                  # noqa: BLE001
+                pass
+            self._sym_blocks = blocks
+        return blocks.get(name)
+
+    def _on_row(self):
+        """Render the selected part's symbol, footprint, and 3D model into the panes."""
+        import fp_render
+        r = self.table.currentRow()
+        rows = getattr(self, "_rows_view", [])
+        if r < 0 or r >= len(rows):
+            for pv in (self.pv_symbol, self.pv_footprint, self.pv_model):
+                pv.show_text("Select a part")
+            return
+        g = rows[r]
+        # symbol
+        syms = g.get("symbols") or []
+        block = self._sym_block(syms[0]) if syms else None
+        img = fp_render.render_symbol_image(block) if block else None
+        (self.pv_symbol.show_image(img) if img is not None
+         else self.pv_symbol.show_text("No symbol"))
+        # footprint
+        fp = Path(self.cfg["FootprintLib"]) / f"{g.get('footprint', '')}.kicad_mod"
+        img = fp_render.render_footprint_image(fp) if fp.exists() else None
+        (self.pv_footprint.show_image(img) if img is not None
+         else self.pv_footprint.show_text("No footprint"))
+        # 3D model (loaded off the GUI thread)
+        model = g.get("model")
+        if model:
+            self._load_3d(Path(self.cfg["ModelLib"]) / model)
+        else:
+            self.pv_model.show_text("No 3D model")
+
+    def _load_3d(self, path):
+        import fp_render
+        self.pv_model.show_text("Loading 3D…")
+        self._model_token = tok = object()     # supersede an in-flight load if the row changes
+        holder = {}
+
+        def job():
+            holder["mesh"] = fp_render.load_step_mesh(path)
+
+        def done(_ok):
+            if getattr(self, "_model_token", None) is not tok:
+                return
+            v, f = holder.get("mesh", (None, None))
+            if v is not None and f is not None:
+                self.pv_model.show_mesh(v, f)
+            else:
+                self.pv_model.show_text("3D not available")
+        self.services.run_async(job, done_cb=done)
 
     def _refresh_git(self):
         try:
