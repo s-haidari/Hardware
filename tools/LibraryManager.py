@@ -685,11 +685,11 @@ def library_sourcing_report(cfg: Dict[str, str], lookup, throttle: float = 0.0) 
               "obsolete_nrnd": sum(1 for r in rows if r.get("obsolete")),
               "out_of_stock": sum(1 for r in rows if r["found"] and not r.get("in_stock"))}
 
+    manual = counts["not_found"] + counts["not_on_mouser"]
     L = ["# Library Sourcing", "",
-         f"**{counts['found']} / {counts['parts']} parts found** "
-         f"({counts['on_mouser']} on Mouser, {counts['not_on_mouser']} via a fallback, "
-         f"{counts['not_found']} not found) — {counts['obsolete_nrnd']} obsolete/NRND, "
-         f"{counts['out_of_stock']} out of stock.", ""]
+         f"**{counts['on_mouser']} / {counts['parts']} on Mouser** — "
+         f"{counts['obsolete_nrnd']} obsolete/NRND, {counts['out_of_stock']} out of stock, "
+         f"{manual} to source manually.", ""]
     flags = [r for r in rows if r.get("obsolete") or (r["found"] and not r.get("in_stock"))]
     if flags:
         L += ["## Needs attention", ""]
@@ -708,7 +708,7 @@ def library_sourcing_report(cfg: Dict[str, str], lookup, throttle: float = 0.0) 
         L += [f"- {r['symbol']} ({r['mpn']}) — via {r['source']}" for r in elsewhere] + [""]
     nf = [r for r in rows if not r["found"]]
     if nf:
-        L += ["## Not found on any provider", ""]
+        L += ["## To source manually (not on Mouser)", ""]
         L += [f"- {r['symbol']} ({r['mpn']})" for r in nf] + [""]
     return {"rows": rows, "counts": counts, "markdown": "\n".join(L) + "\n"}
 
@@ -1242,8 +1242,9 @@ def mouser_lookup_from_config(cfg: Dict[str, str] = None):
 def make_provider_chain(providers):
     """providers: [(name, lookup_fn)] in PREFERENCE order (Mouser first). Returns a
     lookup(mpn) that tries each provider in order and returns the FIRST hit tagged with
-    'source'=<name>, else None. So a part Mouser lacks but a fallback carries comes back
-    with source != 'Mouser' — the exact signal used to flag it."""
+    'source'=<name>, else None. Extensible: register any verified distributor adapter as
+    a (name, lookup_fn). A part no provider carries comes back None — the signal to
+    source it MANUALLY. A throwing/dead provider is skipped, not fatal."""
     def chain(mpn):
         for name, fn in providers:
             try:
@@ -1256,75 +1257,16 @@ def make_provider_chain(providers):
     return chain
 
 
-def make_digikey_lookup(client_id: str, client_secret: str, timeout: int = 8):
-    """A lookup(mpn) backed by the DigiKey Product Information API (OAuth2 client
-    credentials) — a FALLBACK for parts Mouser does not carry. Requires a DigiKey client
-    id + secret in config. Returns None on any failure and never raises. Best-effort:
-    verify the response mapping against your DigiKey API tier; a mismatch just yields no
-    fallback (Mouser still works)."""
-    import json as _json
-    import urllib.request
-    import urllib.parse
-    token = {"v": None}
-
-    def _auth():
-        try:
-            body = urllib.parse.urlencode(
-                {"grant_type": "client_credentials", "client_id": client_id,
-                 "client_secret": client_secret}).encode()
-            req = urllib.request.Request(
-                "https://api.digikey.com/v1/oauth2/token", data=body,
-                headers={"Content-Type": "application/x-www-form-urlencoded"})
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                token["v"] = _json.loads(r.read().decode()).get("access_token")
-        except Exception:                            # noqa: BLE001
-            token["v"] = None
-        return token["v"]
-
-    def lookup(mpn):
-        if not (client_id and client_secret and mpn):
-            return None
-        tok = token["v"] or _auth()
-        if not tok:
-            return None
-        try:
-            req = urllib.request.Request(
-                "https://api.digikey.com/products/v4/search/"
-                f"{urllib.parse.quote(str(mpn), safe='')}/productdetails",
-                headers={"Authorization": f"Bearer {tok}", "X-DIGIKEY-Client-Id": client_id,
-                         "accept": "application/json"})
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                p = (_json.loads(r.read().decode()) or {}).get("Product") or {}
-            if not p:
-                return None
-            return {"mpn": p.get("ManufacturerProductNumber"),
-                    "manufacturer": (p.get("Manufacturer") or {}).get("Name"),
-                    "datasheet": p.get("DatasheetUrl"),
-                    "description": (p.get("Description") or {}).get("ProductDescription"),
-                    "lifecycle": (p.get("ProductStatus") or {}).get("Status") or "Active",
-                    "stock": p.get("QuantityAvailable") or 0,
-                    "unit_price": p.get("UnitPrice"),
-                    "url": p.get("ProductUrl")}
-        except Exception:                            # noqa: BLE001
-            return None
-    return lookup
-
-
 def providers_from_config(cfg: Dict[str, str] = None):
-    """The distributor lookup chain built from configured keys, Mouser PREFERRED first,
-    then DigiKey as a fallback. Returns a single lookup(mpn) (source-tagged) or None if
-    no provider is configured."""
+    """The distributor lookup chain from configured keys. Mouser is the automatic,
+    PREFERRED provider; anything Mouser does not carry is left for MANUAL sourcing
+    (DigiKey / LCSC / etc.) and is flagged as such in the sourcing report + BOM. Returns
+    a source-tagged lookup(mpn), or None if no key is configured. Add more providers by
+    registering a verified adapter with make_provider_chain."""
     import os
     cfg = cfg or {}
-    providers = []
     mk = cfg.get("MouserApiKey") or os.environ.get("MOUSER_API_KEY")
-    if mk:
-        providers.append(("Mouser", make_mouser_lookup(mk)))
-    did = cfg.get("DigiKeyClientId") or os.environ.get("DIGIKEY_CLIENT_ID")
-    dsec = cfg.get("DigiKeyClientSecret") or os.environ.get("DIGIKEY_CLIENT_SECRET")
-    if did and dsec:
-        providers.append(("DigiKey", make_digikey_lookup(did, dsec)))
-    return make_provider_chain(providers) if providers else None
+    return make_provider_chain([("Mouser", make_mouser_lookup(mk))]) if mk else None
 
 
 def consolidated_bom(boards: Dict[str, list], lookup=None) -> dict:
