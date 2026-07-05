@@ -139,7 +139,9 @@ def parse_mcu_xml(path: Path) -> McuData:
 #   rev 2 (2026-07-05): VREF-/VREFSD- negative references ground to GND.
 #   rev 3 (2026-07-05): VCAP_DSI (DSI-PHY regulator on F469/F479) split onto its
 #     own node, never shared with the core VCAP_1/VCAP_2 regulator output.
-CLASSIFIER_REV = 3
+#   rev 4 (2026-07-05): VDD12DSI (1.2V DSI-PHY digital supply) routed to the DSI
+#     1.2V node, never the 3.3V VTARGET rail (would overvoltage a 1.2V pin).
+CLASSIFIER_REV = 4
 
 _PORT = re.compile(r"^P([A-Z])(\d{1,2})")
 
@@ -192,7 +194,12 @@ def roles(pin: Pin) -> list:
     out: list = []
 
     if ec == "power":
-        if name.startswith("VBAT"):
+        if "DSI" in name and "12" in name:
+            # VDD12DSI is the 1.2V DSI-PHY digital supply — the same 1.2V domain as
+            # VCAP_DSI, NOT the 3.3V VTARGET rail. Routing it as a generic VDD would
+            # tie a 1.2V pin to 3.3V (overvoltage on F469/F479). (Audit A4 review.)
+            out.append(("vcap_dsi", "local_card"))
+        elif name.startswith("VBAT"):
             out.append(("power_vbat", "power"))
         elif name.startswith("VDDA"):
             out.append(("power_vdda", "power"))

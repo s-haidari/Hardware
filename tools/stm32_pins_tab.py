@@ -2341,22 +2341,26 @@ class Stm32PinsWidget(QWidget):
                     f"{drift}\n\nFix the build cards or the claims files, then save again.")
                 self.status.setText("Vault save aborted: drift gate failed (nothing written).")
                 return
-            # Fabric DRC + socket-symbol validation on every package being written:
-            # structural rules that hold with or without a claims file. A violation
-            # aborts before any write.
+            # Fabric DRC + socket-symbol validation, PER PACKAGE (audit A2/A6 review):
+            # a package that fails (e.g. a selected QFN with no mapped footprint) is
+            # skipped and reported — it must not block the canonical packages that pass.
+            good_pkgs, skipped = [], []
             for pkg in pkgs:
                 a = sauth.build(conn, pkg)
                 bad = [f for f in sauth.fabric_drc(a) if not f["ok"]]
                 bad += [f for f in sauth.validate_socket_symbol(a) if not f["ok"]]
                 if bad:
-                    detail = "\n".join(f"{f['rule']}: {f['detail']}" for f in bad)
-                    QMessageBox.warning(
-                        self, "Generate → Vault",
-                        f"DRC / symbol validation FAILED for {pkg} — nothing was written:"
-                        f"\n\n{detail}")
-                    self.status.setText(
-                        f"Vault save aborted: {pkg} failed validation (nothing written).")
-                    return
+                    skipped.append((pkg, "; ".join(f"{f['rule']}: {f['detail']}" for f in bad)))
+                else:
+                    good_pkgs.append(pkg)
+            if not good_pkgs:
+                detail = "\n".join(f"{p}: {why}" for p, why in skipped)
+                QMessageBox.warning(
+                    self, "Generate → Vault",
+                    f"All selected packages failed validation — nothing was written:\n\n{detail}")
+                self.status.setText("Vault save aborted: all packages failed validation.")
+                return
+            pkgs = good_pkgs
             # remember the previous authorities so the save can say WHAT changed
             olds = {}
             for v in vdirs:
@@ -2410,7 +2414,9 @@ class Stm32PinsWidget(QWidget):
         n = sum(len(w["files"]) for w in written)
         dests = " and ".join(str(v) for v in vdirs)
         what = "no content changes" if not changed else "changed: " + ", ".join(changed)
-        msg = (f"Wrote {n} pin-data files to {dests} ({what}). "
+        skip_note = (" Skipped (failed validation): "
+                     + ", ".join(p for p, _ in skipped) + ".") if skipped else ""
+        msg = (f"Wrote {n} pin-data files to {dests} ({what}).{skip_note} "
                + ("Drift gate: all claims match." if lint_ok else "DRIFT DETECTED — see warning."))
         self.status.setText(msg)
         if self.ctx:

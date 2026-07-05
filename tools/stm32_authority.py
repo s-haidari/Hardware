@@ -113,6 +113,27 @@ F4_SUBLINE_SUPPLY_MA: dict = {   # device I_VDD/I_VSS total (mA); ΣI_IO = 120 f
 # Sources: DS10086 R5 (F401), DS10314 R8 (F411), DS9405 R13 (F429),
 # DS10693/DocID027107 R6 (F446), DS11189 R8 (F469), DocID022152 R5 (F405/407).
 
+
+def _subline_candidates(key: str) -> list:
+    """'STM32F405/407' -> ['STM32F405', 'STM32F407']; 'STM32F401' -> ['STM32F401']."""
+    segs = key.split("/")
+    base = segs[0]
+    prefix = base[:-len(base.split("F")[-1])]        # 'STM32F'
+    return [base] + [prefix + s for s in segs[1:]]
+
+
+def _part_draw_ma(family: str, part_number: str) -> int:
+    """Best-available device supply/return draw (mA) for one exact part: the F4
+    sub-line total where known, else the family's stated supply/I_IO ceiling."""
+    pn = (part_number or "").upper()
+    if family == "STM32F4":
+        for sub, ma in F4_SUBLINE_SUPPLY_MA.items():
+            if any(pn.startswith(c) for c in _subline_candidates(sub)):
+                return ma
+        return 240                                    # F4 lines without a stated total
+    spec = FAMILY_ELECTRICAL.get(family, {})
+    return spec.get("sup_ma") or spec.get("total_io_ma") or 150
+
 # Per-family POWER / decoupling design data, from the official ST datasheets
 # (fetched 2026-07-02, saved to the vault Sources/Datasheets/, cited). Drives the
 # NETDECK plug-in-card passive BOM (card_materials in the authority rollup).
@@ -170,10 +191,24 @@ _GPIO_NAME = re.compile(r"^P[A-Z]\d+$")
 # BOOT1 strap (audit A5): entering the system ROM bootloader needs BOOT0=1 AND
 # BOOT1=0. Where BOOT1 is a real PIN it is the alternate function of PB2 — but
 # CubeMX exposes PB2 as a bare GPIO, so this must come from a silicon table, not
-# the XML. Only families where BOOT1 is a physical pin are listed; F0/F3/F7 use an
-# nBOOT1 OPTION BIT (no pin strap) and are deliberately absent.
-# Sources: RM0008 (F1) §3.4, RM0033 (F2) §2.4, RM0090 (F4) §2.4 — BOOT1 = PB2.
-BOOT1_PIN = {"STM32F1": "PB2", "STM32F2": "PB2", "STM32F4": "PB2"}
+# the XML. Whether BOOT1 is a pin depends on the PRODUCT LINE, not just the family:
+# on STM32F4, the RM0090 lines (F405/407/415/417/427/437/429/439/469/479) have a
+# physical BOOT1 pin, but the RM0368/0383/0390-class lines (F401/410/411/412/413/
+# 423/446) select boot mode via the nBOOT1 OPTION BIT and PB2 is plain GPIO. F1/F2
+# have a physical BOOT1 pin across the family; F0/F3/F7 use the option bit.
+# Sources: RM0008 (F1) §3.4, RM0033 (F2) §2.4, RM0090 (F4) §2.4.
+BOOT1_PIN = "PB2"
+_BOOT1_F4_LINES = {"STM32F405/415", "STM32F407/417", "STM32F427/437",
+                   "STM32F429/439", "STM32F469/479"}
+
+
+def _has_boot1_pin(family: str, line: str) -> bool:
+    """True where BOOT1 is a physical pin (PB2), by product line."""
+    if family in ("STM32F1", "STM32F2"):
+        return True
+    if family == "STM32F4":
+        return line in _BOOT1_F4_LINES
+    return False        # F0/F3/F7 and the option-bit F4 lines: no pin strap
 
 _DEBUG_ROLE = {"swclk": "SWCLK", "swdio": "SWDIO", "swo": "SWO", "jtag_extra": "JTAG"}
 _ANALOG_SUPPLY = {"power_vdda", "power_vref"}
@@ -272,6 +307,17 @@ def _electrical(conn: sqlite3.Connection, package: str) -> dict:
         vals = [FAMILY_POWER[f][key] for f in pfams if FAMILY_POWER[f].get(key)]
         return [min(v[0] for v in vals), max(v[1] for v in vals)] if vals else None
 
+    # F4 sub-line supply totals PRESENT in this package only (audit A1 review): the
+    # old code injected every sub-line (incl. F469's 290 mA) whenever any F4 part was
+    # present, so LQFP64 falsely cited an F469 it does not contain.
+    f4_sub = {}
+    if "STM32F4" in known:
+        pns = [r[0].upper() for r in conn.execute(
+            "SELECT part_number FROM mcu WHERE package_name = ?", (package,))]
+        for sub, ma in F4_SUBLINE_SUPPLY_MA.items():
+            if any(pn.startswith(c) for pn in pns for c in _subline_candidates(sub)):
+                f4_sub[sub] = ma
+
     return {
         "vdd_range_v": [min(vmins), max(vmaxs)] if vmins and vmaxs else None,  # CubeMX per-part
         "vdda_range_v": widest("vdda_v"),
@@ -284,7 +330,7 @@ def _electrical(conn: sqlite3.Connection, package: str) -> dict:
         "supply_total_ma": {f: FAMILY_ELECTRICAL[f]["sup_ma"] for f in known},
         "vcap_required": any(FAMILY_POWER[f]["vcap"] for f in pfams) if pfams else None,
         "ft_5v_tolerant": all(s["ft_5v"] for s in specs) if specs else None,
-        "f4_subline_supply_ma": dict(F4_SUBLINE_SUPPLY_MA) if "STM32F4" in known else {},
+        "f4_subline_supply_ma": f4_sub,
         "by_family": {f: {k: FAMILY_ELECTRICAL[f][k]
                           for k in ("io_ma", "total_io_ma", "metric", "sup_ma", "inj_ma",
                                     "vdd_v", "vdda_v", "ft_5v", "ds")}
@@ -518,9 +564,11 @@ def _extraction_access(positions: list) -> dict:
             "boot0": {"net": "SERVICE_BOOT0", "level_for_bootloader": "high",
                       "positions": boot0_pos},
             "boot1": {"pin": "PB2", "level_for_bootloader": "low", "positions": boot1_pos,
-                      "note": ("F1/F2/F4: hold PB2 low (via its CARD_LANE) for ROM-bootloader "
-                               "entry; F0/F3/F7 use the nBOOT1 option bit, no pin strap"
-                               if boot1_pos else "no PB2 boot-strap position in this package")},
+                      "note": ("Hold PB2 low (via its CARD_LANE) for ROM-bootloader entry on "
+                               "lines with a physical BOOT1 pin (F1, F2, and F4 "
+                               "F405/407/427/429/469-series); the option-bit lines "
+                               "(F0, F3, F7, F4 F401/410/411/412/413/446) ignore PB2"
+                               if boot1_pos else "no physical-BOOT1-pin position in this package")},
         },
         "service_breakout_count": sum(1 for p in positions if p["breakout"]["service_nets"]),
         "debug_positions": sorted(p["position"] for p in positions if p["tags"]["is_debug"]),
@@ -557,7 +605,7 @@ def card_materials(authority: dict) -> dict:
     # VCAP_DSI is a SEPARATE regulator output (F469/F479) on its own node — its own
     # cap, never shared with the core VCAP cap. (Audit A4.)
     has_dsi = any(
-        (c.get("destination") == "VCAP_DSI_NODE" for c in (p["assignment"].get("channels") or []))
+        any(c.get("destination") == "VCAP_DSI_NODE" for c in (p["assignment"].get("channels") or []))
         or p["assignment"].get("net") == "VCAP_DSI_NODE"
         or p["assignment"].get("destination") == "VCAP_DSI_NODE"
         for p in authority["positions"])
@@ -751,7 +799,58 @@ def fabric_drc_ok(findings) -> bool:
 # must check against their MCU's datasheet; it is labelled as such in the output.
 ADG714_CHANNEL_MA = 30
 
-def current_budget(authority: dict, assumed_target_draw_ma: int = None) -> dict:
+def _supply_delivery(conn, package: str, positions: list) -> dict:
+    """Per-part realized capacity for the main supply (VTARGET=VDD) and return
+    (GND=VSS). The ADG714 fabric is ONE-HOT: a socketed part closes only its own
+    VDD/VSS channels, so a rail that looks healthy on the union of all parts can
+    still starve a single part. For each part with NO direct pin on the rail, the
+    realized capacity is (that part's pins routed to the rail) x 30 mA; a part is
+    failing when that is below its own device draw. Returns
+    {rail: {worst_part, worst_pins, worst_capacity_ma, worst_part_draw_ma,
+    failing_parts}} for rails with at least one failing part. (Audit A1 review.)"""
+    rail_id = {"VTARGET": db.ID_VDD, "GND": db.ID_VSS}
+    direct_pos = {r: set() for r in rail_id}
+    switch_pos = {r: set() for r in rail_id}
+    for p in positions:
+        chans = p["assignment"].get("channels") or []
+        if chans:
+            for c in chans:
+                if c["destination"] in switch_pos:
+                    switch_pos[c["destination"]].add(p["position"])
+        else:
+            net = p["assignment"].get("net") or p["assignment"].get("destination")
+            if net in direct_pos:
+                direct_pos[net].add(p["position"])
+    ppi = defaultdict(set)                            # (mcu_id, position) -> identities
+    for mid, pos, rn, rc in conn.execute(
+        "SELECT p.mcu_id, p.physical_pin_number, pr.role_name, pr.role_class "
+        "FROM mcu_package_pin p JOIN pin_role pr ON pr.mcu_package_pin_id = p.id "
+        "JOIN mcu m ON m.id = p.mcu_id WHERE m.package_name = ?", (package,)):
+        ppi[(mid, int(pos))].add(db.switch_identity(rn, rc))
+    part_rows = conn.execute(
+        "SELECT id, part_number, family FROM mcu WHERE package_name = ?", (package,)).fetchall()
+    out = {}
+    for rail, rid in rail_id.items():
+        failing = []
+        for mid, pn, fam in part_rows:
+            if any(rid in ppi.get((mid, pos), ()) for pos in direct_pos[rail]):
+                continue                              # part has a direct copper pin — fine
+            sw = sum(1 for pos in switch_pos[rail] if rid in ppi.get((mid, pos), ()))
+            if sw == 0:
+                continue                              # part does not use this rail here
+            cap = sw * ADG714_CHANNEL_MA
+            draw = _part_draw_ma(fam, pn)
+            if cap < draw:
+                failing.append((pn, sw, cap, draw))
+        if failing:
+            w = min(failing, key=lambda t: t[2])
+            out[rail] = {"worst_part": w[0], "worst_pins": w[1], "worst_capacity_ma": w[2],
+                         "worst_part_draw_ma": w[3], "failing_parts": len(failing)}
+    return out
+
+
+def current_budget(authority: dict, assumed_target_draw_ma: int = None,
+                   per_part: dict = None) -> dict:
     """Per-rail power-delivery picture, honest about BOTH paths to the target: the
     DIRECT socket pins (short copper, fed from the parent through the rail's 2 A
     connector contacts) and the thin ADG714 switch channels (~30 mA each).
@@ -804,19 +903,20 @@ def current_budget(authority: dict, assumed_target_draw_ma: int = None) -> dict:
         }
 
     findings = []
-    # The real hazard: the MAIN supply (VTARGET=VDD) or return (GND) reaches the
-    # target ONLY through thin switch channels (no direct pin). Only these two carry
-    # the full device supply — the analog/backup rails (VDDA/VREF/VBAT) draw far less
-    # and a single channel suffices, so they are reported but never gated against the
-    # device draw. Rails WITH a direct pin are copper-fed and never flagged.
+    # The real hazard, computed PER PART (audit A1 review): the fabric is one-hot, so
+    # a socketed part closes only its own VDD/VSS channels. A VTARGET/GND rail can
+    # look healthy on the union of all parts yet starve a single part whose few VDD/
+    # VSS pins each carry the full supply/return through one ~30 mA channel. The
+    # analog/backup rails (VDDA/VREF/VBAT) draw far less and are reported, not gated.
     for rail in ("VTARGET", "GND"):
-        r = rails.get(rail)
-        if r and r["direct_pins"] == 0 and r["switch_channels"] > 0 \
-                and r["switched_capacity_ma"] < draw_ref:
+        pp = (per_part or {}).get(rail)
+        if pp:
             findings.append(
-                f"{rail}: reaches the target ONLY through {r['switch_channels']} ADG714 "
-                f"channel(s) = {r['switched_capacity_ma']} mA, below the ~{draw_ref} mA "
-                f"device draw; add a direct pin or parallel more channels.")
+                f"{rail}: with no direct pin, the socketed part closes only its own "
+                f"{pp['worst_pins']} channel(s) = {pp['worst_capacity_ma']} mA (worst part "
+                f"{pp['worst_part']}, draw ~{pp['worst_part_draw_ma']} mA; "
+                f"{pp['failing_parts']} part(s) under). Add a direct {rail} pin or parallel "
+                f"more channels per socketed part.")
     # Connector feed sanity for the main supply (won't fire on a healthy 2-contact
     # VTARGET; catches a rail with too few contacts for the draw).
     rv = rails.get("VTARGET")
@@ -834,6 +934,7 @@ def current_budget(authority: dict, assumed_target_draw_ma: int = None) -> dict:
                                   else "datasheet worst-family supply total" if worst_draw
                                   else "fallback assumption (no per-family data)"),
         "per_family_supply_ma": draws,
+        "per_part_supply_delivery": per_part or {},
         "rails": rails,
         "findings": findings,
         "note": ("Direct socket pins deliver through the rail's 2 A connector contacts "
@@ -1419,6 +1520,16 @@ def build(conn: sqlite3.Connection, package: str) -> dict:
         "WHERE m.package_name = ? GROUP BY p.physical_pin_number, pr.role_name", (package,)):
         roles_at[int(pin)].add(str(rn))
 
+    # BOOT1 (PB2) strap positions, gated by product line (audit A5 review): only
+    # lines with a PHYSICAL BOOT1 pin count — the option-bit lines are excluded.
+    boot1_positions = set()
+    for pos, fam, line in conn.execute(
+        "SELECT DISTINCT p.physical_pin_number, m.family, m.line FROM mcu_package_pin p "
+        "JOIN mcu m ON m.id = p.mcu_id WHERE m.package_name = ? AND p.canonical_pin_name = 'PB2'",
+        (package,)):
+        if _has_boot1_pin(fam, line):
+            boot1_positions.add(int(pos))
+
     positions = []
     for d in sorted(rep.decisions, key=lambda d: d.pin):
         pin_names = dict(sorted(names.get(d.pin, {}).items(), key=lambda kv: (-kv[1], kv[0])))
@@ -1478,9 +1589,8 @@ def build(conn: sqlite3.Connection, package: str) -> dict:
         tags["is_usb"] = "USB" in text
         five_v = _five_v(fam_names.get(d.pin, set()), periph.get(d.pin, []))
         tags["is_5v_tolerant"] = five_v["tolerant"] if five_v else None
-        # BOOT1 strap: this position is PB2 on a family where BOOT1 is a real pin.
-        tags["is_boot1"] = any(nm == "PB2" and BOOT1_PIN.get(fam) == "PB2"
-                               for (fam, nm) in fam_names.get(d.pin, set()))
+        # BOOT1 strap: PB2 on a product line where BOOT1 is a physical pin.
+        tags["is_boot1"] = d.pin in boot1_positions
 
         positions.append({
             "position": d.pin,
@@ -1571,7 +1681,8 @@ def build(conn: sqlite3.Connection, package: str) -> dict:
         "positions": positions,
     }
     data["card_materials"] = card_materials(data)
-    data["card_materials"]["current_budget"] = current_budget(data)
+    data["card_materials"]["current_budget"] = current_budget(
+        data, per_part=_supply_delivery(conn, package, positions))
     return data
 
 
@@ -1858,7 +1969,7 @@ def load_claims(path) -> dict:
         if val:
             if val.startswith("[") and val.endswith("]"):
                 inner = val[1:-1].strip()
-                items = [x.strip() for x in inner.split(",")] if inner else []
+                items = [x.strip() for x in inner.split(",") if x.strip()] if inner else []
                 out = []
                 for x in items:
                     try:
@@ -1928,42 +2039,47 @@ def main(argv=None) -> int:
     try:
         packages = [p.strip() for p in args.packages.split(",") if p.strip()]
 
-        # GATE BEFORE WRITE: run every structural + drift check first, and write
-        # nothing if any fails. Previously the exports were written and only THEN
-        # linted, so the CI / vault-sync path could land a drifting or malformed
-        # authority the GUI would have refused. (Fixes audit A2.)
-        drc_ok = True
-        for pkg in packages:
-            a = build(conn, pkg)
-            bad = [f for f in fabric_drc(a) if not f["ok"]]
-            for f in bad:
-                print(f"FABRIC DRC FAIL [{pkg}] {f['rule']}: {f['detail']}")
-            sym_bad = [f for f in validate_socket_symbol(a) if not f["ok"]]
-            for f in sym_bad:
-                print(f"SYMBOL VALIDATION FAIL [{pkg}] {f['rule']}: {f['detail']}")
-            drc_ok = drc_ok and not bad and not sym_bad
+        # GATE BEFORE WRITE, PER PACKAGE (audit A2/A6 + review): every structural +
+        # drift check runs first and nothing is written that fails — but the gate is
+        # per package, so an unmapped/failing package (e.g. a QFN with no footprint)
+        # can no longer block the packages that DO pass. The run still exits nonzero
+        # if any package failed.
+        drifted = set()
         lint_ok, lint_lines = (True, [])
         if args.lint:
             lint_ok, lint_lines = run_lint(conn, args.lint)
             print("\n".join(lint_lines))
-        if not drc_ok:
-            print("FABRIC DRC FAILED — nothing written.")
-            return 1
-        if not lint_ok:
-            print("DRIFT DETECTED — a build card disagrees with the authority; nothing written.")
-            return 1
+            for ln in lint_lines:
+                parts = ln.split()
+                if len(parts) > 1 and parts[1] == "DRIFT":
+                    drifted.add(parts[0])
+
+        good, any_fail = [], not lint_ok
+        for pkg in packages:
+            a = build(conn, pkg)
+            bad = [f for f in fabric_drc(a) if not f["ok"]]
+            sym_bad = [f for f in validate_socket_symbol(a) if not f["ok"]]
+            for f in bad:
+                print(f"FABRIC DRC FAIL [{pkg}] {f['rule']}: {f['detail']}")
+            for f in sym_bad:
+                print(f"SYMBOL VALIDATION FAIL [{pkg}] {f['rule']}: {f['detail']}")
+            if bad or sym_bad or pkg in drifted:
+                any_fail = True
+                print(f"[{pkg}] failed validation — skipped, not written.")
+            else:
+                good.append(pkg)
 
         if not args.lint_only:
             outs = [Path(o) for o in (args.out or ["."])]
             for out in outs:
-                for pkg in packages:
+                for pkg in good:
                     summary = write_authority(conn, pkg, out)
                     r = summary["rollup"]
                     print(f"{pkg} -> {out}  ({len(summary['files'])} files; "
                           f"{r['channel_count']} channels, cells {r['cells_min']}/{r['cells_as_built']})")
-        if args.lint:
+        if args.lint and lint_ok:
             print("Drift gate: all claims match the authority.")
-        return 0
+        return 1 if any_fail else 0
     finally:
         conn.close()
 

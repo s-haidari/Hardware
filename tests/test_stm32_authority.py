@@ -178,9 +178,12 @@ class AuthorityTests(unittest.TestCase):
         self.assertFalse(e["power"]["STM32F0"]["vcap"])
         self.assertEqual(e["vbat_range_v"], [1.65, 3.6])
         self.assertIsNotNone(e["vref_range_v"])
-        # F4 sub-line supply totals (F401/F411 verified, retires the ~150 guess)
+        # F4 sub-line supply totals, filtered to sub-lines PRESENT in the package
+        # (audit A1 review): LQFP64 carries F401 but not the F469 it never contains.
         self.assertEqual(e["f4_subline_supply_ma"]["STM32F401"], 160)
-        self.assertEqual(e["f4_subline_supply_ma"]["STM32F469"], 290)
+        self.assertNotIn("STM32F469", e["f4_subline_supply_ma"])   # no F469 in LQFP64
+        e100 = auth.build(self.conn, "LQFP100")["electrical"]
+        self.assertEqual(e100["f4_subline_supply_ma"]["STM32F469"], 290)   # F469 is in LQFP100
         # exhaustive AN2606 bootloader: F7 has both CAN buses; F3 I2C3; F4 SPI
         self.assertEqual(auth.BOOTLOADER_PINS["STM32F7"]["CAN"], {"PB5", "PB13", "PD0", "PD1"})
         self.assertIn("PB5", auth.BOOTLOADER_PINS["STM32F3"]["I2C"])   # I2C3 PA8/PB5
@@ -310,8 +313,9 @@ class AuthorityTests(unittest.TestCase):
         """The DB-derived LQFP100 channel map reproduces Card 7C's as-built rail
         multiset count-for-count — the 'derived, never hand-authored' goal. Spec
         updates: rev 2 (2026-07-05) VREF-/VREFSD- ground to GND (VREF_TGT 6->5,
-        GND 12->13); rev 3 (2026-07-05) VCAP_DSI splits onto its own node, so pin 56
-        moves VCAP_NODE -> VCAP_DSI_NODE (VCAP_NODE 6->5, VCAP_DSI_NODE new 1)."""
+        GND 12->13); rev 3 VCAP_DSI splits onto its own node (pin 56, VCAP_NODE 6->5);
+        rev 4 VDD12DSI (pin 62, a 1.2V DSI supply) routes to VCAP_DSI_NODE not the 3.3V
+        VTARGET rail (VTARGET 15->14, VCAP_DSI_NODE 1->2)."""
         from collections import Counter
         a = auth.build(self.conn, "LQFP100")
         rails = Counter()
@@ -319,7 +323,7 @@ class AuthorityTests(unittest.TestCase):
             for ch in p["assignment"].get("channels", []):
                 rails[ch["destination"]] += 1
         self.assertEqual(dict(rails), {
-            "VTARGET": 15, "GND": 13, "VREF_TGT": 5, "VCAP_NODE": 5, "VCAP_DSI_NODE": 1,
+            "VTARGET": 14, "GND": 13, "VREF_TGT": 5, "VCAP_NODE": 5, "VCAP_DSI_NODE": 2,
             "SERVICE_OSC_IN": 4, "SERVICE_OSC_OUT": 4, "VSSA_TGT": 3,
             "VDDA_TGT": 3, "VBAT_TGT": 2, "SERVICE_NRST": 2, "SERVICE_BOOT0": 2})
         # LQFP64 stays the Card 7B single-branch map, byte-stable: 30/31/47 on the
@@ -651,17 +655,22 @@ class FabricLogicTests(unittest.TestCase):
         self.assertGreaterEqual(cb["rails"]["VTARGET"]["direct_pins"], 1)
         self.assertFalse([f for f in cb["findings"] if f.startswith("VTARGET")])
 
-    def test_current_budget_flags_switch_only_supply(self):
-        """If VTARGET reaches the target ONLY through thin switch channels below the
-        device draw, current_budget flags it — the real hazard the old check missed."""
-        a = auth.build(self.conn, "LQFP64")
-        # synthesise a card where VTARGET is delivered by a single 30 mA channel only
-        for p in a["positions"]:
-            net = p["assignment"].get("destination") or p["assignment"].get("net")
-            if p["assignment"].get("kind") == "direct" and net == "VTARGET":
-                p["assignment"] = {"kind": "direct", "net": "CARD_LANE"}   # drop the direct feed
-        cb = auth.current_budget(a)
-        self.assertTrue([f for f in cb["findings"] if f.startswith("VTARGET")], cb["findings"])
+    def test_current_budget_flags_per_part_ground_overcurrent(self):
+        """The real per-part hazard the union count missed (audit A1 review): LQFP100
+        GND has NO direct pin, so a socketed part grounds only its own 3-6 VSS pins
+        through ~30 mA channels — under its own return draw. Must be flagged; LQFP64
+        (GND has a direct pin) must NOT be."""
+        cb100 = auth.build(self.conn, "LQFP100")["card_materials"]["current_budget"]
+        gnd = [f for f in cb100["findings"] if f.startswith("GND")]
+        self.assertTrue(gnd, cb100["findings"])
+        pp = cb100["per_part_supply_delivery"]["GND"]
+        self.assertLess(pp["worst_capacity_ma"], pp["worst_part_draw_ma"])
+        self.assertGreater(pp["failing_parts"], 0)
+        # LQFP64 GND is copper-fed (has a direct pin) -> no false brownout
+        cb64 = auth.build(self.conn, "LQFP64")["card_materials"]["current_budget"]
+        self.assertEqual(cb64["findings"], [])
+        # and it no longer cites an F469 draw it does not contain
+        self.assertNotEqual(cb64["draw_reference_ma"], 290)
 
     def test_leaded_packages_build_and_pass_drc(self):
         """The unlock sweep: every leaded/QFN package in the DB builds a fabric
@@ -773,6 +782,45 @@ class FabricLogicTests(unittest.TestCase):
                             "--packages", "LQFP64", "--lint", str(claims)])
             self.assertEqual(rc, 1)
             self.assertEqual(list(out.iterdir()), [], "files were written despite drift")
+
+    def test_no_spurious_dsi_cap_on_non_dsi_package(self):
+        """A4 review: a package with no DSI regulator must NOT list a C_VCAP_DSI cap
+        (the bare-generator bug listed it on every card)."""
+        refs64 = [it["ref"] for it in auth.build(self.conn, "LQFP64")["card_materials"]["items"]]
+        self.assertNotIn("C_VCAP_DSI", refs64)
+        refs100 = [it["ref"] for it in auth.build(self.conn, "LQFP100")["card_materials"]["items"]]
+        self.assertIn("C_VCAP_DSI", refs100)               # LQFP100 genuinely has VCAP_DSI
+
+    def test_vdd12dsi_off_vtarget(self):
+        """A4 review: VDD12DSI (1.2V DSI supply) must never route to the 3.3V VTARGET
+        rail. LQFP100 pin 62 is the canonical case."""
+        for pkg in ("LQFP100", "LQFP176", "LQFP208"):
+            if pkg not in db.list_packages(self.conn):
+                continue
+            for p in auth.build(self.conn, pkg)["positions"]:
+                if any("VDD12DSI" in n for n in p["pin_names"]):
+                    dests = {c["destination"] for c in (p["assignment"].get("channels") or [])}
+                    dests |= {p["assignment"].get("net"), p["assignment"].get("destination")}
+                    self.assertNotIn("VTARGET", dests, f"{pkg} pin {p['position']} VDD12DSI on VTARGET")
+                    self.assertIn("VCAP_DSI_NODE", dests)
+
+    def test_cli_per_package_gate(self):
+        """A2/A6 review: an unmapped package (no footprint) must NOT block the
+        canonical package's exports — the good one writes, the bad one is skipped,
+        exit code is nonzero."""
+        import tempfile
+        qfn = next((p for p in db.list_packages(self.conn)
+                    if p.startswith(("UFQFPN", "VFQFPN", "VQFPN"))), None)
+        if qfn is None:
+            raise unittest.SkipTest("no QFN package in DB")
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            rc = auth.main(["--db", str(self.dbp), "--out", str(out),
+                            "--packages", f"LQFP64,{qfn}"])
+            self.assertEqual(rc, 1)                          # a package failed
+            written = {f.name for f in out.iterdir()}
+            self.assertTrue(any("LQFP64" in n for n in written), "canonical package was blocked")
+            self.assertFalse(any(qfn in n for n in written), "unmapped package was written")
 
 
 if __name__ == "__main__":
