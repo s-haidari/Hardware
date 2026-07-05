@@ -53,8 +53,8 @@ class SectionHeader(QWidget):
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 2, 0, 4)
         lay.setSpacing(10)
-        self._label = QLabel(text.upper())
-        self._label.setFont(_font(_UI, FS_LABEL, bold=True, spacing=1.1))
+        self._label = QLabel(text)          # sentence case, not uppercase
+        self._label.setFont(_font(_UI, 12.5, demibold=True))
         self._rule = QFrame()
         self._rule.setFixedHeight(1)
         self._rule.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -68,7 +68,7 @@ class SectionHeader(QWidget):
         self.restyle()
 
     def set_text(self, text: str):
-        self._label.setText(text.upper())
+        self._label.setText(text)
 
     def add_right(self, w: QWidget):
         """Dock a small widget at the right end of the rule (e.g. a count)."""
@@ -162,15 +162,15 @@ class _Readout(QFrame):
         lay.setContentsMargins(15, 2, 15, 4)
         lay.setSpacing(4)
         self._v = QLabel("–")
-        self._v.setFont(_font(_MONO, FS_VALUE, demibold=True))
+        self._v.setFont(_font(_MONO, 15.0, demibold=True))
         # a small type-coloured DOT before the label (never an underline)
         lrow = QHBoxLayout()
         lrow.setContentsMargins(0, 0, 0, 0)
         lrow.setSpacing(6)
         self._dot = QFrame()
         self._dot.setFixedSize(7, 7)
-        self._l = QLabel(label.upper())
-        self._l.setFont(_font(_UI, FS_LABEL, bold=True, spacing=1.1))
+        self._l = QLabel(label)                 # sentence case, not uppercase
+        self._l.setFont(_font(_UI, 9.5))
         lrow.addWidget(self._dot)
         lrow.addWidget(self._l)
         lrow.addStretch(1)

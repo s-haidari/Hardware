@@ -22,23 +22,27 @@ except Exception:  # pragma: no cover
 # ── Theme tokens ─────────────────────────────────────────────────────────────
 # Graphite ground. ACCENT is a NEUTRAL bright (chrome active states only, never a
 # colour): colour is reserved entirely for pin/net type, via CATEGORY below.
+# Quiet Instrument (Vercel/Geist + Linear): three near-black steps, hierarchy from
+# weight + opacity, ONE azure accent used only for interaction (selection/focus).
 DARK_COLORS = {
-    "WIN_BG": "#0f1012", "MAIN_BG": "#17181b", "FG": "#e9eaed", "FG_DIM": "#8b8f97",
-    "TITLE_FG": "#ffffff", "CARD_BG": "#1e2024", "BORDER": "#2b2e34",
-    "HDR1": "#1e2024", "HDR2": "#17181b", "CHIP_BG": "#23262b", "IN_BG": "#202227",
-    "BTN_BG": "#23262b", "BTN_HOVER": "#2b2e34", "BTN_BORDER": "#34383f",
-    "ACCENT": "#d6d8dc",   # neutral bright — chrome active only (no colour)
-    "TREE_BG": "#1a1b1f", "TREE_ALT": "#1e2024",
-    "SEL_BG": "#2b2e34", "SEL_FG": "#ffffff", "HOVER_BG": "#23262b",
-    "SEC_BG": "#1e2024", "SEC_FG": "#b6bac1", "LOG_BG": "#131417", "LOG_FG": "#b9bcc3",
-    "SCROLL": "#34383f", "SCROLL_HOVER": "#454a52", "ST_BG": "#17181b", "ST_FG": "#8b8f97",
-    "PROG_BG": "#202227", "PROG1": "#4a4e56", "PROG2": "#d6d8dc",
-    "TAB_BG": "#1e2024", "TAB_SEL_BG": "#26292f", "TAB_SEL_FG": "#ffffff",
-    "MENU_BG": "#1e2024", "MENU_SEL": "#26292f", "CHK_BG": "#202227", "CHK_ON": "#d6d8dc",
-    "DOT_IDLE": "#4a4e56",
+    "WIN_BG": "#0B0C0E", "MAIN_BG": "#131519", "FG": "#ECEEF1", "FG_DIM": "#9AA0AA",
+    "FG_FAINT": "#656B75",                              # third text tier (micro / dormant)
+    "TITLE_FG": "#ffffff", "CARD_BG": "#1A1D22", "BORDER": "#23262C",
+    "HDR1": "#131519", "HDR2": "#0B0C0E", "CHIP_BG": "#1A1D22", "IN_BG": "#16181D",
+    "BTN_BG": "#1A1D22", "BTN_HOVER": "#21252B", "BTN_BORDER": "#2A2E35",
+    "ACCENT": "#4FA1E6",   # azure — interaction only (selection, focus, primary action)
+    "TREE_BG": "#101216", "TREE_ALT": "#131519",
+    "SEL_BG": "#142230", "SEL_FG": "#ffffff", "HOVER_BG": "#1A1D22",
+    "SEC_BG": "#131519", "SEC_FG": "#9AA0AA", "LOG_BG": "#0B0C0E", "LOG_FG": "#9AA0AA",
+    "SCROLL": "#2A2E35", "SCROLL_HOVER": "#3A3F47", "ST_BG": "#0B0C0E", "ST_FG": "#656B75",
+    "PROG_BG": "#1A1D22", "PROG1": "#3A3F47", "PROG2": "#4FA1E6",
+    "TAB_BG": "#131519", "TAB_SEL_BG": "#1A1D22", "TAB_SEL_FG": "#ffffff",
+    "MENU_BG": "#131519", "MENU_SEL": "#1A1D22", "CHK_BG": "#16181D", "CHK_ON": "#4FA1E6",
+    "DOT_IDLE": "#3A3F47",
 }
 LIGHT_COLORS = {
     "WIN_BG": "#f4f6f4", "MAIN_BG": "#eceeec", "FG": "#1b1e1c", "FG_DIM": "#6b7069",
+    "FG_FAINT": "#9096a0",
     "TITLE_FG": "#101210", "CARD_BG": "#ffffff", "BORDER": "#dde2df",
     "HDR1": "#ffffff", "HDR2": "#f1f3f1", "CHIP_BG": "#eceeec", "IN_BG": "#ffffff",
     "BTN_BG": "#f4f6f4", "BTN_HOVER": "#eceeec", "BTN_BORDER": "#dbe0dc",
@@ -57,16 +61,16 @@ LIGHT_COLORS = {
 # the hue reads clearly on pins and nets without ever feeling loud. This is the
 # ONLY place colour lives; UI chrome stays neutral graphite (never tinted).
 CATEGORY = {
-    "power":    "#c6a366",   # power rails: VTARGET / VDDA / VREF / VBAT
-    "ground":   "#7f8b9a",   # returns: GND / VSSA
-    "core":     "#a98cc0",   # core cap: VCAP
-    "service":  "#77a688",   # service nets: OSC / NRST / BOOT0 / debug
-    "lane":     "#6f93b5",   # default IO lane: CARD_LANE
-    "must":     "#c9736c",   # must-switch class
-    "osc":      "#c99f5e",   # oscillator class
-    "fixed":    "#8b8f97",   # fixed / neutral
-    "breakout": "#6f93b5",   # extraction breakout
-    "fivev":    "#5fa393",   # 5V-tolerant
+    "power":    "#D6A44C",   # power rails: VTARGET / VDDA / VREF / VBAT (gold)
+    "ground":   "#8B94A1",   # returns: GND / VSSA (slate, recedes)
+    "core":     "#AC8DD8",   # core cap: VCAP (violet)
+    "service":  "#6FB893",   # service nets: OSC / NRST / BOOT0 / debug (green)
+    "lane":     "#57AEBE",   # default IO lane: CARD_LANE (teal, off-blue vs accent)
+    "must":     "#E8756B",   # must-switch class (coral, the one-hot hero)
+    "osc":      "#E67E33",   # oscillator class (orange, pushed off gold)
+    "fixed":    "#767C86",   # fixed / neutral (lowest chroma)
+    "breakout": "#57AEBE",   # extraction breakout
+    "fivev":    "#6FB893",   # 5V-tolerant
 }
 
 
@@ -153,8 +157,10 @@ def status(kind: str) -> str:
 
 
 # ── Fonts ────────────────────────────────────────────────────────────────────
-UI_FONT_STACK = ("Space Grotesk", "Geist", "Inter", "Segoe UI Variable Text", "Segoe UI")
-MONO_FONT_STACK = ("JetBrains Mono", "Cascadia Mono", "Consolas")
+# Native Windows: Segoe UI is the platform face (per the app's Windows type guidance);
+# a monospace stays for tabular data (refdes / nets / terminals) so columns align.
+UI_FONT_STACK = ("Segoe UI Variable Text", "Segoe UI", "Inter", "Geist")
+MONO_FONT_STACK = ("Cascadia Mono", "Consolas", "Geist Mono", "JetBrains Mono")
 
 
 def resource_path(name: str) -> Path:

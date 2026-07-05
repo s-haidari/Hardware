@@ -214,12 +214,12 @@ class AuthorityTests(unittest.TestCase):
         self.assertIn("VCAP required", s)
         p46 = next(p for p in a["positions"] if p["position"] == 46)
         d46 = tab._pin_detail_html(p46)
-        self.assertIn("Pin Names", d46)             # Title-Case labels
+        self.assertIn("Pin names", d46)             # sentence-case labels
         self.assertIn("Category", d46)
         self.assertNotIn("adg714_source", d46)      # redundant rows dropped (shown in the diagram)
         self.assertNotIn("Destination", d46)
         pa0 = next(p for p in a["positions"] if "PA0" in p["pin_names"])
-        self.assertIn("Part-Dependent", tab._pin_detail_html(pa0))   # Title-Case value
+        self.assertIn("Part-dependent", tab._pin_detail_html(pa0))   # sentence-case value
         # pin-map geometry (shared by the Qt widget AND the SVG export)
         g = tab.pin_map_geometry(a["positions"], 460, 460)
         self.assertEqual(len(g["pins"]), 64)

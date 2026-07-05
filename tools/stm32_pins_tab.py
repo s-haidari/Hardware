@@ -29,7 +29,7 @@ from PyQt5.QtWidgets import (
 import ui_theme
 import ui_widgets as uw
 
-_PANEL = _CARD = _TXT = _MUT = _LINE = _BODY = _CHIP = ""
+_PANEL = _CARD = _TXT = _MUT = _LINE = _BODY = _CHIP = _FAINT = _ACCENT = ""
 # Neutral tones for chrome; the switch-class and net-category HUES come from the
 # muted ui_theme.CATEGORY family and are wired into the colour dicts below. Colour
 # lives only on pins and net names; chip and card fills stay neutral graphite.
@@ -62,15 +62,17 @@ def _refresh_palette():
 
 
 def set_tab_theme(dark: bool):
-    global _PANEL, _CARD, _TXT, _MUT, _LINE, _BODY, _CHIP
+    global _PANEL, _CARD, _TXT, _MUT, _LINE, _BODY, _CHIP, _FAINT, _ACCENT
     t = ui_theme.set_theme(dark)   # publish active theme for the shared kit widgets too
-    _PANEL = t["MAIN_BG"]      # panel background
-    _CARD = t["CARD_BG"]       # card surfaces
-    _TXT = t["FG"]             # primary text
-    _MUT = t["FG_DIM"]         # muted text
-    _LINE = t["BORDER"]        # hairlines
-    _BODY = t["IN_BG"]         # the package body fill
-    _CHIP = t["CHIP_BG"]       # neutral pill / chip fill (never tinted by category)
+    _PANEL = t["MAIN_BG"]      # bg_raised — the inspector reading surface
+    _CARD = t["CARD_BG"]       # bg_inset — the one lift-step (signal path, hover, selection)
+    _TXT = t["FG"]             # text_1 primary
+    _MUT = t["FG_DIM"]         # text_2 secondary
+    _FAINT = t["FG_FAINT"]     # text_3 micro / dormant / units
+    _LINE = t["BORDER"]        # hairline (the whole border budget)
+    _BODY = t["WIN_BG"]        # bg_base — deepest step
+    _CHIP = t["CHIP_BG"]       # legacy neutral chip fill (chips are being retired)
+    _ACCENT = t["ACCENT"]      # azure — interaction only
     _refresh_tones()
     try:
         _refresh_palette()     # skipped on the import-time call before stm32_db loads
@@ -96,8 +98,8 @@ _COLS = ["Pin", "Side", "Pin Name(s)", "Role Set", "Switch",
          "Destination", "Peripherals", "Breakout", "VDD (V)"]
 
 _SWITCH_LABEL = {
-    sdb.SWITCH_MUST: "Must-Switch",
-    sdb.SWITCH_OSC_OPTIONAL: "Optional Oscillator",
+    sdb.SWITCH_MUST: "Must-switch",
+    sdb.SWITCH_OSC_OPTIONAL: "Optional oscillator",
     sdb.SWITCH_NONE: "Fixed",
 }
 
@@ -177,7 +179,7 @@ def expandNet(s: str) -> str:
 
 
 _CAT_WORD = {"power": "Power", "analog": "Analog", "ground": "Ground",
-             "core": "Core", "service": "Service", "lane": "Card Lane"}
+             "core": "Core", "service": "Service", "lane": "Card lane"}
 
 
 def _pin_detail_rows(p: dict) -> list:
@@ -187,11 +189,11 @@ def _pin_detail_rows(p: dict) -> list:
     and the HTML export."""
     fv = p.get("five_v")
     if fv is None:
-        fvt = "N/A (non-GPIO)"
+        fvt = "Not applicable (non-GPIO)"
     elif fv["tolerant"]:
-        fvt = "Yes (Except In Oscillator Mode)" if fv.get("caveat") == "osc-mode" else "Yes"
+        fvt = "Yes (except in oscillator mode)" if fv.get("caveat") == "osc-mode" else "Yes"
     elif any(fv["by_family"].values()):
-        fvt = "Part-Dependent"
+        fvt = "Part-dependent"
     else:
         fvt = "No"
     bk = p.get("breakout", {})
@@ -199,14 +201,14 @@ def _pin_detail_rows(p: dict) -> list:
     el = p.get("electrical", {}) or {}
     why = sauth.switch_rationale(p)
     dest = p["assignment"].get("destination") or p["assignment"].get("net") or ""
-    cat = _CAT_WORD.get(sauth._NET_CATEGORY.get(dest, "lane"), "Card Lane")
+    cat = _CAT_WORD.get(sauth._NET_CATEGORY.get(dest, "lane"), "Card lane")
     rows = [
-        ("Pin Names", _counts(p["pin_names"])),
+        ("Pin names", _counts(p["pin_names"])),
         ("Roles", _counts(p["role_set"])),
         ("Category", cat),
     ]
     if why:
-        rows.append(("Why It Switches", why))
+        rows.append(("Why it switches", why))
     if p.get("peripherals"):
         rows.append(("Peripherals", ", ".join(p["peripherals"])))
     if bnets or bk.get("trace"):
@@ -218,7 +220,7 @@ def _pin_detail_rows(p: dict) -> list:
     boot = ", ".join(p["tags"].get("bootloader_periph", []))
     if boot:
         rows.append(("Bootloader", boot))
-    rows += [("5V Tolerant", fvt), ("Supply Voltage", _fmt_rng(el.get("vdd_range_v")))]
+    rows += [("5 V tolerant", fvt), ("Supply voltage", _fmt_rng(el.get("vdd_range_v")))]
     return rows
 
 
@@ -258,19 +260,19 @@ class _KeyValuePanel(QScrollArea):
                 w.deleteLater()
         fam = _SVG_FONT.split(",")[0].strip("'")
         for r, (k, v) in enumerate(rows):
-            kl = QLabel(str(k).upper())          # a seated label tag, not faded subtext
-            kf = QFont(fam, 7)
-            kf.setWeight(QFont.DemiBold)
-            kf.setLetterSpacing(QFont.PercentageSpacing, 108)
+            kl = QLabel(str(k))                  # plain dim key, fixed column — no chip
+            kf = QFont(fam); kf.setPointSizeF(10.5); kf.setWeight(QFont.Normal)
             kl.setFont(kf)
-            kl.setStyleSheet(f"color:{_MUT};background:{_CHIP};border:1px solid {_LINE};"
-                             f"border-radius:6px;padding:4px 9px;")
-            kl.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
-            vl = QLabel(str(v)); vl.setFont(QFont(fam, 9))
+            kl.setStyleSheet(f"color:{_MUT};background:transparent;")
+            kl.setFixedWidth(140)
+            kl.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+            vl = QLabel(str(v))
+            vf = QFont(fam); vf.setPointSizeF(10.5); vf.setWeight(QFont.Normal)
+            vl.setFont(vf)
             vl.setStyleSheet(f"color:{_TXT};background:transparent;"); vl.setWordWrap(True)
             vl.setTextInteractionFlags(Qt.TextSelectableByMouse)
             self._grid.addWidget(kl, r, 0, Qt.AlignTop | Qt.AlignLeft)
-            self._grid.addWidget(vl, r, 1, Qt.AlignVCenter | Qt.AlignLeft)
+            self._grid.addWidget(vl, r, 1, Qt.AlignTop | Qt.AlignLeft)
         self._grid.setRowStretch(len(rows), 1)   # push rows to the top
 
 
@@ -451,8 +453,8 @@ def pin_map_svg(authority: dict, w: int = 460, h: int = 460, selected=None) -> s
     return "".join(s)
 
 
-_SVG_FONT = "'Space Grotesk',Geist,Inter,'Segoe UI',system-ui,Arial"
-_SVG_MONO = "'JetBrains Mono',Consolas,monospace"
+_SVG_FONT = "'Segoe UI Variable Text','Segoe UI',Inter,system-ui,Arial"
+_SVG_MONO = "'Cascadia Mono',Consolas,'Geist Mono',monospace"
 
 
 _CAT_LABEL = [("All", None), ("Switched", "switch"), ("Power", "power"), ("Analog", "analog"),
@@ -506,7 +508,7 @@ def _pin_branches(a: dict, pos: int, cw: dict = None):
             rname = cw.get("series_r_refdes", "")
             branches.append({
                 "caption": "DEFAULT IO LANE",
-                "via": f"{rname} · 33 Ω Series" if rname else "Direct Route",
+                "via": f"{rname} · 33 Ω series" if rname else "Direct route",
                 "via2": "" if rname else "No series resistor on this card",
                 "to": c0["card_lane"],
                 "to2": _fmt_contact(c0["lane_contact"]) if c0.get("lane_contact") else "Lane Row",
@@ -516,7 +518,7 @@ def _pin_branches(a: dict, pos: int, cw: dict = None):
         rname = cw.get("series_r_refdes", "R_IO_LANE")
         branches.append({
             "caption": "IO LANE",
-            "via": f"{rname} · 33 Ω Series", "via2": "",
+            "via": f"{rname} · 33 Ω series", "via2": "",
             "to": conn["dest"], "to2": _fmt_contact(conn["contact"]),
             "color": _CAT_COLOR["lane"],
         })
@@ -524,7 +526,7 @@ def _pin_branches(a: dict, pos: int, cw: dict = None):
         lane_dest = conn and conn["dest"] == "CARD_LANE"
         branches.append({
             "caption": "DIRECT",
-            "via": "Direct Route", "via2": "",
+            "via": "Direct route", "via2": "",
             "to": conn["dest"] if conn else "",
             "to2": (_fmt_contact(conn["contact"])
                     if (conn and conn["contact"] and not lane_dest) else
@@ -813,8 +815,8 @@ class ConnectionDiagram(QWidget):
         self._a = None
         self._pos = None
         self._cw = None
-        self.setMinimumHeight(150)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setMinimumHeight(96)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
     def set_data(self, a, pos, cw):
         self._a, self._pos, self._cw = a, pos, cw
@@ -830,351 +832,303 @@ class ConnectionDiagram(QWidget):
         from PyQt5.QtCore import QSize
         b = self._branches()
         n = len(b[4]) if b else 1
-        return QSize(680, 24 + n * 56 + (n - 1) * 18 + 22)
+        multiswitch = bool(b) and sum(1 for x in b[4] if x["caption"].startswith("SWITCHED")) > 1
+        return QSize(560, n * 46 + 28 + (22 if multiswitch else 6))
 
     def paintEvent(self, _ev):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
         W, H = self.width(), self.height()
         p.fillRect(0, 0, W, H, QColor(_PANEL))
+        uif = _SVG_FONT.split(",")[0].strip("'")
+        monf = _SVG_MONO.split(",")[0].strip("'")
         info = self._branches()
         if info is None:
-            p.setPen(QColor(_MUT))
-            f = QFont(_SVG_FONT.split(",")[0]); f.setPointSizeF(10.5)
-            p.setFont(f)
-            p.drawText(self.rect(), Qt.AlignCenter,
-                       "Select a pin on the map to see its connections")
+            f = QFont(uif); f.setPointSizeF(10.5)
+            p.setFont(f); p.setPen(QColor(_FAINT))
+            p.drawText(self.rect(), Qt.AlignCenter, "Select a pin to see its signal path")
             return
         conn, kind, name, pcol, branches = info
-        socket_ref = (self._cw or {}).get("socket_refdes", "J_SOCKET")
-
-        pad = 6
-        NH, GAP = 56, 18
         n = len(branches)
-        top = 8
-        sockH = n * NH + (n - 1) * GAP
-        sockX, sockW = pad, 156
-        viaX, viaW = sockX + sockW + 34, 236
-        sockCY = top + sockH / 2
+        PAD, ROWH = 14, 46
+        contH = n * ROWH + 28
 
-        cap_f = QFont(_SVG_MONO.split(",")[0].strip("'")); cap_f.setPointSizeF(6.8)
-        main_f = QFont(_SVG_FONT.split(",")[0]); main_f.setPointSizeF(9.5)
-        big_f = QFont(_SVG_MONO.split(",")[0].strip("'")); big_f.setPointSizeF(13.0); big_f.setWeight(QFont.DemiBold)
-        net_f = QFont(_SVG_MONO.split(",")[0].strip("'")); net_f.setPointSizeF(10.0); net_f.setWeight(QFont.DemiBold)
-        sub_f = QFont(_SVG_MONO.split(",")[0].strip("'")); sub_f.setPointSizeF(7.6)
+        # the ONE inset container — rounded, no border, no socket card, no accent bar
+        rr = QPainterPath()
+        rr.addRoundedRect(QRectF(0.5, 0.5, W - 1, contH - 1), 8, 8)
+        p.fillPath(rr, QColor(_CARD))
 
-        def node(x, y, w, h, stroke):
-            p.setPen(QPen(QColor(stroke), 1))
-            p.setBrush(QColor(_CARD))
-            p.drawRoundedRect(QRectF(x, y, w, h), 5, 5)
+        of = QFont(monf); of.setPointSizeF(14.5); of.setWeight(QFont.DemiBold)
+        kf = QFont(uif); kf.setPointSizeF(10.0)
+        mf = QFont(monf); mf.setPointSizeF(10.0)
+        nf = QFont(monf); nf.setPointSizeF(11.0); nf.setWeight(QFont.DemiBold)
+        arf = QFont(monf); arf.setPointSizeF(10.5)
+        fm_o, fm_m, fm_n, fm_ar = (QFontMetricsF(x) for x in (of, mf, nf, arf))
 
-        def label(x, y, w, font, color, text, elide=True):
-            p.setFont(font); p.setPen(QColor(color))
-            fm = QFontMetricsF(font)
-            t = fm.elidedText(text, Qt.ElideRight, w) if elide else text
-            p.drawText(QRectF(x, y, w, 16), Qt.AlignLeft | Qt.AlignVCenter, t)
+        # origin — signal name stated ONCE, vertically centred
+        origin = name or f"Pin {self._pos}"
+        ox = PAD + 4
+        ocy = contH / 2.0
+        p.setFont(of); p.setPen(QColor(_TXT))
+        p.drawText(QRectF(ox, ocy - 12, fm_o.width(origin) + 6, 24),
+                   Qt.AlignLeft | Qt.AlignVCenter, origin)
+        ow = fm_o.width(origin)
+        busx = round(ox + ow + 16) + 0.5
+        contentx = busx + 22
+        rowcys = [PAD + i * ROWH + ROWH / 2.0 for i in range(n)]
 
-        def wire(path, color):
-            p.setPen(QPen(QColor(color), 1.4))
-            p.setBrush(Qt.NoBrush)
-            p.drawPath(path)
+        # connectors — 1px cosmetic pen snapped to the pixel grid (never fuzzy)
+        base = QPainterPath()
+        base.moveTo(round(ox + ow + 6) + 0.5, round(ocy) + 0.5)
+        base.lineTo(busx, round(ocy) + 0.5)
+        base.moveTo(busx, round(rowcys[0]) + 0.5)
+        base.lineTo(busx, round(rowcys[-1]) + 0.5)
+        for rcy in rowcys:
+            base.moveTo(busx, round(rcy) + 0.5)
+            base.lineTo(contentx - 8, round(rcy) + 0.5)
+        pen = QPen(QColor(_LINE), 1); pen.setCosmetic(True)
+        p.setPen(pen); p.setBrush(Qt.NoBrush); p.drawPath(base)
 
-        def dot(x, y, color):
-            p.setPen(Qt.NoPen); p.setBrush(QColor(color))
-            p.drawEllipse(QRectF(x - 2.5, y - 2.5, 5, 5))
-
-        # socket node (spans all branches); a left accent in the pin's class colour
-        # ties it back to the pin map.
-        pd = next((x for x in self._a["positions"] if x["position"] == self._pos), None)
-        cls_col = _SWITCH_COLOR.get(pd["switch_class"], _MUT) if pd else _MUT
-        node(sockX, top, sockW, sockH, _LINE)
-        p.setPen(Qt.NoPen)
-        p.setBrush(QColor(cls_col))
-        p.drawRoundedRect(QRectF(sockX, top + 6, 3, sockH - 12), 1.5, 1.5)
-        label(sockX + 12, top + 8, sockW - 20, cap_f, _MUT, socket_ref)
-        p.setFont(big_f); p.setPen(QColor(_TXT))
-        p.drawText(QRectF(sockX + 12, sockCY - 14, sockW - 20, 18),
-                   Qt.AlignLeft | Qt.AlignVCenter, f"Pin {self._pos}")
-        label(sockX + 12, top + sockH - 22, sockW - 20, sub_f, _MUT, name or "")
-
+        arrow = "→"
+        arw = fm_ar.width(arrow) + 8
         for i, br in enumerate(branches):
-            ry = top + i * (NH + GAP)
-            rmid = ry + NH / 2
-            col = br.get("color") or pcol
-            has_via = bool(br.get("via")) and br["via"] != "Direct Route"
-            # elbow wire from socket to this branch row
-            jx = sockX + sockW + 20
-            path = QPainterPath()
-            path.moveTo(sockX + sockW, sockCY)
-            path.lineTo(sockX + sockW + 11, sockCY)
-            path.lineTo(sockX + sockW + 11, rmid)
-            path.lineTo(jx, rmid)
-            wire(path, col)
-            dot(sockX + sockW, sockCY, _MUT)
-
-            if has_via:
-                node(viaX, ry, viaW, NH, _LINE)
-                label(viaX + 12, ry + 9, viaW - 22, cap_f, _MUT, br["caption"])
-                label(viaX + 12, ry + 25, viaW - 22, main_f, _TXT, br["via"])
-                if br.get("via2"):
-                    label(viaX + 12, ry + 40, viaW - 22, sub_f, _MUT, br["via2"])
-                dx = viaX + viaW + 30
-                dw = W - pad - dx
-                lp = QPainterPath(); lp.moveTo(viaX + viaW, rmid); lp.lineTo(dx, rmid)
-                wire(lp, col)
-                dot(viaX + viaW, rmid, col)
+            rcy = rowcys[i]
+            # the default card lane is the always-present fallback: dim it so the
+            # designed path (the switch, or the pin's own lane) reads as primary.
+            dormant = br["caption"].startswith("DEFAULT")
+            catcol = br.get("color") or pcol
+            # state dot: filled + coloured for the primary path, hollow for the fallback
+            if dormant:
+                p.setPen(QPen(QColor(_FAINT), 1.3)); p.setBrush(Qt.NoBrush)
+                p.drawEllipse(QRectF(contentx - 3.5, rcy - 3.5, 7, 7))
             else:
-                dx = jx + 40
-                dw = W - pad - dx
-                lp = QPainterPath(); lp.moveTo(jx, rmid); lp.lineTo(dx, rmid)
-                wire(lp, col)
-                dot(dx, rmid, col)
+                p.setPen(Qt.NoPen); p.setBrush(QColor(catcol))
+                p.drawEllipse(QRectF(contentx - 4, rcy - 4, 8, 8))
+            kindtxt = ("Switched" if br["caption"].startswith("SWITCHED")
+                       else ("Default" if "LANE" in br["caption"] else "Direct"))
+            kx = contentx + 12
+            p.setFont(kf); p.setPen(QColor(_MUT if not dormant else _FAINT))
+            p.drawText(QRectF(kx, rcy - 9, 60, 18), Qt.AlignLeft | Qt.AlignVCenter, kindtxt)
+            # delivered net, right-aligned, category colour (or dim when dormant)
+            nettxt = expandNet(br["to"])
+            netw = fm_n.width(nettxt)
+            netx = W - PAD - netw
+            p.setFont(arf); p.setPen(QColor(_FAINT))
+            p.drawText(QRectF(netx - arw, rcy - 9, arw, 18), Qt.AlignLeft | Qt.AlignVCenter, arrow)
+            p.setFont(nf); p.setPen(QColor(catcol if not dormant else _FAINT))
+            p.drawText(QRectF(netx, rcy - 9, netw + 4, 18), Qt.AlignLeft | Qt.AlignVCenter, nettxt)
+            # mechanism (cell·channel / series R) between the kind and the arrow
+            mx = kx + 62
+            mmaxw = max(24, (netx - arw - 12) - mx)
+            p.setFont(mf); p.setPen(QColor(_MUT if not dormant else _FAINT))
+            p.drawText(QRectF(mx, rcy - 9, mmaxw, 18), Qt.AlignLeft | Qt.AlignVCenter,
+                       fm_m.elidedText(br.get("via") or "", Qt.ElideRight, mmaxw))
 
-            # destination node (type-coloured)
-            node(dx, ry, dw, NH, col)
-            dcap = "Delivered Rail" if br["caption"].startswith("SWITCHED") else \
-                   ("Lane Row" if "LANE" in br["caption"] else "Service Net")
-            label(dx + 12, ry + 9, dw - 22, cap_f, _MUT, dcap)
-            p.setFont(net_f); p.setPen(QColor(col))
-            fm = QFontMetricsF(net_f)
-            p.drawText(QRectF(dx + 12, ry + 24, dw - 22, 16), Qt.AlignLeft | Qt.AlignVCenter,
-                       fm.elidedText(expandNet(br["to"]), Qt.ElideRight, dw - 22))
-            label(dx + 12, ry + 40, dw - 22, sub_f, _MUT, br.get("to2") or "")
-
-        if n > 1 and any(b["caption"].startswith("SWITCHED") for b in branches):
-            p.setFont(sub_f); p.setPen(QColor(_MUT))
-            p.drawText(QRectF(pad, top + sockH + 4, W - 2 * pad, 16),
-                       Qt.AlignLeft,
+        if sum(1 for b in branches if b["caption"].startswith("SWITCHED")) > 1:
+            fnf = QFont(uif); fnf.setPointSizeF(8.5)
+            p.setFont(fnf); p.setPen(QColor(_FAINT))
+            p.drawText(QRectF(2, contH + 6, W - 4, 15), Qt.AlignLeft,
                        "Only one branch is closed at a time. Firmware drives these as a one-hot group.")
 
 
 class _ConnectionLedger(QWidget):
-    """Native Source/Drain ledger for the selected pin: per branch (ADG714 channel or
-    direct lane), the exact Source and Drain terminals, the net connected on each side,
-    and the in-line component — spelled out in full (the diagram elides; this never
-    does). Columns: Side · ADG714 Terminal · Connected Net · Through Component."""
+    """Source and drain as ONE aligned, borderless table (Quiet Instrument): a single
+    column header, then per physical branch a dim subhead and plain-text rows separated
+    by hairlines. No cards, no pills, no cell borders. The delivered net is the only
+    coloured cell (category-colour mono with a 6px dot); nulls recede to a dim dash."""
+
+    W_SIDE, W_TERM = 98, 104
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._lay = QVBoxLayout(self)
-        self._lay.setContentsMargins(0, 0, 0, 0)
-        self._lay.setSpacing(12)
-
-    _FAM = property(lambda self: _SVG_FONT.split(",")[0].strip("'"))
-    _MONO = property(lambda self: _SVG_MONO.split(",")[0].strip("'"))
-
-    def set_data(self, a, pos, cw):
-        while self._lay.count():
-            it = self._lay.takeAt(0)
-            w = it.widget()
-            if w is not None:
-                w.setParent(None)
-                w.deleteLater()
-        if not a or pos is None:
-            return
-        self._lay.addWidget(self._colhead())
-        for r in _pin_chain(a, pos, cw)["rows"]:
-            self._lay.addWidget(self._block(r))
-
-    def _colhead(self):
-        """One seated column header above the branch cards, so the four columns read
-        clearly without repeating the labels inside every card."""
-        w = QWidget()
-        g = QGridLayout(w)
-        g.setContentsMargins(14, 0, 14, 0)
-        g.setHorizontalSpacing(9)
-        g.setColumnStretch(2, 2)
-        g.setColumnStretch(3, 3)
-        for col, text in enumerate(("Side", "ADG714 Terminal", "Connected Net", "Through Component")):
-            lb = QLabel(text.upper())
-            f = QFont(self._FAM, 7)
-            f.setWeight(QFont.DemiBold)
-            f.setLetterSpacing(QFont.PercentageSpacing, 110)
-            lb.setFont(f)
-            lb.setStyleSheet(f"color:{_MUT};background:transparent;")
-            g.addWidget(lb, 0, col, Qt.AlignLeft | Qt.AlignVCenter)
-        return w
-
-    def _chip(self, txt, *, color, mono=False, strong=False, wrap=False, net=None):
-        """A neutral graphite pill. Category colour, when given, rides the text and a
-        thin left rule only. The chip fill itself is never tinted."""
-        lb = QLabel(str(txt))
-        f = QFont(self._MONO if mono else self._FAM, 8)
-        if strong:
-            f.setWeight(QFont.DemiBold)
-        lb.setFont(f)
-        lb.setWordWrap(wrap)
-        if net:
-            lb.setStyleSheet(
-                f"background:{_CHIP};border:1px solid {_LINE};border-left:2px solid {net};"
-                f"border-radius:7px;padding:5px 10px;color:{net};")
-        else:
-            lb.setStyleSheet(
-                f"background:{_CHIP};border:1px solid {_LINE};"
-                f"border-radius:7px;padding:5px 10px;color:{color};")
-        return lb
-
-    def _block(self, r):
-        catcol = _CAT_COLOR.get(r.get("drain_cat"), _MUT)
-        card = QFrame()
-        card.setObjectName("ledCard")
-        card.setStyleSheet(
-            f"#ledCard{{background:{_CARD};border:1px solid {_LINE};border-radius:12px;}}")
-        v = QVBoxLayout(card)
-        v.setContentsMargins(0, 0, 0, 0)
-        v.setSpacing(0)
-
-        # header: a colour dot for the delivered net, the branch identity, a kind tag
-        if r["kind"] == "switch":
-            title, kind = f"Channel {r['channel']} · {r['cell']}", "Switched"
-        elif r["kind"] == "lane":
-            title = "Default Card Lane"
-            kind = "Series Resistor" if r.get("series") else "Direct Route"
-        else:
-            title = "Direct Route"
-            kind = "Series Resistor" if r.get("series") else "Direct Route"
-        head = QWidget()
-        head.setStyleSheet(f"background:transparent;border-bottom:1px solid {_LINE};")
-        hb = QHBoxLayout(head)
-        hb.setContentsMargins(13, 10, 13, 10)
-        hb.setSpacing(9)
-        dot = QLabel("●")
-        dot.setStyleSheet(f"color:{catcol};background:transparent;border:0;")
-        dot.setFont(QFont(self._FAM, 9))
-        tl = QLabel(title)
-        tf = QFont(self._MONO, 9)
-        tf.setWeight(QFont.DemiBold)
-        tl.setFont(tf)
-        tl.setStyleSheet(f"color:{_TXT};background:transparent;border:0;")
-        kt = QLabel(kind.upper())
-        kf = QFont(self._FAM, 7)
-        kf.setWeight(QFont.DemiBold)
-        kf.setLetterSpacing(QFont.PercentageSpacing, 108)
-        kt.setFont(kf)
-        kt.setStyleSheet(
-            f"color:{_MUT};background:{_CHIP};border:1px solid {_LINE};"
-            f"border-radius:6px;padding:3px 9px;")
-        hb.addWidget(dot)
-        hb.addWidget(tl)
-        hb.addStretch(1)
-        hb.addWidget(kt)
-        v.addWidget(head)
-
-        body = QWidget()
-        body.setStyleSheet("background:transparent;")
-        g = QGridLayout(body)
-        g.setContentsMargins(13, 12, 13, 13)
-        g.setHorizontalSpacing(9)
-        g.setVerticalSpacing(8)
-        g.setColumnStretch(2, 2)
-        g.setColumnStretch(3, 3)
-
-        def add(ri, side, side_strong, term, net_txt, net_col, via):
-            g.addWidget(self._chip(side, color=_TXT if side_strong else _MUT, strong=True),
-                        ri, 0, Qt.AlignLeft | Qt.AlignVCenter)
-            g.addWidget(self._chip(term or "None", color=_TXT if term else _MUT, mono=True),
-                        ri, 1, Qt.AlignLeft | Qt.AlignVCenter)
-            g.addWidget(self._chip(net_txt, color=_TXT, mono=True, strong=True, net=net_col),
-                        ri, 2, Qt.AlignLeft | Qt.AlignVCenter)
-            g.addWidget(self._chip(via or "None", color=_MUT, mono=True, wrap=True), ri, 3)
-
-        if r["kind"] == "switch":
-            add(0, "Source", True, r["s_term"], r["source_net"], None, r["source_via"])
-            add(1, "Drain", False, r["d_term"], r["drain_net"], catcol, r["drain_via"])
-        else:
-            add(0, "Source", True, None, r["source_net"], None, r["source_via"])
-            ri = 1
-            if r.get("series"):
-                add(ri, "Series", False, None, r["series"], None, "One per lane, 0402 footprint")
-                ri += 1
-            add(ri, "Drain", False, None, r["drain_net"], catcol, r["drain_via"])
-        v.addWidget(body)
-        return card
-
-
-def _pill(txt, *, color=None, mono=False, strong=False, net=None, wrap=False):
-    """A neutral graphite pill (QLabel). The chip fill is never tinted; a category
-    colour, when given, rides the text and a thin left rule only."""
-    fam = _SVG_FONT.split(",")[0].strip("'")
-    monof = _SVG_MONO.split(",")[0].strip("'")
-    lb = QLabel(str(txt))
-    f = QFont(monof if mono else fam, 8)
-    if strong:
-        f.setWeight(QFont.DemiBold)
-    lb.setFont(f)
-    lb.setWordWrap(wrap)
-    if net:
-        lb.setStyleSheet(f"background:{_CHIP};border:1px solid {_LINE};border-left:2px solid {net};"
-                         f"border-radius:8px;padding:5px 11px;color:{net};")
-    else:
-        lb.setStyleSheet(f"background:{_CHIP};border:1px solid {_LINE};"
-                         f"border-radius:8px;padding:5px 11px;color:{color or _TXT};")
-    return lb
-
-
-class _PinHeaderBar(QWidget):
-    """The selected pin's identity as a row of chips (never bare text): the pin number,
-    the signal name, the switch class with its colour dot, the package side, and the
-    net category. Replaces the old single rich-text line."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._h = QHBoxLayout(self)
-        self._h.setContentsMargins(0, 0, 0, 0)
-        self._h.setSpacing(9)
+        self._v = QVBoxLayout(self)
+        self._v.setContentsMargins(0, 0, 0, 0)
+        self._v.setSpacing(0)
         self.setStyleSheet("background:transparent;")
 
     def _clear(self):
-        while self._h.count():
-            it = self._h.takeAt(0)
+        while self._v.count():
+            it = self._v.takeAt(0)
             w = it.widget()
             if w is not None:
-                w.setParent(None)
-                w.deleteLater()
+                w.setParent(None); w.deleteLater()
+
+    def _lab(self, s, *, mono, size, weight, color, fixed=None, wrap=False):
+        fam = (_SVG_MONO if mono else _SVG_FONT).split(",")[0].strip("'")
+        lb = QLabel(str(s))
+        f = QFont(fam); f.setPointSizeF(size); f.setWeight(weight)
+        lb.setFont(f)
+        lb.setWordWrap(wrap)
+        lb.setStyleSheet(f"color:{color};background:transparent;")
+        if fixed:
+            lb.setFixedWidth(fixed)
+        return lb
+
+    def _header(self):
+        w = QWidget(); w.setObjectName("lhd")
+        w.setStyleSheet(f"#lhd{{border-bottom:1px solid {_LINE};}}")
+        h = QHBoxLayout(w); h.setContentsMargins(0, 0, 0, 8); h.setSpacing(12)
+        h.addWidget(self._lab("Side", mono=False, size=9.5, weight=QFont.Normal, color=_FAINT, fixed=self.W_SIDE))
+        h.addWidget(self._lab("Terminal", mono=False, size=9.5, weight=QFont.Normal, color=_FAINT, fixed=self.W_TERM))
+        h.addWidget(self._lab("Connected net", mono=False, size=9.5, weight=QFont.Normal, color=_FAINT), 2)
+        h.addWidget(self._lab("Through", mono=False, size=9.5, weight=QFont.Normal, color=_FAINT), 3)
+        return w
+
+    def _subhead(self, r):
+        w = QWidget()
+        h = QHBoxLayout(w); h.setContentsMargins(0, 14, 0, 7); h.setSpacing(8)
+        cat = _CAT_COLOR.get(r.get("drain_cat"), _MUT)
+        if r["kind"] == "switch":
+            name, role = f"Channel {r['channel']} · {r['cell']}", "Switched"
+        elif r["kind"] == "lane":
+            name, role = "Default card lane", ("Series resistor" if r.get("series") else "Direct route")
+        else:
+            name, role = "Direct route", ("Series resistor" if r.get("series") else "Direct route")
+        h.addWidget(_Dot(cat, 7))
+        h.addWidget(self._lab(name, mono=True, size=10.5, weight=QFont.DemiBold, color=_TXT))
+        h.addStretch(1)
+        h.addWidget(self._lab(role, mono=False, size=9.5, weight=QFont.Normal, color=_FAINT))
+        return w
+
+    def _row(self, glyph, side, term, net, netcat, through):
+        w = QWidget(); w.setObjectName("lrw")
+        w.setStyleSheet(f"#lrw{{border-top:1px solid {_LINE};}} #lrw:hover{{background:{_CARD};}}")
+        w.setMinimumHeight(34)
+        h = QHBoxLayout(w); h.setContentsMargins(0, 0, 0, 0); h.setSpacing(12)
+        h.addWidget(self._lab(f"{glyph}  {side}", mono=False, size=10.5, weight=QFont.Normal,
+                              color=_MUT, fixed=self.W_SIDE))
+        h.addWidget(self._lab(term or "—", mono=True, size=10.5, weight=QFont.Normal,
+                              color=(_TXT if term else _FAINT), fixed=self.W_TERM))
+        nc = QWidget(); nh = QHBoxLayout(nc); nh.setContentsMargins(0, 0, 0, 0); nh.setSpacing(7)
+        if netcat:
+            col = _CAT_COLOR.get(netcat, _MUT)
+            nh.addWidget(_Dot(col, 6))
+            nh.addWidget(self._lab(net, mono=True, size=10.5, weight=QFont.DemiBold, color=col))
+        else:
+            nh.addWidget(self._lab(net, mono=True, size=10.5, weight=QFont.Normal, color=_TXT))
+        nh.addStretch(1)
+        h.addWidget(nc, 2)
+        h.addWidget(self._lab(through or "—", mono=True, size=9.5, weight=QFont.Normal,
+                              color=_FAINT, wrap=True), 3)
+        return w
+
+    def set_data(self, a, pos, cw):
+        self._clear()
+        if not a or pos is None:
+            return
+        self._v.addWidget(self._header())
+        for r in _pin_chain(a, pos, cw)["rows"]:
+            self._v.addWidget(self._subhead(r))
+            if r["kind"] == "switch":
+                self._v.addWidget(self._row("▸", "Source", r["s_term"], r["source_net"], None, r["source_via"]))
+                self._v.addWidget(self._row("◂", "Drain", r["d_term"], r["drain_net"], r["drain_cat"], r["drain_via"]))
+            else:
+                self._v.addWidget(self._row("▸", "Source", None, r["source_net"], None, r["source_via"]))
+                if r.get("series"):
+                    self._v.addWidget(self._row("·", "Series", None, r["series"], None, "One per lane, 0402 footprint"))
+                self._v.addWidget(self._row("◂", "Drain", None, r["drain_net"], r["drain_cat"], r["drain_via"]))
+
+
+def _wash(hexcol, amt=0.16):
+    """A near-black tint of a category colour, blended over the deepest step — the ONE
+    sanctioned filled-chip background (the switch-class chip). Never used elsewhere."""
+    base = (_BODY or "#0B0C0E").lstrip("#")
+    c = hexcol.lstrip("#")
+    b = tuple(int(base[i:i + 2], 16) for i in (0, 2, 4))
+    f = tuple(int(c[i:i + 2], 16) for i in (0, 2, 4))
+    m = tuple(round(b[i] + (f[i] - b[i]) * amt) for i in range(3))
+    return "#%02x%02x%02x" % m
+
+
+class _Dot(QWidget):
+    """A crisply painted category dot (QSS radius on a tiny QLabel renders fuzzy)."""
+    def __init__(self, color, d=7, filled=True, parent=None):
+        super().__init__(parent)
+        self._c, self._d, self._f = color, d, filled
+        self.setFixedSize(d, d)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        r = QRectF(0.5, 0.5, self._d - 1, self._d - 1)
+        if self._f:
+            p.setPen(Qt.NoPen); p.setBrush(QColor(self._c)); p.drawEllipse(r)
+        else:
+            p.setPen(QPen(QColor(self._c), 1.3)); p.setBrush(Qt.NoBrush); p.drawEllipse(r)
+
+
+class _PinHeaderBar(QWidget):
+    """The selected pin's identity as a title block (Quiet Instrument): line 1 is the
+    signal name as the one hero, the pin number beside it, and the single switch-class
+    chip; line 2 is a dim metadata line (category dot + words). No pills, no borders."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(9)
+        self.setStyleSheet("background:transparent;")
+        self._l1 = QHBoxLayout(); self._l1.setContentsMargins(0, 0, 0, 0); self._l1.setSpacing(10)
+        self._l2 = QHBoxLayout(); self._l2.setContentsMargins(0, 0, 0, 0); self._l2.setSpacing(7)
+        v.addLayout(self._l1); v.addLayout(self._l2)
+
+    def _clear(self):
+        for lay in (self._l1, self._l2):
+            while lay.count():
+                it = lay.takeAt(0)
+                w = it.widget()
+                if w is not None:
+                    w.setParent(None); w.deleteLater()
+
+    def _lab(self, text, *, mono, size, weight, color):
+        fam = (_SVG_MONO if mono else _SVG_FONT).split(",")[0].strip("'")
+        lb = QLabel(str(text))
+        f = QFont(fam); f.setPointSizeF(size); f.setWeight(weight)
+        lb.setFont(f)
+        lb.setStyleSheet(f"color:{color};background:transparent;")
+        return lb
 
     def set_message(self, text):
         self._clear()
-        fam = _SVG_FONT.split(",")[0].strip("'")
-        lb = QLabel(str(text))
-        lb.setFont(QFont(fam, 11))
-        lb.setStyleSheet(f"color:{_MUT};background:transparent;")
-        self._h.addWidget(lb)
-        self._h.addStretch(1)
+        self._l1.addWidget(self._lab(text, mono=False, size=11, weight=QFont.Normal, color=_MUT))
+        self._l1.addStretch(1)
 
     def set_pin(self, p, cat=None):
         self._clear()
-        fam = _SVG_FONT.split(",")[0].strip("'")
-        monof = _SVG_MONO.split(",")[0].strip("'")
         name = next(iter(p["pin_names"]), "") if p["pin_names"] else ""
         cls = p["switch_class"]
         ccol = _SWITCH_COLOR.get(cls, _MUT)
         clabel = _SWITCH_LABEL.get(cls, cls)
-        side = (p.get("side", "") or "").title()
 
-        pid = QLabel(f"<span style=\"font-family:'{fam}';font-size:8pt;font-weight:600;"
-                     f"color:{_MUT};letter-spacing:1px\">PIN</span>&nbsp;&nbsp;"
-                     f"<span style=\"font-family:'{monof}';font-size:16pt;font-weight:600;"
-                     f"color:{_TXT}\">{p['position']}</span>")
-        pid.setTextFormat(Qt.RichText)
-        pid.setStyleSheet(f"background:{_CHIP};border:1px solid {_LINE};border-radius:9px;padding:5px 12px;")
-        self._h.addWidget(pid)
-
+        # line 1 — hero signal name, pin number, then the one class chip (right)
+        self._l1.addWidget(self._lab(name or f"Pin {p['position']}", mono=True,
+                                     size=17, weight=QFont.DemiBold, color=_TXT))
         if name:
-            self._h.addWidget(_pill(name, mono=True, strong=True))
+            self._l1.addWidget(self._lab(f"Pin {p['position']}", mono=True,
+                                         size=11, weight=QFont.Normal, color=_MUT))
+        self._l1.addStretch(1)
+        chip = self._lab(clabel, mono=False, size=9.5, weight=QFont.DemiBold, color=ccol)
+        chip.setStyleSheet(f"color:{ccol};background:{_wash(ccol)};border-radius:6px;padding:4px 10px;")
+        self._l1.addWidget(chip)
 
-        cl = QLabel(f"<span style='color:{ccol}'>&#9679;</span>&nbsp; {html.escape(clabel)}")
-        cl.setTextFormat(Qt.RichText)
-        cl.setFont(QFont(fam, 9))
-        cl.setStyleSheet(f"background:{_CHIP};border:1px solid {_LINE};border-radius:8px;"
-                         f"padding:5px 11px;color:{_TXT};")
-        self._h.addWidget(cl)
-
-        if side:
-            self._h.addWidget(_pill(f"{side} Side", color=_MUT))
+        # line 2 — dim metadata: category dot + word, side, 5 V-tolerant
+        parts = []
         if cat:
-            word = _CAT_WORD.get(cat, cat.title())
-            self._h.addWidget(_pill(word, net=_CAT_COLOR.get(cat, _MUT)))
-        self._h.addStretch(1)
+            parts.append((_CAT_COLOR.get(cat, _MUT), _CAT_WORD.get(cat, cat.title())))
+        side = (p.get("side", "") or "").title()
+        if side:
+            parts.append((None, f"{side} side"))
+        fv = p.get("five_v")
+        if fv and fv.get("tolerant"):
+            parts.append((None, "5 V-Tolerant"))
+        for i, (dcol, word) in enumerate(parts):
+            if i > 0:
+                self._l2.addWidget(self._lab("·", mono=False, size=10.5, weight=QFont.Normal, color=_FAINT))
+            if dcol:
+                self._l2.addWidget(_Dot(dcol, 7))
+            self._l2.addWidget(self._lab(word, mono=False, size=10.5, weight=QFont.Normal, color=_MUT))
+        self._l2.addStretch(1)
 
 
 class ConnectionRow(QFrame):
@@ -1464,13 +1418,13 @@ class Stm32PinsWidget(QWidget):
         self._packages_populated = False
         bar.addWidget(self.pkg_combo)
         bar.addStretch()
-        self.btn_build = uw.button("Build Database", "default", lucide_icon("wrench", LUCIDE_AMBER))
+        self.btn_build = uw.button("Build database", "default", lucide_icon("wrench", LUCIDE_AMBER))
         self.btn_build.clicked.connect(self.build_database)
         bar.addWidget(self.btn_build)
-        self.btn_gen = uw.button("Export Pin Data", "default", lucide_icon("save", LUCIDE_GREEN))
+        self.btn_gen = uw.button("Export pin data", "default", lucide_icon("save", LUCIDE_GREEN))
         self.btn_gen.clicked.connect(self.generate)
         bar.addWidget(self.btn_gen)
-        self.btn_vault = uw.button("Save to Vault", "primary", lucide_icon("file-up", LUCIDE_GREEN))
+        self.btn_vault = uw.button("Save to vault", "primary", lucide_icon("file-up", LUCIDE_GREEN))
         self.btn_vault.setToolTip("Write the pin data into the Obsidian Brain vault")
         self.btn_vault.clicked.connect(self.generate_to_vault)
         bar.addWidget(self.btn_vault)
@@ -1482,12 +1436,12 @@ class Stm32PinsWidget(QWidget):
 
         # ── readout band (shared instrument fascia) ──
         self.readout = uw.ReadoutBand([
-            ("must", "Must-Switch", _SWITCH_COLOR[sdb.SWITCH_MUST]),
+            ("must", "Must-switch", _SWITCH_COLOR[sdb.SWITCH_MUST]),
             ("osc", "Oscillator", _SWITCH_COLOR[sdb.SWITCH_OSC_OPTIONAL]),
             ("fixed", "Fixed", None),
             ("breakout", "Breakout", _BREAKOUT_COLOR),
-            ("fivev", "5V-Tolerant", None),
-            ("io", "Per-Pin I/O", None),
+            ("fivev", "5 V-tolerant", None),
+            ("io", "Per-pin I/O", None),
             ("vdda", "VDDA (V)", None),
         ])
         root.addWidget(self.readout)
@@ -1559,10 +1513,10 @@ class Stm32PinsWidget(QWidget):
         self.insp_header = _PinHeaderBar()
         self.insp_header.set_message("Select a pin")
         iv.addWidget(self.insp_header)
-        iv.addWidget(uw.SectionHeader("Signal Path"))
+        iv.addWidget(uw.SectionHeader("Signal path"))
         self.diagram = ConnectionDiagram()
         iv.addWidget(self.diagram)
-        iv.addWidget(uw.SectionHeader("Source / Drain"))
+        iv.addWidget(uw.SectionHeader("Source and drain"))
         self.ledger = _ConnectionLedger()       # exact terminals + nets, no elision
         iv.addWidget(self.ledger)
         iv.addWidget(uw.SectionHeader("Detail"))

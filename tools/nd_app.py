@@ -95,14 +95,14 @@ def _readout(specs):
 
 
 def _section(text: str) -> QWidget:
-    """Uppercase letter-spaced overline + hairline rule (the structural device)."""
+    """Sentence-case overline + hairline rule (the structural device, no letterspacing)."""
     w = QWidget()
     lay = QHBoxLayout(w)
     lay.setContentsMargins(0, 6, 0, 4)
     lay.setSpacing(10)
-    cap = CaptionLabel(text.upper())
+    cap = CaptionLabel(text)
     cap.setTextColor(ui_theme.tc("FG_DIM"), ui_theme.tc("FG_DIM"))
-    f = cap.font(); f.setLetterSpacing(QFont.PercentageSpacing, 108); cap.setFont(f)
+    f = cap.font(); f.setPointSizeF(10.5); cap.setFont(f)
     rule = QFrame(); rule.setFixedHeight(1); rule.setStyleSheet(f"background:{ui_theme.tc('BORDER')};")
     lay.addWidget(cap)
     lay.addWidget(rule, 1)
@@ -141,11 +141,11 @@ class ManagerView(QWidget):
         self.btn_refresh.clicked.connect(self.refresh)
         bar.addWidget(self.btn_refresh)
         for label, slot in [("Import ZIPs", self._process_zips),
-                            ("Clean Leftovers", self._clean),
+                            ("Clean leftovers", self._clean),
                             ("Repair", self._repair),
-                            ("Remove Duplicates", self._dedupe),
-                            ("Register Libraries", self._register),
-                            ("Render Board", self._render_board)]:
+                            ("Remove duplicates", self._dedupe),
+                            ("Register libraries", self._register),
+                            ("Render board", self._render_board)]:
             b = PushButton(label)
             b.clicked.connect(slot)
             bar.addWidget(b)
@@ -161,7 +161,7 @@ class ManagerView(QWidget):
         # view controls: grouped toggle + filter
         vc = QHBoxLayout()
         vc.setSpacing(8)
-        vc.addWidget(BodyLabel("Group by Component"))
+        vc.addWidget(BodyLabel("Group by component"))
         self.group_sw = SwitchButton()
         self.group_sw.setChecked(True)
         self.group_sw.checkedChanged.connect(lambda *_: self.refresh())
@@ -442,7 +442,7 @@ def main():
     here = Path(__file__).resolve().parent
     for ttf in glob.glob(str(here / "fonts" / "*.ttf")):
         QFontDatabase.addApplicationFont(ttf)
-    for fam in ("Space Grotesk", "Geist", "Inter", "Segoe UI Variable Text", "Segoe UI"):
+    for fam in ("Segoe UI Variable Text", "Segoe UI", "Inter", "Geist"):
         if fam in set(QFontDatabase().families()):
             app.setFont(QFont(fam, 9))
             break

@@ -78,38 +78,118 @@ the same: decoration standing in for design.
 - **Dense is allowed; noisy is not.** This is a pro engineering tool — density is fine
   when it has rhythm, alignment, and air. Cramped-with-boxes is the failure mode.
 - **Motion is minimal and purposeful,** and respects reduced-motion.
-- **Copy is design material.** Full, Title-Case labels; no abbreviations, no em dashes,
-  complete sentences for notes. (Already enforced; keep it.)
+- **Copy is design material.** **Sentence case** — capitalize only the first word and any
+  proper nouns / acronyms ("Signal path", "Must-switch", "Connected net"), never Title Case
+  ("Signal Path") and never all-lowercase ("signal path"). No abbreviations, no em dashes,
+  complete sentences for notes. Signal names, refdes, and nets keep their real casing
+  (PE3, GND, U_SW_L100_1).
 
 ---
 
-## 3. Locked tokens
+## 3. Locked tokens — direction: **Quiet Instrument**
 
-> **Pending the chosen art direction** (design workflow in progress). Until locked, the
-> current graphite base below is the working reference. Do not treat as final.
+Chosen 2026-07-04 (Vercel/Geist surfaces + Linear's borderless property list; azure
+accent carries identity, not a trendy typeface). The whole point is restraint: turn
+~85% of the pane down so the ~15% that matters can read.
 
-**Backgrounds (steps, not borders):**
-- Base: `#0f1012` · Panel: `#17181b` · Raised: `#1e2024` _(to be re-tuned per direction)_
+**Backgrounds (three steps, separated by elevation not borders):**
+- `bg_base #0B0C0E` — window / tab canvas
+- `bg_raised #131519` — the inspector reading surface (~+4% lift; header, ledger, detail all live here as plain text)
+- `bg_inset #1A1D22` — the ONE lift-step: the single signal-path container, and full-row hover / selected-row wash. "One step up = grouped or active." There is no third box.
 
-**Text tiers:** Primary `#e9eaed` · Secondary `#8b8f97` · Tertiary _tbd_
-**Hairline (use rarely):** `#2b2e34`
-**Accent (neutral, chrome only):** `#d6d8dc`
-**Semantic (muted, meaning only):** power `#c6a366` · ground `#7f8b9a` · core `#a98cc0`
-· service `#77a688` · lane `#6f93b5` · must `#c9736c` · osc `#c99f5e` · fixed `#8b8f97`
+**Hairlines (the whole border budget):** `#23262C` (1px, ~5-6% white). Used ONLY for: the
+3 section-eyebrow trailing rules, the ledger row dividers, and the one table-header rule.
+Never 2px, never colored except the azure focus/selected ring. Reserve `#2E323A` for one
+structural divide if ever truly needed.
 
-**Type:** _face + scale to be locked from the chosen direction._ Mono for refdes / nets /
-contacts.
-**Radius:** _one value, to be locked._
-**Spacing scale:** _to be locked (e.g. 4 · 8 · 12 · 16 · 24 · 32)._
+**Text tiers (hierarchy comes from these + weight, not size):**
+- `text_1 #ECEEF1` — primary: the pin hero, stat numbers, group subheads, primary values, the live-branch net
+- `text_2 #9AA0AA` (~58%) — labels, secondary values, detail keys, the ledger side column
+- `text_3 #656B75` (~40%) — micro-labels, column headers, units, through-component, section eyebrows, the dormant branch, null em-dashes
+
+**Accent (azure — interaction ONLY, never a value color):** `#4FA1E6` · hover `#6BB2EE` ·
+press `#3E8ED0` · selected-row wash `#142230`. Appears only on: selected pin-map cell ring,
+selected ledger-row 2px left-rule, keyboard focus rings, primary button. Azure (instrument),
+deliberately not indigo/purple (the AI-startup cliché); it cannot collide with `lane` (teal).
+
+**Semantic (muted ~12%, meaning only — a 6px dot and the delivered-net text, nothing else):**
+must `#E8756B` · power `#D6A44C` · osc `#E67E33` · ground `#8B94A1` · core `#AC8DD8` ·
+service `#6FB893` · lane `#57AEBE` · fixed `#767C86`. In the inspector these appear in
+exactly TWO places: a 6px leading dot, and the delivered-net mono glyphs. Never a border,
+a fill, a left-rule on a card, or repeated on every cell. The pin-map may run them more
+saturated (there, color *is* the data). Selection reuses the azure accent, not a category.
+
+**Type — native Windows: Segoe UI (Variable) for interface/prose + Consolas / Cascadia Mono
+for all machine data (refdes, nets, pins, terminals so columns align).** Weights **Regular
+and Semibold only** — never Bold, never Light, never Medium. No letterspacing anywhere.
+Sentence case (see §2). Left-aligned. Sizes in pt (Qt); px ≈ pt × 1.333 at 96 dpi. Stay at
+or above the floor: **never below 12px Regular / 14px Semibold** (≈ 9pt / 10.5pt). 120-135%
+line height, 8px grid.
+- Pin hero (signal name): mono ~17pt / Semibold, text_1 — the focal element
+- Stat numbers: mono ~15pt / Semibold, tabular, text_1 (label ~9.5pt Regular, in text_3)
+- Section header: Segoe UI ~12.5pt / Semibold, text_2, with a trailing hairline
+- Group subhead: mono ~10.5pt / Semibold, text_1
+- Primary value / net: ~10.5-11pt (mono for data, Semibold for the delivered net), text_1
+- Secondary / label / side / column header: Segoe UI ~9.5-10.5pt / Regular, text_2 or text_3
+- Detail key: Segoe UI ~10.5pt / Regular, text_2, fixed 140px column
+Mono is reserved STRICTLY for machine values so monospace re-acquires meaning. Enable tabular
+figures wherever digits stack. Deviation note: the pure-Windows guidance recommends a 16px body;
+this dense engineering inspector runs one step tighter (~14px) to keep the pin table scannable,
+while holding the 12px / 14px legibility floor.
+
+**Radius:** exactly two. 8px for the one container (signal-path) and menus; 6px for controls,
+the row hover, focus rings, and the single must-switch chip. Stadium pills on data are retired.
+
+**Spacing:** 4px grid — 4 / 8 / 12 / 16 / 20 / 24 / 32. The device is a ~6:1 contrast between
+inter-group and intra-group space: 24px between sections, 2-4px between rows in a group. Data
+row 30px, signal-path padding 14px, detail row gap 10px. One shared left baseline; ledger
+columns fixed-width so both branch groups align down the pane.
 
 ---
 
-## 4. Component recipes
+## 4. Component recipes (Quiet Instrument)
 
-> _To be written once the direction is locked — the concrete, borrow-nothing treatment
-> for: pin header, signal-path view, source/drain ledger, detail block, pin map, and the
-> Manager table. Each recipe states exactly what is shown, its hierarchy, and what is
-> deliberately **not** drawn._
+**Pin header** — one title block on `bg_raised`, no border, no pills. Line 1 baseline row:
+`PE3` (Geist Mono 24/600 text_1) · middot text_3 · `Pin 2` (Geist Mono 13/400 text_2); right-
+aligned, the ONE sanctioned fill: a `must-switch` chip (coral wash `#221614`, text `#E8756B`,
+6px radius, 11/500, no border). Line 2 dim metadata (Geist Sans 12/400 text_2, sentence case,
+middot-separated): a 6px category dot + `Ground` · `left side` · `5 V-tolerant`.
+
+**Signal path** — ONE `bg_inset` container (8px radius, 14px pad, no border, no socket card,
+no accent bar). Origin pin stated once at left (mono 15/600) with two 1px QPainter connector
+elbows to two rows. Each branch is one flow row (not a card): `[state dot] kind(lowercase dim)
+· mechanism(mono text_2) · terminals · → · delivered net(category-color mono 14/600) · dest(mono
+11 text_3)`. **One-hot ghosting:** closed branch at 100% + FILLED dot; open branch at ~40% + HOLLOW
+dot — board state legible with no badge. Footnote one line, text_3. `→` is the only arrow.
+
+**Source / drain ledger** — the biggest win: delete both card wrappers, every pill, every cell
+border. One real aligned table (QGridLayout of frameless QLabels, or a text-only paint delegate —
+never QFrame chips). Column header once: `side · terminal · connected net · through` (Sans 11/500
+text_3, sentence case, one hairline under). Each branch is a lightweight subhead (6px category dot
++ mono group name + trailing dim lowercase role — no box). Data rows 30px, 1px hairline dividers,
+full-row hover `bg_inset`. Cells plain text on the fixed grid: side = `▸ source` / `◂ drain`
+(glyph + Sans 12 text_2); terminal = mono 13 text_1; net = the payload, category-color mono 13
+with a 6px leading dot (the ONLY colored cell); through = mono 12 text_3. Nulls = dim `—`, never a
+boxed "None". Both groups share fixed columns. Reads like a datasheet pinout, not a Bento grid.
+
+**Detail** — kill the uppercase seated label chips; this is the quietest block. Plain two-column
+definition list: key Geist Sans 12/400 text_2, Title case, fixed 128px, no chip; value 13 text_1
+(mono for data, Sans for prose) that wraps fully or truncates with an explicit ellipsis + tooltip.
+Rows separated by 10px whitespace. Zero borders, zero chips.
+
+**Stat strip** — keep it, demote the chrome: numbers Geist Mono 22/600 tabular text_1, units pushed
+to text_3 so a spec (`±25 mA`) reads distinctly from a count, stats separated by whitespace not
+hairlines.
+
+**Pin map** — keep the saturated category colors (color *is* the data here). Selected pin = azure
+ring. This is the one place color runs at full strength.
+
+**Watch (from the judge's pitfalls):** the ~4-6% elevation steps are load-bearing — verify real
+contrast, never shave the eyebrow hairlines to look cleaner. Fix ledger columns in pixels and
+guarantee the mono font loads (tabular) or the borderless table collapses. Draw connectors on the
+device-pixel grid (integer / 0.5px, cosmetic 1px pen) or they read fuzzy. Do the ghosting by
+painting colors at target opacity, NOT by stacking QGraphicsOpacityEffect on live widgets. Discipline
+is all-or-nothing: one stray QFrame border or stadium pill reintroduces the generated texture.
 
 ---
 
