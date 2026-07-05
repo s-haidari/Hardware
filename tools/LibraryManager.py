@@ -46,7 +46,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import (
     Qt, QTimer, pyqtSignal, QObject, QSettings,
-    QRect, QSize, QPoint
+    QRect, QRectF, QSize, QPoint
 )
 from PyQt5.QtGui import (
     QPalette, QColor, QBrush, QIcon, QImage, QPixmap,
@@ -1856,9 +1856,16 @@ class PreviewView(QWidget):
             except Exception:
                 pass
         elif self._pixmap is not None:
-            x = (self.width() - self._pixmap.width()) // 2
-            y = (self.height() - self._pixmap.height()) // 2
-            p.drawPixmap(x, y, self._pixmap)
+            # aspect-fit fill: scale the render to the pane (with a small margin)
+            # instead of letterboxing a fixed-size image in a large well.
+            pm = self._pixmap
+            avail_w, avail_h = self.width() - 16, self.height() - 16
+            if pm.width() > 0 and pm.height() > 0 and avail_w > 0 and avail_h > 0:
+                s = min(avail_w / pm.width(), avail_h / pm.height())
+                dw, dh = pm.width() * s, pm.height() * s
+                target = QRectF((self.width() - dw) / 2, (self.height() - dh) / 2, dw, dh)
+                p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+                p.drawPixmap(target, pm, QRectF(pm.rect()))
         else:
             p.setPen(QColor(_tc("SEC_FG", "#b8b8c0")))
             p.drawText(self.rect(), Qt.AlignCenter, self._text)

@@ -81,11 +81,12 @@ def _readout(specs):
         cl.setContentsMargins(0, 0, 44, 0)
         cl.setSpacing(2)
         v = QLabel(str(val))
+        v.setObjectName("roValue")           # colour comes from the window QSS (theme-aware)
         vf = QFont(mono); vf.setPointSizeF(15); vf.setWeight(QFont.DemiBold)
         v.setFont(vf)
-        v.setStyleSheet(f"color:{ui_theme.tc('FG')};background:transparent;")
         cap = CaptionLabel(label)
-        cap.setTextColor(ui_theme.tc("FG_DIM"), ui_theme.tc("FG_DIM"))
+        cap.setTextColor(QColor(ui_theme.LIGHT_COLORS["FG_DIM"]),
+                         QColor(ui_theme.DARK_COLORS["FG_DIM"]))
         cf = cap.font(); cf.setPointSizeF(8.5); cap.setFont(cf)
         cl.addWidget(v)
         cl.addWidget(cap)
@@ -96,15 +97,16 @@ def _readout(specs):
 
 
 def _section(text: str) -> QWidget:
-    """Sentence-case overline + hairline rule (the structural device, no letterspacing)."""
+    """Title-Case overline + hairline rule (the structural device, theme-aware)."""
     w = QWidget()
     lay = QHBoxLayout(w)
     lay.setContentsMargins(0, 6, 0, 4)
     lay.setSpacing(10)
     cap = CaptionLabel(text)
-    cap.setTextColor(ui_theme.tc("FG_DIM"), ui_theme.tc("FG_DIM"))
+    cap.setTextColor(QColor(ui_theme.LIGHT_COLORS["FG_DIM"]),
+                     QColor(ui_theme.DARK_COLORS["FG_DIM"]))
     f = cap.font(); f.setPointSizeF(10.5); cap.setFont(f)
-    rule = QFrame(); rule.setFixedHeight(1); rule.setStyleSheet(f"background:{ui_theme.tc('BORDER')};")
+    rule = QFrame(); rule.setFixedHeight(1); rule.setObjectName("sectionRule")
     lay.addWidget(cap)
     lay.addWidget(rule, 1)
     return w
@@ -161,7 +163,8 @@ class ManagerView(QWidget):
             bar.addWidget(b)
         bar.addStretch(1)
         self.git_lbl = CaptionLabel("")
-        self.git_lbl.setTextColor(ui_theme.tc("FG_DIM"), ui_theme.tc("FG_DIM"))
+        self.git_lbl.setTextColor(QColor(ui_theme.LIGHT_COLORS["FG_DIM"]),
+                                  QColor(ui_theme.DARK_COLORS["FG_DIM"]))
         self.btn_commit = PushButton("Commit")
         self.btn_commit.setToolTip("Commit the shared-library changes to git")
         self.btn_commit.clicked.connect(self._commit)
@@ -214,7 +217,8 @@ class ManagerView(QWidget):
             pane = QVBoxLayout()
             pane.setSpacing(6)
             cap = CaptionLabel(title)
-            cap.setTextColor(ui_theme.tc("FG_DIM"), ui_theme.tc("FG_DIM"))
+            cap.setTextColor(QColor(ui_theme.LIGHT_COLORS["FG_DIM"]),
+                             QColor(ui_theme.DARK_COLORS["FG_DIM"]))
             cf = cap.font(); cf.setPointSizeF(11); cap.setFont(cf)
             pv.setToolTip(tip)
             pv.setMinimumHeight(200)
@@ -276,7 +280,11 @@ class ManagerView(QWidget):
                 if c == 4 and g.get("dangling"):
                     it.setForeground(_qcolor(ui_theme.status("warn")))
                 self.table.setItem(r, c, it)
-        self.table.resizeColumnsToContents()
+        # fill the viewport: text columns share the width, Status hugs its content
+        hdr = self.table.horizontalHeader()
+        for c in range(4):
+            hdr.setSectionResizeMode(c, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(4, QHeaderView.ResizeToContents)
         self._ro["items"].setText(str(len(rows)))
         self._ro["symbols"].setText(str(n_sym))
         self._ro["footprints"].setText(str(n_fp))
@@ -330,15 +338,15 @@ class ManagerView(QWidget):
                 pv.show_text("Select a part")
             return
         g = rows[r]
-        # symbol
+        # symbol (rendered oversize; the pane scales it to fit, so it stays crisp)
         syms = g.get("symbols") or []
         block = self._sym_block(syms[0]) if syms else None
-        img = fp_render.render_symbol_image(block) if block else None
+        img = fp_render.render_symbol_image(block, px=520) if block else None
         (self.pv_symbol.show_image(img) if img is not None
          else self.pv_symbol.show_text("No symbol"))
         # footprint
         fp = Path(self.cfg["FootprintLib"]) / f"{g.get('footprint', '')}.kicad_mod"
-        img = fp_render.render_footprint_image(fp) if fp.exists() else None
+        img = fp_render.render_footprint_image(fp, px=640) if fp.exists() else None
         (self.pv_footprint.show_image(img) if img is not None
          else self.pv_footprint.show_text("No footprint"))
         # 3D model (loaded off the GUI thread)
@@ -466,19 +474,29 @@ def apply_app_palette(dark: bool = True):
         ap.setPalette(p)
 
 
+def _theme_qss(dark: bool = True) -> str:
+    """The full token stylesheet (buttons, inputs, combos, menus, tables, headers,
+    scrollbars) rendered from the shared template. The legacy shell applied this to
+    its window; the Fluent shell must too, or every custom-styled control falls back
+    to unthemed native rendering (the washed-out 'disabled button' look)."""
+    t = ui_theme.DARK_COLORS if dark else ui_theme.LIGHT_COLORS
+    qss = LM.LibraryManagerWindow._THEME_QSS
+    for k, v in t.items():
+        qss = qss.replace("@@" + k + "@@", v)
+        qss = qss.replace("@" + k + "@", v)
+    check = LM.resource_path("check_dark.png" if dark else "check_light.png")
+    qss = qss.replace("@CHECK_IMG@", str(check).replace("\\", "/"))
+    qss = qss.replace("@CARET_DOWN@", str(LM.resource_path("caret_down.png")).replace("\\", "/"))
+    qss = qss.replace("@CARET_UP@", str(LM.resource_path("caret_up.png")).replace("\\", "/"))
+    return qss
+
+
 class NetdeckWindow(FluentWindow):
     def __init__(self, cfg):
         super().__init__()
+        self._dark = True
         fluent_theme.apply_grayscale_fluent(dark=True)
         apply_app_palette(dark=True)
-        # graphite ground + GRAYSCALE standard checkboxes (Fusion checks default to a
-        # blue that breaks the palette — force the neutral accent instead).
-        self.setStyleSheet(
-            f"#managerView{{background:{ui_theme.tc('MAIN_BG')};}}"
-            f"QCheckBox::indicator{{width:15px;height:15px;border:1.4px solid "
-            f"{ui_theme.tc('BTN_BORDER')};border-radius:3px;background:transparent;}}"
-            f"QCheckBox::indicator:checked{{background:{ui_theme.tc('ACCENT')};"
-            f"border-color:{ui_theme.tc('ACCENT')};}}")
         self.cfg = cfg
         self.setWindowTitle("NETDECK — Firmware Extraction Bench")
         self.resize(1360, 880)
@@ -489,29 +507,86 @@ class NetdeckWindow(FluentWindow):
         self.manager = ManagerView(cfg, self.services)
         self.tools = self._build_tools(ctx)
         self.stm32 = self._build_stm32(ctx)
-        for w in (self.tools, self.stm32):   # push the reused tabs' internal theme to dark
-            if hasattr(w, "apply_theme"):
-                try:
-                    w.apply_theme(True)
-                except Exception:
-                    pass
-        apply_app_palette(dark=True)          # re-assert after tabs republish the theme
-        # grayscale standard checkboxes on the reused tabs (highest specificity, so it
-        # wins over the widget's own stylesheet; Fusion's blue check breaks the palette)
-        _cb = (f"QCheckBox::indicator{{width:15px;height:15px;border:1.4px solid "
-               f"{ui_theme.tc('BTN_BORDER')};border-radius:3px;background:transparent;}}"
-               f"QCheckBox::indicator:checked{{background:{ui_theme.tc('ACCENT')};"
-               f"border-color:{ui_theme.tc('ACCENT')};}}")
-        for w in (self.tools, self.stm32):
-            try:
-                w.setStyleSheet((w.styleSheet() or "") + _cb)
-            except Exception:
-                pass
+        self._apply_shell_theme(True)
 
         self.addSubInterface(self.manager, FluentIcon.LIBRARY, "KiCad Manager")
         self.addSubInterface(self.tools, FluentIcon.DEVELOPER_TOOLS, "KiCad Tools")
         self.addSubInterface(self.stm32, FluentIcon.IOT, "STM32 Pins")
-        self.navigationInterface.setExpandWidth(200)
+        # Windows 11 Settings shell: an always-expanded nav pane with icon + label,
+        # no back arrow, no hamburger collapse; a dark/light toggle at the bottom.
+        nav = self.navigationInterface
+        try:
+            from qfluentwidgets import NavigationItemPosition
+            nav.addItem(routeKey="themeToggle", icon=FluentIcon.CONSTRACT,
+                        text="Dark / Light", onClick=self._toggle_theme,
+                        selectable=False, position=NavigationItemPosition.BOTTOM)
+        except Exception:                      # noqa: BLE001
+            pass
+        nav.setExpandWidth(200)
+        for meth, arg in (("setReturnButtonVisible", False),
+                          ("setCollapsible", False),
+                          ("setMinimumExpandWidth", 900)):
+            try:
+                getattr(nav, meth)(arg)
+            except Exception:                  # noqa: BLE001
+                pass
+        try:
+            nav.expand(useAni=False)
+        except TypeError:
+            nav.expand()
+        except Exception:                      # noqa: BLE001
+            pass
+        # the docked 200px nav pane sits under the title text's default position:
+        # push the window title right of the pane so they never overlap
+        try:
+            self.titleBar.hBoxLayout.insertSpacing(0, 150)
+        except Exception:                      # noqa: BLE001
+            pass
+
+    @staticmethod
+    def _cb_qss(t) -> str:
+        """Grayscale standard checkboxes (Fusion's blue check breaks the palette)."""
+        return (f"QCheckBox::indicator{{width:15px;height:15px;border:1.4px solid "
+                f"{t['BTN_BORDER']};border-radius:3px;background:transparent;}}"
+                f"QCheckBox::indicator:checked{{background:{t['ACCENT']};"
+                f"border-color:{t['ACCENT']};}}")
+
+    def _apply_shell_theme(self, dark: bool):
+        """Windows 11 dark / light: retheme the Fluent components, the app palette,
+        the token QSS (buttons, inputs, tables, headers), and both reused tabs."""
+        self._dark = dark
+        t = ui_theme.DARK_COLORS if dark else ui_theme.LIGHT_COLORS
+        fluent_theme.apply_grayscale_fluent(dark=dark)
+        apply_app_palette(dark=dark)
+        self.setStyleSheet(
+            _theme_qss(dark=dark)
+            + f"#managerView{{background:{t['MAIN_BG']};}}"
+            f"QLabel#roValue{{color:{t['FG']};background:transparent;}}"
+            f"QFrame#sectionRule{{background:{t['BORDER']};border:none;}}"
+            + self._cb_qss(t))
+        for w in (getattr(self, "tools", None), getattr(self, "stm32", None)):
+            if w is not None and hasattr(w, "apply_theme"):
+                try:
+                    w.apply_theme(dark)
+                except Exception:              # noqa: BLE001
+                    pass
+        apply_app_palette(dark=dark)           # re-assert after tabs republish the theme
+        for w in (getattr(self, "tools", None), getattr(self, "stm32", None)):
+            if w is not None:
+                try:
+                    base = (w.styleSheet() or "").split("/*cb*/")[0]
+                    w.setStyleSheet(base + "/*cb*/" + self._cb_qss(t))
+                except Exception:              # noqa: BLE001
+                    pass
+        # the Manager's painted preview panes read the active theme at paint time
+        for pv in (getattr(self.manager, "pv_symbol", None),
+                   getattr(self.manager, "pv_footprint", None),
+                   getattr(self.manager, "pv_model", None)):
+            if pv is not None:
+                pv.update()
+
+    def _toggle_theme(self):
+        self._apply_shell_theme(not self._dark)
 
     def _log(self, msg):
         if getattr(self, "manager", None) is not None:
@@ -547,6 +622,9 @@ def _fallback(text):
 def main():
     os.environ.setdefault("QT_QPA_PLATFORM", os.environ.get("QT_QPA_PLATFORM", ""))
     app = QApplication.instance() or QApplication(sys.argv)
+    # Fusion renders from the palette; the default windowsvista style ignores it and
+    # paints light-grey native controls inside the dark app.
+    app.setStyle("Fusion")
     here = Path(__file__).resolve().parent
     for ttf in glob.glob(str(here / "fonts" / "*.ttf")):
         QFontDatabase.addApplicationFont(ttf)

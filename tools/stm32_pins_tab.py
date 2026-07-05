@@ -1029,6 +1029,201 @@ class _ConnectionLedger(QWidget):
                 self._v.addWidget(self._row("◂", "Drain", None, r["drain_net"], r["drain_cat"], r["drain_via"]))
 
 
+class _FabRow(QWidget):
+    """One clickable channel row in the Cells fabric view: click jumps to the
+    channel's socket pin on the Map."""
+
+    def __init__(self, pos, on_pin, parent=None):
+        super().__init__(parent)
+        self._pos, self._on_pin = pos, on_pin
+        self.setObjectName("fabRow")
+        if pos is not None and on_pin is not None:
+            self.setCursor(Qt.PointingHandCursor)
+            self.setToolTip(f"Show Pin {pos} on the Map")
+
+    def mousePressEvent(self, _e):
+        if self._pos is not None and self._on_pin is not None:
+            self._on_pin(self._pos)
+
+
+class CellsFabric(QScrollArea):
+    """The switch fabric, cell by cell (native, interactive — replaces the HTML
+    dump): card materials, the shared SPI control bus, then one aligned channel
+    table per ADG714 cell. Rail names carry their category colour; clicking a
+    channel row jumps to that socket pin on the Map. This view is fabric-centric
+    (cell -> channels); the Map stays pin-centric — no duplication."""
+
+    W_CHAN, W_TERM, W_PIN = 92, 130, 190
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._on_pin = None
+        self._inner = QWidget()
+        self._v = QVBoxLayout(self._inner)
+        self._v.setContentsMargins(2, 2, 12, 12)
+        self._v.setSpacing(0)
+        self.setWidget(self._inner)
+        self.setStyleSheet("QScrollArea{background:transparent;border:none;}")
+        self._inner.setStyleSheet("background:transparent;")
+
+    def _lab(self, s, *, mono=False, size=9.5, weight=QFont.Normal, color=None,
+             fixed=None, wrap=False):
+        fam = (_SVG_MONO if mono else _SVG_FONT).split(",")[0].strip("'")
+        lb = QLabel(str(s))
+        f = QFont(fam); f.setPointSizeF(size); f.setWeight(weight)
+        lb.setFont(f)
+        lb.setWordWrap(wrap)
+        lb.setStyleSheet(f"color:{color or _TXT};background:transparent;")
+        if fixed:
+            lb.setFixedWidth(fixed)
+        return lb
+
+    def _gap(self, h):
+        s = QWidget(); s.setFixedHeight(h); s.setStyleSheet("background:transparent;")
+        self._v.addWidget(s)
+
+    def _eyebrow(self, text):
+        w = QWidget()
+        h = QHBoxLayout(w); h.setContentsMargins(0, 0, 0, 0); h.setSpacing(10)
+        h.addWidget(self._lab(text, size=11, weight=QFont.DemiBold, color=_TXT))
+        rule = QFrame(); rule.setFixedHeight(1)
+        rule.setStyleSheet(f"background:{_LINE};border:none;")
+        h.addWidget(rule, 1)
+        self._v.addWidget(w)
+        self._gap(8)
+
+    def set_data(self, a, cw, on_pin=None):
+        self._on_pin = on_pin
+        while self._v.count():
+            it = self._v.takeAt(0)
+            w = it.widget()
+            if w is not None:
+                w.setParent(None); w.deleteLater()
+        if not a or not cw:
+            return
+        pkg = a.get("package", "")
+
+        # identity line: package · ZIF · connector · totals
+        cn = cw.get("connector")
+        conn_name = (cn.get("card") if isinstance(cn, dict) else cn) or ""
+        idw = QWidget()
+        ih = QHBoxLayout(idw); ih.setContentsMargins(0, 0, 0, 0); ih.setSpacing(8)
+        ih.addWidget(self._lab(pkg, mono=True, size=13, weight=QFont.DemiBold))
+        for txt in (cw.get("zif_socket", ""), conn_name,
+                    f"{cw.get('cells', 0)} cells · {len(cw.get('channels', []))} channels"):
+            if txt:
+                ih.addWidget(self._lab("·", color=_FAINT))
+                ih.addWidget(self._lab(txt, size=9.5, color=_MUT))
+        ih.addStretch(1)
+        self._v.addWidget(idw)
+        self._gap(16)
+
+        # card materials (the passive BOM)
+        cm = a.get("card_materials", {}) or {}
+        items = cm.get("items", [])
+        if items:
+            self._eyebrow("Card Materials")
+            for i in items:
+                r = QWidget()
+                h = QHBoxLayout(r); h.setContentsMargins(0, 3, 0, 3); h.setSpacing(12)
+                h.addWidget(self._lab(f"{i.get('qty', '')}×", mono=True, color=_TXT, fixed=44))
+                h.addWidget(self._lab(i.get("part", ""), mono=True, color=_TXT), 2)
+                h.addWidget(self._lab(i.get("role", ""), size=9, color=_FAINT), 3)
+                self._v.addWidget(r)
+            note = cm.get("note", "")
+            if note:
+                self._gap(4)
+                nl = self._lab(note, size=8.5, color=_FAINT, wrap=True)
+                self._v.addWidget(nl)
+            self._gap(18)
+
+        # shared SPI control bus
+        bus = cw.get("bus", [])
+        if bus:
+            self._eyebrow("Control Bus")
+            hdr = QWidget()
+            hh = QHBoxLayout(hdr); hh.setContentsMargins(0, 0, 0, 4); hh.setSpacing(12)
+            hh.addWidget(self._lab("Signal", size=8.5, color=_FAINT, fixed=self.W_CHAN))
+            hh.addWidget(self._lab("ADG714 Pin", size=8.5, color=_FAINT, fixed=self.W_TERM))
+            hh.addWidget(self._lab("Connector Contact", size=8.5, color=_FAINT, fixed=self.W_PIN))
+            hh.addWidget(self._lab("Controller", size=8.5, color=_FAINT), 1)
+            self._v.addWidget(hdr)
+            for b in bus:
+                r = QWidget(); r.setObjectName("fabRow")
+                r.setStyleSheet(f"#fabRow{{border-top:1px solid {_LINE};}}")
+                h = QHBoxLayout(r); h.setContentsMargins(0, 4, 0, 4); h.setSpacing(12)
+                h.addWidget(self._lab(b.get("signal", ""), mono=True, color=_TXT, fixed=self.W_CHAN))
+                h.addWidget(self._lab(b.get("adg714_pin", ""), mono=True, color=_MUT, fixed=self.W_TERM))
+                h.addWidget(self._lab(b.get("connector_contact") or "Plane", mono=True,
+                                      color=_MUT, fixed=self.W_PIN))
+                h.addWidget(self._lab(b.get("controller", ""), mono=True, color=_MUT), 1)
+                self._v.addWidget(r)
+            dc = (cw.get("daisy_chain") or {}).get("note", "")
+            if dc:
+                self._gap(4)
+                self._v.addWidget(self._lab(dc, size=8.5, color=_FAINT, wrap=True))
+            self._gap(18)
+
+        # one aligned channel table per cell (click a row -> that pin on the Map)
+        chans = cw.get("channels", [])
+        spares = cw.get("spare_channels", []) or cw.get("spares", [])
+        by_cell: dict = {}
+        for c in chans:
+            by_cell.setdefault(c["cell"], []).append(c)
+        for s in spares:
+            by_cell.setdefault(s["cell"], []).append(dict(s, spare=True))
+        for cell_no in sorted(by_cell):
+            rows = sorted(by_cell[cell_no], key=lambda c: c.get("channel") or 0)
+            refdes = next((c.get("cell_refdes") for c in rows if c.get("cell_refdes")), "")
+            n_spare = sum(1 for c in rows if c.get("spare"))
+            sub = QWidget()
+            sh = QHBoxLayout(sub); sh.setContentsMargins(0, 0, 0, 6); sh.setSpacing(8)
+            sh.addWidget(_Dot(_MUT, 7))
+            sh.addWidget(self._lab(f"Cell {cell_no}" + (f" · {refdes}" if refdes else ""),
+                                   mono=True, size=10.5, weight=QFont.DemiBold))
+            sh.addStretch(1)
+            sh.addWidget(self._lab(
+                f"{len(rows)} channels" + (f" · {n_spare} spare" if n_spare else ""),
+                size=8.5, color=_FAINT))
+            self._v.addWidget(sub)
+            for c in rows:
+                spare = c.get("spare")
+                pos = c.get("socket_pin")
+                row = _FabRow(None if spare else pos, self._on_pin)
+                row.setStyleSheet(f"#fabRow{{border-top:1px solid {_LINE};}}"
+                                  f"#fabRow:hover{{background:{_CARD};}}")
+                h = QHBoxLayout(row); h.setContentsMargins(0, 4, 0, 4); h.setSpacing(12)
+                h.addWidget(self._lab(f"Channel {c.get('channel', '')}", mono=True,
+                                      color=(_FAINT if spare else _TXT), fixed=self.W_CHAN))
+                term = f"{c.get('s_pin', '')} → {c.get('d_pin', '')}"
+                h.addWidget(self._lab(term, mono=True, color=_FAINT if spare else _MUT,
+                                      fixed=self.W_TERM))
+                if spare:
+                    h.addWidget(self._lab("Spare (No Connect)", size=9, color=_FAINT,
+                                          fixed=self.W_PIN))
+                    h.addWidget(self._lab("—", mono=True, color=_FAINT), 1)
+                else:
+                    name = c.get("socket_name", "")
+                    h.addWidget(self._lab(f"Pin {pos}" + (f" · {name}" if name else ""),
+                                          mono=True, color=_TXT, fixed=self.W_PIN))
+                    rail = c.get("rail", "")
+                    cat = sauth._NET_CATEGORY.get(rail, "lane")
+                    col = _CAT_COLOR.get(cat, _MUT)
+                    nc = QWidget(); nh = QHBoxLayout(nc)
+                    nh.setContentsMargins(0, 0, 0, 0); nh.setSpacing(7)
+                    nh.addWidget(_Dot(col, 6))
+                    nh.addWidget(self._lab(expandNet(rail), mono=True,
+                                           weight=QFont.DemiBold, color=col))
+                    nh.addStretch(1)
+                    h.addWidget(nc, 1)
+                self._v.addWidget(row)
+            self._gap(18)
+        self._v.addStretch(1)
+
+
 def _wash(hexcol, amt=0.16):
     """A near-black tint of a category colour, blended over the deepest step — the ONE
     sanctioned filled-chip background (the switch-class chip). Never used elsewhere."""
@@ -1443,8 +1638,8 @@ class Stm32PinsWidget(QWidget):
             ("osc", "Oscillator", _SWITCH_COLOR[sdb.SWITCH_OSC_OPTIONAL]),
             ("fixed", "Fixed", None),
             ("breakout", "Breakout", _BREAKOUT_COLOR),
-            ("fivev", "5 V-Tolerant", None),
-            ("io", "Per-Pin I/O", None),
+            ("fivev", "5 V‑Tolerant", None),
+            ("io", "Per‑Pin I/O", None),
             ("vdda", "VDDA (V)", None),
         ])
         root.addWidget(self.readout)
@@ -1542,13 +1737,13 @@ class Stm32PinsWidget(QWidget):
         return page
 
     def _pin_legend(self):
-        """Grayscale key: the switch-class luminance ramp (must-switch brightest →
-        fixed faint) plus the selection and breakout marks. Net category is shown as
-        an inline text tag, never a colour."""
+        """Key for the pin map: the muted switch-class colours (matching the pins),
+        the neutral selection ring, and the breakout dash. Round dots, never squares
+        (a small square reads as a checkbox)."""
         items = [
-            ("Must-Switch", _T_MUST, "fill"),
-            ("Oscillator", _T_OSC, "fill"),
-            ("Fixed", _T_FIXED, "fill"),
+            ("Must-Switch", _SWITCH_COLOR.get(sdb.SWITCH_MUST, _TXT), "fill"),
+            ("Oscillator", _SWITCH_COLOR.get(sdb.SWITCH_OSC_OPTIONAL, _MUT), "fill"),
+            ("Fixed", _SWITCH_COLOR.get(sdb.SWITCH_NONE, _FAINT), "fill"),
             ("Selected", _T_SEL, "ring"),
             ("Breakout", _MUT, "dash"),
         ]
@@ -1565,11 +1760,11 @@ class Stm32PinsWidget(QWidget):
             dot = QFrame()
             dot.setFixedSize(11, 11)
             if kind == "ring":
-                dot.setStyleSheet(f"background:transparent;border:2px solid {col};border-radius:3px;")
+                dot.setStyleSheet(f"background:transparent;border:2px solid {col};border-radius:5px;")
             elif kind == "dash":
-                dot.setStyleSheet(f"background:transparent;border:1px dashed {col};border-radius:2px;")
+                dot.setStyleSheet(f"background:transparent;border:1px dashed {col};border-radius:5px;")
             else:
-                dot.setStyleSheet(f"background:{col};border-radius:2px;")
+                dot.setStyleSheet(f"background:{col};border-radius:5px;")
             self._legend_dots.append(dot)
             lbl = QLabel(label)
             lbl.setFont(QFont(_SVG_FONT.split(",")[0], 8))
@@ -1582,24 +1777,26 @@ class Stm32PinsWidget(QWidget):
         return w
 
     def _build_cells_page(self):
-        """The Cells view: package summary, SPI control bus + daisy chain, and one
-        channel table per ADG714 cell (spares included)."""
+        """The Cells view: the switch fabric cell by cell — card materials, the SPI
+        control bus, and one interactive channel table per ADG714 cell (click a
+        channel to jump to its pin on the Map)."""
         page = QWidget()
         lay = QVBoxLayout(page)
         lay.setContentsMargins(0, 0, 0, 0)
-        self.cells_view = QTextBrowser()
-        self.cells_view.setOpenExternalLinks(False)
-        lay.addWidget(self.cells_view)
+        self.cells_fabric = CellsFabric()
+        lay.addWidget(self.cells_fabric)
         return page
+
+    def _goto_pin(self, pos):
+        """Cells fabric row clicked: show that pin on the Map."""
+        self.rail.select("map")
+        self._select(pos)
 
     def _style_browsers(self):
         # flat content (de-boxed): no frame, panel ground, explicit UI font so the
         # shell's mono QTextEdit rule doesn't leak in.
-        css = (f"QTextBrowser{{background:transparent;color:{_TXT};border:none;"
-               f"padding:2px 2px 8px;"
-               f"font-family:'Geist','Inter','Segoe UI';font-size:9pt;}}")
-        if getattr(self, "cells_view", None) is not None:
-            self.cells_view.setStyleSheet(css)
+        if getattr(self, "cells_fabric", None) is not None and self.authority:
+            self.cells_fabric.set_data(self.authority, self._cw(), self._goto_pin)
         if getattr(self, "pin_detail", None) is not None:   # native panel, not HTML
             self.pin_detail.setStyleSheet("QScrollArea{background:transparent;border:none;}")
             self.pin_detail.viewport().setStyleSheet("background:transparent;")
@@ -1735,8 +1932,8 @@ class Stm32PinsWidget(QWidget):
             self.diagram.update()
         # regenerate themed rich text with the new palette
         if self.authority is not None:
-            if getattr(self, "cells_view", None) is not None:
-                self.cells_view.setHtml(cells_html(self.authority))
+            if getattr(self, "cells_fabric", None) is not None:
+                self.cells_fabric.set_data(self.authority, self._cw(), self._goto_pin)
             if self._sel_pos is not None:
                 self._select(self._sel_pos)
 
@@ -1859,8 +2056,8 @@ class Stm32PinsWidget(QWidget):
             m.set_authority(None)
         if getattr(self, "conn_list", None) is not None:
             self.conn_list.set_authority(None)
-        if getattr(self, "cells_view", None) is not None:
-            self.cells_view.setHtml("")
+        if getattr(self, "cells_fabric", None) is not None:
+            self.cells_fabric.set_data(None, None)
         if getattr(self, "diagram", None) is not None:
             self.diagram.set_data(None, None, None)
         if getattr(self, "ledger", None) is not None:
@@ -1906,8 +2103,8 @@ class Stm32PinsWidget(QWidget):
         if getattr(self, "conn_list", None) is not None:
             self.conn_list.set_authority(self.authority)
         self._style_browsers()
-        if getattr(self, "cells_view", None) is not None:
-            self.cells_view.setHtml(cells_html(self.authority))
+        if getattr(self, "cells_fabric", None) is not None:
+            self.cells_fabric.set_data(self.authority, self._cw(), self._goto_pin)
         if getattr(self, "diagram", None) is not None:
             self.diagram.set_data(None, None, None)
         if getattr(self, "ledger", None) is not None:

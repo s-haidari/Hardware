@@ -23,38 +23,42 @@ except Exception:  # pragma: no cover
 # Graphite ground. ACCENT is a NEUTRAL bright (chrome active states only, never a
 # colour): colour is reserved entirely for pin/net type, via CATEGORY below.
 # Quiet Instrument (Vercel/Geist + Linear): three near-black steps, hierarchy from
-# weight + opacity, ONE azure accent used only for interaction (selection/focus).
+# weight + opacity. Chrome is PURE GRAYSCALE — the accent is a neutral bright (an
+# inverted "ink" for the primary action / selection / focus); colour is reserved
+# entirely for pin and net data.
 DARK_COLORS = {
     "WIN_BG": "#0B0C0E", "MAIN_BG": "#131519", "FG": "#ECEEF1", "FG_DIM": "#9AA0AA",
     "FG_FAINT": "#656B75",                              # third text tier (micro / dormant)
     "TITLE_FG": "#ffffff", "CARD_BG": "#1A1D22", "BORDER": "#23262C",
     "HDR1": "#131519", "HDR2": "#0B0C0E", "CHIP_BG": "#1A1D22", "IN_BG": "#16181D",
-    "BTN_BG": "#1A1D22", "BTN_HOVER": "#21252B", "BTN_BORDER": "#2A2E35",
-    "ACCENT": "#4FA1E6",   # azure — interaction only (selection, focus, primary action)
+    "BTN_BG": "#22262D", "BTN_HOVER": "#2B303A", "BTN_BORDER": "#3E4550",
+    "ACCENT": "#E7E9EC",   # neutral ink — primary action, selection, focus (never a hue)
     "TREE_BG": "#101216", "TREE_ALT": "#131519",
-    "SEL_BG": "#142230", "SEL_FG": "#ffffff", "HOVER_BG": "#1A1D22",
+    "SEL_BG": "#2A2F36", "SEL_FG": "#ffffff", "HOVER_BG": "#1A1D22",
     "SEC_BG": "#131519", "SEC_FG": "#9AA0AA", "LOG_BG": "#0B0C0E", "LOG_FG": "#9AA0AA",
     "SCROLL": "#2A2E35", "SCROLL_HOVER": "#3A3F47", "ST_BG": "#0B0C0E", "ST_FG": "#656B75",
-    "PROG_BG": "#1A1D22", "PROG1": "#3A3F47", "PROG2": "#4FA1E6",
+    "PROG_BG": "#1A1D22", "PROG1": "#3A3F47", "PROG2": "#E7E9EC",
     "TAB_BG": "#131519", "TAB_SEL_BG": "#1A1D22", "TAB_SEL_FG": "#ffffff",
-    "MENU_BG": "#131519", "MENU_SEL": "#1A1D22", "CHK_BG": "#16181D", "CHK_ON": "#4FA1E6",
+    "MENU_BG": "#131519", "MENU_SEL": "#1A1D22", "CHK_BG": "#16181D", "CHK_ON": "#E7E9EC",
     "DOT_IDLE": "#3A3F47",
 }
+# Windows 11 light: a neutral #F3F3F3 ground with white raised surfaces — the same
+# grayscale-ink philosophy as dark (colour stays reserved for pin/net data).
 LIGHT_COLORS = {
-    "WIN_BG": "#f4f6f4", "MAIN_BG": "#eceeec", "FG": "#1b1e1c", "FG_DIM": "#6b7069",
-    "FG_FAINT": "#9096a0",
-    "TITLE_FG": "#101210", "CARD_BG": "#ffffff", "BORDER": "#dde2df",
-    "HDR1": "#ffffff", "HDR2": "#f1f3f1", "CHIP_BG": "#eceeec", "IN_BG": "#ffffff",
-    "BTN_BG": "#f4f6f4", "BTN_HOVER": "#eceeec", "BTN_BORDER": "#dbe0dc",
-    "ACCENT": "#2c302d",   # neutral bright — chrome active only (no colour)
-    "TREE_BG": "#ffffff", "TREE_ALT": "#f6f8f6",
-    "SEL_BG": "#e4e8e4", "SEL_FG": "#101210", "HOVER_BG": "#f1f3f1",
-    "SEC_BG": "#f4f6f4", "SEC_FG": "#545953", "LOG_BG": "#fafbfa", "LOG_FG": "#333934",
-    "SCROLL": "#d2d7d3", "SCROLL_HOVER": "#b6bcb7", "ST_BG": "#eceeec", "ST_FG": "#6b7069",
-    "PROG_BG": "#eceeec", "PROG1": "#adb3ae", "PROG2": "#2c302d",
-    "TAB_BG": "#eef0ee", "TAB_SEL_BG": "#ffffff", "TAB_SEL_FG": "#101210",
-    "MENU_BG": "#ffffff", "MENU_SEL": "#f1f3f1", "CHK_BG": "#ffffff", "CHK_ON": "#2c302d",
-    "DOT_IDLE": "#adb3ae",
+    "WIN_BG": "#F3F3F3", "MAIN_BG": "#FAFAFA", "FG": "#1A1C1F", "FG_DIM": "#5D6269",
+    "FG_FAINT": "#8A8F96",
+    "TITLE_FG": "#000000", "CARD_BG": "#FFFFFF", "BORDER": "#E1E3E6",
+    "HDR1": "#FFFFFF", "HDR2": "#F3F3F3", "CHIP_BG": "#EEF0F2", "IN_BG": "#FFFFFF",
+    "BTN_BG": "#FFFFFF", "BTN_HOVER": "#F2F3F5", "BTN_BORDER": "#D5D8DC",
+    "ACCENT": "#1F2328",   # neutral ink — primary action, selection, focus (never a hue)
+    "TREE_BG": "#FFFFFF", "TREE_ALT": "#F6F7F8",
+    "SEL_BG": "#E4E6EA", "SEL_FG": "#000000", "HOVER_BG": "#F0F1F3",
+    "SEC_BG": "#F6F7F8", "SEC_FG": "#5D6269", "LOG_BG": "#FFFFFF", "LOG_FG": "#3A3E44",
+    "SCROLL": "#C9CDD2", "SCROLL_HOVER": "#AEB3BA", "ST_BG": "#F3F3F3", "ST_FG": "#8A8F96",
+    "PROG_BG": "#E9EBEE", "PROG1": "#C9CDD2", "PROG2": "#1F2328",
+    "TAB_BG": "#F3F3F3", "TAB_SEL_BG": "#FFFFFF", "TAB_SEL_FG": "#000000",
+    "MENU_BG": "#FFFFFF", "MENU_SEL": "#EDEFF2", "CHK_BG": "#FFFFFF", "CHK_ON": "#1F2328",
+    "DOT_IDLE": "#C2C6CC",
 }
 
 # Categorical pin/net-type palette — one muted family (≈L58 S30) on graphite, so
