@@ -1818,7 +1818,7 @@ class Stm32PinsWidget(QWidget):
         frow.addWidget(QLabel("Show:"))
         self.filter_combo = QComboBox()
         self.filter_combo.addItems(["All", "Must-Switch", "Oscillator", "Fixed",
-                                    "Breakout", "5V-Tolerant", "Never 5V"])
+                                    "Breakout", "5V-Tolerant", "5V Part-Dependent", "Never 5V"])
         self.filter_combo.currentTextChanged.connect(self._apply_filter)
         frow.addWidget(self.filter_combo)
         frow.addWidget(QLabel("Peripheral:"))
@@ -1846,6 +1846,10 @@ class Stm32PinsWidget(QWidget):
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
         self.table.setSortingEnabled(True)
+        # Re-apply the row filter after a header-click sort: hidden flags live on the
+        # visual slot, so a sort would otherwise mask the wrong pins. (Review fix.)
+        self.table.horizontalHeader().sortIndicatorChanged.connect(
+            lambda *_a: self._apply_filter())
         self.table.verticalHeader().setVisible(False)
         # Columns fill the viewport and never scroll horizontally: the short columns
         # size to content, the text columns share the rest and elide with an ellipsis.
@@ -2199,15 +2203,23 @@ class Stm32PinsWidget(QWidget):
             hide = False
             if want_class is not None and p["switch_class"] != want_class:
                 hide = True
-            elif want == "Breakout" and not p.get("breakout", {}).get("service_nets"):
-                hide = True
+            elif want == "Breakout":
+                # A pin is "breakout" when it has a service net OR is a trace pin —
+                # matching how the Breakout column and pin-map ring it. Keying only on
+                # service_nets hid the violet TRACE-only pins the view shows. (Review.)
+                bk = p.get("breakout", {})
+                if not (bk.get("service_nets") or bk.get("trace")):
+                    hide = True
             elif want == "5V-Tolerant" and not (fv and fv["tolerant"]):
+                hide = True
+            elif want == "5V Part-Dependent" and not (
+                    fv and not fv["tolerant"] and any(fv["by_family"].values())):
                 hide = True
             elif want == "Never 5V" and not (fv and not any(fv["by_family"].values())):
                 hide = True
             if periph and periph not in p.get("peripherals", []):
                 hide = True
-            if q and q not in _pin_search_haystack(p):
+            if q and not all(tok in _pin_search_haystack(p) for tok in q.split()):
                 hide = True
             self.table.setRowHidden(row, hide)
 

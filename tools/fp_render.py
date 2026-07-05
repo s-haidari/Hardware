@@ -285,6 +285,13 @@ class _Footprint:
         scale = (px - 2 * margin) / span
         cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
 
+        # Cap the on-screen STROKE width. `scale` is huge for tiny parts, so a real
+        # 0.12 mm silk line would render as a ~40 px pen and the outlines would blob
+        # over the pads. Pad FILLS below keep the true scale — only line weight is
+        # capped (~8 px at 640). (Review fix: small-SMD footprints rendered as blobs.)
+        def stroke_px(w):
+            return min(max(w * scale, 1.0), px * 0.012)
+
         # outlier-rejection window: drop graphics far outside the body so stray
         # silk/fab markers don't appear as floating dots
         ex = (x1 - x0) * 0.30 + 0.3
@@ -304,7 +311,7 @@ class _Footprint:
             for (x1_, y1_, x2_, y2_, lay, w) in coll:
                 if not (_in(x1_, y1_) or _in(x2_, y2_)):
                     continue
-                pen = QPen(_layer_color(lay)); pen.setWidthF(max(w * scale, 1.0))
+                pen = QPen(_layer_color(lay)); pen.setWidthF(stroke_px(w))
                 pen.setCapStyle(Qt.RoundCap)
                 p.setPen(pen)
                 p.drawLine(T(x1_, y1_), T(x2_, y2_))
@@ -313,37 +320,47 @@ class _Footprint:
             for (pp, lay, w) in coll:
                 if not any(_in(x, y) for (x, y) in pp):
                     continue
-                pen = QPen(_layer_color(lay)); pen.setWidthF(max(w * scale, 1.0))
+                pen = QPen(_layer_color(lay)); pen.setWidthF(stroke_px(w))
                 pen.setCapStyle(Qt.RoundCap); pen.setJoinStyle(Qt.RoundJoin)
                 p.setPen(pen); p.setBrush(Qt.NoBrush)
                 p.drawPolyline(QPolygonF([T(x, y) for (x, y) in pp]))
 
-        # courtyard + fab + silk graphics
+        def draw_rects(coll):
+            for (a, b, c2, d, lay, w) in coll:
+                if not (_in(a, b) or _in(c2, d)):
+                    continue
+                pen = QPen(_layer_color(lay)); pen.setWidthF(stroke_px(w)); p.setPen(pen)
+                p.setBrush(Qt.NoBrush)
+                p.drawRect(QRectF(T(a, b), T(c2, d)))
+
+        def draw_circles(coll):
+            for (pcx, pcy, rr, lay, w) in coll:
+                if not _in(pcx, pcy):
+                    continue
+                pen = QPen(_layer_color(lay)); pen.setWidthF(stroke_px(w)); p.setPen(pen)
+                p.setBrush(Qt.NoBrush)
+                p.drawEllipse(T(pcx, pcy), rr * scale, rr * scale)
+
+        def draw_polys(coll):
+            for (pp, lay, w) in coll:
+                if not any(_in(x, y) for (x, y) in pp):
+                    continue
+                col = _layer_color(lay)
+                p.setPen(QPen(col, stroke_px(w)))
+                p.setBrush(QBrush(QColor(col.red(), col.green(), col.blue(), 60)))
+                p.drawPolygon(QPolygonF([T(x, y) for (x, y) in pp]))
+
+        def _silk(lay):
+            return "SilkS" in lay
+
+        # courtyard + fab + NON-silk rect/circle/poly graphics go UNDER the pads.
         draw_lines([l for l in self.lines if "CrtYd" in l[4]])
         draw_arcs([a for a in self.arcs if "CrtYd" in a[1]])
         draw_lines([l for l in self.lines if "Fab" in l[4]])
         draw_arcs([a for a in self.arcs if "Fab" in a[1]])
-        for (a, b, c2, d, lay, w) in self.rects:
-            if not (_in(a, b) or _in(c2, d)):
-                continue
-            pen = QPen(_layer_color(lay)); pen.setWidthF(max(w * scale, 1.0)); p.setPen(pen)
-            p.setBrush(Qt.NoBrush)
-            p.drawRect(QRectF(T(a, b), T(c2, d)))
-        for (pcx, pcy, rr, lay, w) in self.circles:
-            if not _in(pcx, pcy):
-                continue
-            pen = QPen(_layer_color(lay)); pen.setWidthF(max(w * scale, 1.0)); p.setPen(pen)
-            p.setBrush(Qt.NoBrush)
-            ctr = T(pcx, pcy)
-            p.drawEllipse(ctr, rr * scale, rr * scale)
-        for (pp, lay, w) in self.polys:
-            if not any(_in(x, y) for (x, y) in pp):
-                continue
-            poly = QPolygonF([T(x, y) for (x, y) in pp])
-            col = _layer_color(lay)
-            p.setPen(QPen(col, max(w * scale, 1.0)))
-            p.setBrush(QBrush(QColor(col.red(), col.green(), col.blue(), 60)))
-            p.drawPolygon(poly)
+        draw_rects([r for r in self.rects if not _silk(r[4])])
+        draw_circles([c for c in self.circles if not _silk(c[3])])
+        draw_polys([pl for pl in self.polys if not _silk(pl[1])])
 
         # pads (copper) on top
         label_font = QFont("Arial")
@@ -379,9 +396,13 @@ class _Footprint:
                                   max(pw, ph), max(pw, ph)),
                            Qt.AlignCenter, num)
 
-        # silk last (most visible)
+        # silk last (most visible) — incl. silk rects/circles/polys so pin-1 markers
+        # (dots/triangles drawn on F.SilkS) sit ON TOP of copper, not hidden under it.
         draw_lines([l for l in self.lines if "SilkS" in l[4]])
         draw_arcs([a for a in self.arcs if "SilkS" in a[1]])
+        draw_rects([r for r in self.rects if _silk(r[4])])
+        draw_circles([c for c in self.circles if _silk(c[3])])
+        draw_polys([pl for pl in self.polys if _silk(pl[1])])
         p.end()
         return img
 

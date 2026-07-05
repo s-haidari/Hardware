@@ -256,6 +256,10 @@ class ManagerView(QWidget):
             else:
                 rows, summary = LM.scan_library(self.cfg)
                 self._render_flat(rows, summary)
+            # re-apply the active query so switching Group on/off or refreshing keeps
+            # the current filter (and never leaves a stale all-hidden state)
+            if hasattr(self, "search"):
+                self._apply_filter(self.search.text())
         except Exception as e:                 # noqa: BLE001
             self.write(f"Refresh failed: {e}")
 
@@ -294,7 +298,7 @@ class ManagerView(QWidget):
         self._ro["dupes"].setText("0")
 
     def _render_flat(self, rows, summary):
-        self._rows_view = []             # flat view has no grouped part to preview
+        self._rows_view = rows           # flat rows carry name/type/dup — keep them searchable
         cols = ["Name", "Type", "Status"]
         self.table.setColumnCount(len(cols))
         self.table.setHorizontalHeaderLabels(cols)
@@ -317,13 +321,16 @@ class ManagerView(QWidget):
                 self.table.setRowHidden(r, False)
                 continue
             g = rows[r] if r < len(rows) else {}
-            # search the part's whole identity, not just the visible Part column:
-            # mpn / manufacturer / datasheet / description / symbols / footprint
+            # search the part's whole identity + type + status, not just the visible
+            # column: mpn / name / manufacturer / datasheet / description / footprint /
+            # symbols / type / (dangling|duplicate|ok). Token-AND so "cap 0402" works.
+            status = "dangling" if g.get("dangling") else ("duplicate" if g.get("dup") else "ok")
             hay = " ".join(str(x) for x in (
                 g.get("mpn"), g.get("name"), g.get("manufacturer"), g.get("datasheet"),
-                g.get("description"), g.get("footprint"), " ".join(g.get("symbols") or []),
+                g.get("description"), g.get("footprint"), g.get("type"), status,
+                " ".join(g.get("symbols") or []),
             ) if x).lower()
-            self.table.setRowHidden(r, text not in hay)
+            self.table.setRowHidden(r, not all(tok in hay for tok in text.split()))
 
     # -- component preview: symbol · footprint · 3D model --
     def _sym_block(self, name):
@@ -456,11 +463,22 @@ class ManagerView(QWidget):
             "KiCad PCB (*.kicad_pcb)")
         if not fn:
             return
+        box = {}
+
         def job():
-            res = fp_render.render_board_image(fn)
-            self.write(f"Board render: {getattr(res, 'message', 'done')}")
-        self.services.run_async(job, ok="Board rendered",
-                                done_cb=lambda ok: self._info(ok, "Board rendered", Path(fn).name))
+            box["res"] = fp_render.render_board_image(fn)
+
+        def done_cb(thread_ok):
+            res = box.get("res")
+            ok = bool(thread_ok and res is not None and res.ok)
+            if ok:
+                self.write(f"Board render: {Path(fn).name} ({getattr(res, 'method', '')})")
+                self._info(True, "Board rendered", Path(fn).name)
+            else:
+                reason = (getattr(res, "reason", None) if res is not None else None) or "render failed"
+                self.write(f"Board render failed: {reason}")
+                self._info(False, "Board render failed", reason)
+        self.services.run_async(job, done_cb=done_cb)
 
 
 def _qcolor(hexs):
