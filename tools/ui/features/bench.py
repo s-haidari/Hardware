@@ -13,10 +13,12 @@ from __future__ import annotations
 
 from typing import List, Optional
 
+from pathlib import Path
+
 from PyQt5.QtCore import Qt, QRectF
-from PyQt5.QtGui import QPainter, QColor, QPen
+from PyQt5.QtGui import QPainter, QColor, QPen, QPixmap
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-                             QSizePolicy, QComboBox, QGridLayout, QPushButton)
+                             QSizePolicy, QComboBox, QGridLayout, QPushButton, QFrame)
 
 from .. import theme as T
 from .. import widgets as W
@@ -52,6 +54,115 @@ def _resolved_cat(pn: dict) -> str:
         return "ground"
     dest = pn.get("dest", "")
     return _CAT_FROM_NET.get(sauth._NET_CATEGORY.get(dest, "lane"), "lane")
+
+
+# ── connection diagram (per-pin flow: socket -> switch/series -> connector -> net) ─
+_COMP_GLYPH = {
+    "mcu": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="6" y="6" width="12" height="12" rx="1"/><path d="M9 3v3M15 3v3M9 18v3M15 18v3M3 9h3M3 15h3M18 9h3M18 15h3"/></svg>',
+    "socket": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="4" y="6" width="16" height="12" rx="1"/><path d="M8 6v12M16 6v12"/></svg>',
+    "switch": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><circle cx="5" cy="14" r="1.6"/><circle cx="19" cy="14" r="1.6"/><path d="M6.5 13.5 17 7"/><path d="M5 15.5v3M19 15.5v3"/></svg>',
+    "resistor": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M2 12h3l2-5 3.5 10 3.5-10 2 5h3"/></svg>',
+    "connector": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="4" y="9" width="16" height="8" rx="1"/><path d="M8 9V5M12 9V5M16 9V5"/></svg>',
+    "ground": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M12 4v7M5 11h14M8 14.5h8M10.5 18h3"/></svg>',
+    "wire": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M3 12h18"/></svg>',
+}
+_COMP_KEYWORDS = {
+    "socket": ("ic51", "zif", "socket"),
+    "switch": ("adg714", "adg71"),
+    "resistor": ("0402", "r_0402"),
+    "connector": ("qth", "qsh", "samtec"),
+}
+_FP_CACHE = {}
+
+
+def _comp_pixmap(cfg, kind, size=44):
+    """A real footprint render for this component from the library, or None if the
+    library has no match (then the caller uses a clean type glyph)."""
+    kws = _COMP_KEYWORDS.get(kind)
+    if not kws or not cfg:
+        return None
+    if kind in _FP_CACHE:
+        return _FP_CACHE[kind]
+    pm = None
+    try:
+        import fp_render
+        fpdir = Path(cfg.get("FootprintLib", ""))
+        if fpdir.exists():
+            for f in sorted(fpdir.glob("*.kicad_mod")):
+                if any(k in f.stem.lower() for k in kws):
+                    img = fp_render.render_footprint_image(f, px=size * 2)
+                    if img is not None:
+                        pm = QPixmap.fromImage(img).scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                        break
+    except Exception:  # noqa: BLE001
+        pm = None
+    _FP_CACHE[kind] = pm
+    return pm
+
+
+def _node(cfg, kind, name, detail, name_color=None) -> QFrame:
+    card = QFrame(); card.setObjectName("connode"); card.setFixedWidth(136)
+    v = QVBoxLayout(card); v.setContentsMargins(10, 10, 10, 10); v.setSpacing(5); v.setAlignment(Qt.AlignHCenter)
+    gl = QLabel(); gl.setAlignment(Qt.AlignHCenter); gl.setFixedHeight(44)
+    pm = _comp_pixmap(cfg, kind)
+    gl.setPixmap(pm if pm is not None else W.svg_icon(_COMP_GLYPH.get(kind, _COMP_GLYPH["wire"]), 40).pixmap(40, 40))
+    v.addWidget(gl)
+    nm = QLabel(str(name)); nm.setFont(T.mono_font(10, semibold=True)); nm.setAlignment(Qt.AlignHCenter); nm.setWordWrap(True)
+    v.addWidget(nm)
+    dt = None
+    if detail:
+        dt = QLabel(str(detail).replace(" · ", " ")); dt.setFont(T.ui_font(8.5))
+        dt.setAlignment(Qt.AlignHCenter); dt.setWordWrap(True)
+        v.addWidget(dt)
+
+    def style():
+        nm.setStyleSheet(f"color:{name_color or T.t('txt1')};background:transparent;")
+        if dt is not None:
+            dt.setStyleSheet(f"color:{T.t('txt3')};background:transparent;")
+        card.setStyleSheet(f"QFrame#connode{{background:{T.t('inset')};border:1px solid {T.t('stroke')};border-radius:8px;}}")
+    W.register_restyle(style)
+    return card
+
+
+def _arrow() -> QLabel:
+    a = QLabel("→"); a.setFont(T.ui_font(15)); a.setAlignment(Qt.AlignCenter); a.setFixedWidth(20)
+    W.register_restyle(lambda: a.setStyleSheet(f"color:{T.t('txt3')};background:transparent;"))
+    return a
+
+
+def _net_cat(net, fallback="lane"):
+    return _CAT_FROM_NET.get(sauth._NET_CATEGORY.get(net, fallback), fallback)
+
+
+def _connection_flow(chain, cfg) -> QWidget:
+    box = QWidget(); col = QVBoxLayout(box); col.setContentsMargins(0, 0, 0, 0); col.setSpacing(10)
+    for r in chain.get("rows", []):
+        line = QHBoxLayout(); line.setSpacing(6); line.setAlignment(Qt.AlignLeft)
+        line.addWidget(_node(cfg, "mcu", chain["name"] or f"Pin {chain['pos']}", f"Pin {chain['pos']}"))
+        line.addWidget(_arrow())
+        line.addWidget(_node(cfg, "socket", chain.get("socket", "Socket"), chain.get("zif", "ZIF socket")))
+        line.addWidget(_arrow())
+        if r["kind"] == "switch":
+            line.addWidget(_node(cfg, "switch", r["cell"],
+                                 f"Channel {r['channel']}\n{r['s_term']}\n→ {r['d_term']}"))
+            line.addWidget(_arrow())
+        elif r.get("series"):
+            line.addWidget(_node(cfg, "resistor", str(r["series"]).split(" ")[0], "33 Ω series"))
+            line.addWidget(_arrow())
+        via = r.get("drain_via", "")
+        if "Ground Plane" in via:
+            line.addWidget(_node(cfg, "ground", "Ground Plane", "stitching vias"))
+        else:
+            contact = via.split("·")[-1].strip() if "·" in via else via
+            line.addWidget(_node(cfg, "connector", chain.get("connector", "Connector"), contact))
+        line.addWidget(_arrow())
+        dcat = r.get("drain_cat", "lane")
+        line.addWidget(W.net_token(r.get("drain_net", ""), _net_cat(r.get("drain_net", ""), dcat)))
+        line.addStretch(1)
+        wrap = QWidget(); wrap.setLayout(line); col.addWidget(wrap)
+    if chain.get("one_hot"):
+        col.addWidget(W.eyebrow("One-Hot: exactly one switched path closes per socketed part"))
+    return box
 
 
 # ── shared package state ─────────────────────────────────────────────────────
@@ -173,16 +284,16 @@ _LEGEND = [("power", "Power"), ("ground", "Ground"), ("core", "Core"),
 
 def _legend() -> QWidget:
     w = QWidget()
-    lay = QHBoxLayout(w); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(14)
+    lay = QHBoxLayout(w); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(0)
     lay.addStretch(1)
-    for cat, label in _LEGEND:
-        cell = QWidget(); h = QHBoxLayout(cell); h.setContentsMargins(0, 0, 0, 0); h.setSpacing(6)
+    for i, (cat, label) in enumerate(_LEGEND):
+        if i:
+            lay.addSpacing(16)
         dot = QLabel(); dot.setFixedSize(9, 9)
         W.register_restyle(lambda dot=dot, cat=cat: dot.setStyleSheet(
             f"background:{T.category(cat)};border-radius:2px;"))
         lab = W.eyebrow(label)
-        h.addWidget(dot); h.addWidget(lab)
-        lay.addWidget(cell)
+        lay.addWidget(dot); lay.addSpacing(6); lay.addWidget(lab)
     lay.addStretch(1)
     return w
 
@@ -235,8 +346,13 @@ def _authority_panel(ctx, state: BenchState) -> QWidget:
     insp_card = W.Card(pad=16)
     insp_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
     grid.addWidget(insp_card, 1)
-    outer.addLayout(grid, 1)
+    outer.addLayout(grid)
+
+    outer.addWidget(W.eyebrow("Connection Diagram"))
+    conn_holder = QVBoxLayout(); conn_holder.setSpacing(10)
+    outer.addLayout(conn_holder)
     outer.addStretch(1)
+    cw_holder = {}
 
     def _clear_layout(lay):
         while lay.count():
@@ -287,8 +403,19 @@ def _authority_panel(ctx, state: BenchState) -> QWidget:
         insp_card.body.addWidget(W.dl(rows, key_width=150))
         insp_card.body.addStretch(1)
 
+        # connection diagram: the per-pin flow from the socket to the delivered net
+        _clear_layout(conn_holder)
+        try:
+            if not cw_holder.get("cw"):
+                cw_holder["cw"] = sauth.card_wiring(authority)
+            chain = pins._pin_chain(authority, pos, cw_holder["cw"])
+            conn_holder.addWidget(_connection_flow(chain, ctx.cfg))
+        except Exception as e:  # noqa: BLE001
+            conn_holder.addWidget(W.body(f"Connection diagram unavailable: {e}", dim=True))
+
     def refresh():
         _clear_layout(verdict_holder)
+        cw_holder.clear()
         try:
             authority = state.authority()
         except Exception as e:  # noqa: BLE001 - unsupported package build (e.g. BGA)

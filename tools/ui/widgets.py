@@ -205,13 +205,16 @@ class Card(QFrame):
 
     def __init__(self, pad: int = 16, parent=None):
         super().__init__(parent)
+        self.setObjectName("ndcard")
         self.body = QVBoxLayout(self)
         self.body.setContentsMargins(pad, pad, pad, pad)
         self.body.setSpacing(10)
         register_restyle(self._style)
 
     def _style(self):
-        self.setStyleSheet(f"QFrame{{background:{T.t('card')};border:1px solid {T.t('stroke')};"
+        # scope to #ndcard: QLabel subclasses QFrame, so a bare QFrame{} rule would
+        # cascade a border onto every label inside the card.
+        self.setStyleSheet(f"QFrame#ndcard{{background:{T.t('card')};border:1px solid {T.t('stroke')};"
                            f"border-radius:8px;}}")
 
 
@@ -257,7 +260,7 @@ class Verdict(QFrame):
         register_restyle(self._style)
 
     def _chip(self, label: str, value: str, dotkind: str) -> QWidget:
-        w = QFrame()
+        w = QFrame(); w.setObjectName("ndchip")
         h = QHBoxLayout(w); h.setContentsMargins(11, 4, 12, 4); h.setSpacing(7)
         dot = QLabel(); dot.setFixedSize(7, 7)
         lab = QLabel(label); lab.setFont(T.ui_font(9))
@@ -269,7 +272,7 @@ class Verdict(QFrame):
             colmap = {"ok": T.t("ok"), "warn": T.t("warn"), "err": T.t("err")}
             dot.setStyleSheet(f"background:{colmap.get(dotkind, T.t('txt3'))};border-radius:3px;")
             lab.setStyleSheet(f"color:{T.t('txt2')};background:transparent;")
-            w.setStyleSheet(f"QFrame{{background:{T.t('card')};border:1px solid {T.t('stroke')};"
+            w.setStyleSheet(f"QFrame#ndchip{{background:{T.t('card')};border:1px solid {T.t('stroke')};"
                             f"border-radius:14px;}}")
         register_restyle(style)
         return w
@@ -279,7 +282,8 @@ class Verdict(QFrame):
             bg = T.t("card")
         else:
             bg = T.t(f"{self._kind}_bg")
-        self.setStyleSheet(f"QFrame{{background:{bg};border:1px solid {T.t('stroke')};border-radius:8px;}}")
+        self.setObjectName("ndverdict")
+        self.setStyleSheet(f"QFrame#ndverdict{{background:{bg};border:1px solid {T.t('stroke')};border-radius:8px;}}")
         self._title.setStyleSheet(f"color:{T.t('txt1')};background:transparent;")
         if self._sub is not None:
             self._sub.setStyleSheet(f"color:{T.t('txt2')};background:transparent;")
