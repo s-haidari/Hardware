@@ -76,7 +76,10 @@ class AuthorityTests(unittest.TestCase):
     def test_emit_yaml_json_tsv(self):
         out = Path(tempfile.mkdtemp())
         summ = auth.write_authority(self.conn, "LQFP64", out)
-        self.assertEqual(len(summ["files"]), 10)  # + switchmap json/h + wiring md + pin-map svg
+        # yaml/json/tsv/csv/kicad_sym/authority.md/switchmap.json/.h/wiring.md/bom.csv/card.net/svg
+        self.assertEqual(len(summ["files"]), 12)
+        self.assertTrue((out / "bom_LQFP64.csv").exists())
+        self.assertTrue((out / "card_LQFP64.net").exists())
         j = json.loads((out / "pinout_authority_LQFP64.json").read_text(encoding="utf-8"))
         self.assertEqual(len(j["positions"]), 64)
         y = (out / "pinout_authority_LQFP64.yaml").read_text(encoding="utf-8")
@@ -821,6 +824,57 @@ class FabricLogicTests(unittest.TestCase):
             written = {f.name for f in out.iterdir()}
             self.assertTrue(any("LQFP64" in n for n in written), "canonical package was blocked")
             self.assertFalse(any(qfn in n for n in written), "unmapped package was written")
+
+    def test_resolve_part_single_view(self):
+        """F2: a real ordering part number resolves to its exact per-pin story."""
+        r = auth.resolve_part(self.conn, "STM32F407VGT6")
+        self.assertIsNotNone(r)
+        self.assertEqual(r["package"], "LQFP100")
+        self.assertEqual(r["line"], "STM32F407/417")
+        self.assertEqual(len(r["pins"]), 100)
+        self.assertTrue(r["close_switches"])
+        for c in r["close_switches"]:                       # each is a real channel to a rail
+            self.assertIn("cell", c)
+            self.assertIn("rail", c)
+        vdd = [p for p in r["pins"] if p["name"] == "VDD"]  # VDD -> VTARGET, VSS -> GND
+        self.assertTrue(vdd and all(p["dest"] == "VTARGET" for p in vdd))
+        self.assertTrue(all(p["dest"] == "GND" for p in r["pins"] if p["name"] == "VSS"))
+        self.assertIsNotNone(auth.resolve_part(self.conn, "stm32f103c8t6"))   # lowercase ok
+        self.assertIsNone(auth.resolve_part(self.conn, "NOTAPART"))
+
+    def test_card_bom_is_orderable(self):
+        """F6: the card BOM lists the real active/connector parts with MPNs plus the
+        passives — not just the passive guide."""
+        bom = auth.build(self.conn, "LQFP100")["card_bom"]
+        by_mpn = {r["mpn"] for r in bom["rows"]}
+        self.assertIn("ADG714BRUZ-REEL", by_mpn)                 # switch MPN present
+        self.assertTrue(any("Yamaichi" in r["mpn"] for r in bom["rows"]))   # socket
+        self.assertTrue(any("Samtec" in r["mpn"] for r in bom["rows"]))     # connector
+        # ADG714 qty == cells as built; series resistors present on 7C
+        adg = next(r for r in bom["rows"] if r["mpn"] == "ADG714BRUZ-REEL")
+        self.assertEqual(adg["qty"], auth.build(self.conn, "LQFP100")["rollup"]["cells_as_built"])
+        self.assertTrue(any("series" in r["role"].lower() for r in bom["rows"]))
+        self.assertIn("Refdes,Part,MPN,Qty", auth.to_card_bom_csv(auth.build(self.conn, "LQFP100")))
+
+    def test_kicad_netlist_wellformed(self):
+        """KiCad: the card netlist is a balanced s-expression with the socket, every
+        ADG714 cell, the edge connector, and the rail + control-bus nets."""
+        import re as _re
+        for pkg in ("LQFP64", "LQFP100"):
+            net = auth.to_kicad_netlist(auth.build(self.conn, pkg))
+            self.assertEqual(net.count("("), net.count(")"))     # balanced
+            refs = _re.findall(r'\(comp \(ref "([^"]+)"', net)
+            names = _re.findall(r'\(net \(code "\d+"\) \(name "([^"]+)"', net)
+            self.assertTrue(any("SOCKET" in v for v in
+                                _re.findall(r'\(comp \(ref "[^"]+"\) \(value "([^"]+)"', net)))
+            self.assertTrue(any("ADG714" in v for v in
+                                _re.findall(r'\(value "([^"]+)"', net)))
+            for rail in ("VTARGET", "GND", "SPI_SCLK", "SPI_DIN", "SPI_DOUT"):
+                self.assertIn(rail, names, f"{pkg} missing net {rail}")
+            # daisy chain: N cells -> N-1 chain links
+            n_cells = len([r for r in refs if r.startswith("U_SW")])
+            n_chain = len([n for n in names if n.startswith("SPI_CHAIN")])
+            self.assertEqual(n_chain, max(0, n_cells - 1))
 
 
 if __name__ == "__main__":

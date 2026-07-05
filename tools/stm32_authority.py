@@ -1120,6 +1120,57 @@ def socket_connections(authority: dict) -> list:
     return out
 
 
+def card_bom(authority: dict) -> dict:
+    """The full placed BOM for the card: the active + connector components that
+    card_wiring knows (ADG714 cells, ZIF target socket, edge connector + mate, IO-lane
+    series resistors) unioned with the passive caps from card_materials. Each row is
+    refdes / part / manufacturer part number (where a specific part is named; passives
+    are value-keyed and sourced by value) / qty / role. This is the orderable BOM the
+    sourcing tools consume — card_materials lists only the passives."""
+    pkg = authority["package"]
+    r = authority["rollup"]
+    conns = socket_connections(authority)
+    n_series_r = sum(1 for c in conns if c["kind"] == "resistor")
+    rows = []
+
+    def add(refdes, part, mpn, qty, role, note=""):
+        if qty:
+            rows.append({"refdes": refdes, "part": part, "mpn": mpn, "qty": int(qty),
+                         "role": role, "note": note})
+
+    add(CELL_REFDES_FMT.get(pkg, "U_SW_{n}").format(n="*"),
+        "ADG714 octal SPST analog switch", ADG714_SYMBOL, r["cells_as_built"],
+        "Switch fabric", f"{r['channel_count']} channels across {r['cells_as_built']} cells")
+    add(SOCKET_REFDES.get(pkg, "J_SOCKET"), "ZIF target socket",
+        ZIF_SOCKET.get(pkg, ""), 1, "Target socket", pkg)
+    add(EDGE_REFDES.get(pkg, "J_EDGE"), "Card edge connector (card side)",
+        CONNECTOR["card"], 1, "Parent connector", f"{CONNECTOR['contacts']} contacts")
+    add(EDGE_REFDES.get(pkg, "J_EDGE") + "_MATE", "Parent connector (mate)",
+        CONNECTOR["parent"], 1, "Parent connector", "on the parent board")
+    if n_series_r:
+        add(SERIES_R_REFDES.get(pkg, "R_IO_LANE"), "33 ohm 0402 series resistor", "",
+            n_series_r, "IO-lane series R", "one per IO-capable lane")
+    for it in authority.get("card_materials", {}).get("items", []):
+        if str(it.get("ref", "")).startswith("C"):          # passive caps
+            add(it["ref"], it["part"], "", it.get("qty", 0), it.get("role", "Passive"),
+                it.get("note", ""))
+    return {"package": pkg, "rows": rows, "line_count": len(rows),
+            "total_qty": sum(x["qty"] for x in rows),
+            "note": "Manufacturer part numbers are given for the named active/connector "
+                    "parts; passives are value-keyed (source by value + package)."}
+
+
+def to_card_bom_csv(authority: dict) -> str:
+    """The card BOM as CSV: Refdes,Part,MPN,Qty,Role,Note."""
+    buf = io.StringIO()
+    w = csv.writer(buf, lineterminator="\n")
+    w.writerow(["Refdes", "Part", "MPN", "Qty", "Role", "Note"])
+    for row in card_bom(authority)["rows"]:
+        w.writerow([row["refdes"], row["part"], row["mpn"], row["qty"],
+                    row["role"], row["note"]])
+    return buf.getvalue()
+
+
 def card_wiring(authority: dict) -> dict:
     """The switch fabric wired terminal by terminal, mapping the tool's derived channels
     onto the vault's Connector Contract. Per channel: the ADG714 S/D terminal pins, the
@@ -1199,6 +1250,73 @@ def card_wiring(authority: dict) -> dict:
                     for s, p, c, m in ADG714_BUS],
             "cells": len(cells), "channels": channels, "spare_channels": spares,
             "exclusive_groups": exclusive, "daisy_chain": daisy}
+
+
+def to_kicad_netlist(authority: dict) -> str:
+    """A standard KiCad netlist (.net, s-expression) for the WHOLE card, generated
+    from card_wiring: the ZIF target socket, every ADG714 cell, and the parent edge
+    connector, wired terminal by terminal — each switched socket pin to its ADG714
+    source, each drain to its rail, the rails to their connector contacts, and the
+    control/power bus broadcast to every cell with the DIN/DOUT daisy chain. Imports
+    straight into Pcbnew and diffs against a hand-drawn schematic to catch wiring
+    errors — the whole reason the bench exists. Byte-stable for the golden check."""
+    w = card_wiring(authority)
+    pkg = w["package"]
+    socket, edge = w["socket_refdes"], w["edge_refdes"]
+    cell_refs = sorted({c["cell_refdes"] for c in w["channels"]}) or [cell_refdes(pkg, 1)]
+    ordered = [cell_refdes(pkg, n) for n in w["daisy_chain"]["order"]]
+    conns = socket_connections(authority)
+
+    comps = [(socket, f"{pkg}_SOCKET", _KICAD_FOOTPRINT.get(pkg, ""))]
+    comps += [(cr, ADG714_SYMBOL, f"MyFootprints:{ADG714_FOOTPRINT}") for cr in cell_refs]
+    comps.append((edge, CONNECTOR["card"], ""))
+
+    nets: dict = defaultdict(list)                       # net name -> [(ref, pin)]
+    # switched channels: socket pin -> ADG714 source; drain -> rail
+    for c in w["channels"]:
+        nets[c["card_lane"]].append((socket, c["socket_pin"]))
+        nets[c["card_lane"]].append((c["cell_refdes"], c["s_pin_num"]))
+        nets[c["rail"]].append((c["cell_refdes"], c["d_pin_num"]))
+    # direct (fixed power / ground / service) socket pins -> their net
+    for c in conns:
+        if c["kind"] == "direct" and c["dest"] in _NET_CATEGORY:
+            nets[c["dest"]].append((socket, c["pin"]))
+    # rails -> parent connector contacts
+    for rail, contacts in RAIL_CONTACT.items():
+        for ct in contacts:
+            nets[rail].append((edge, ct))
+    # control/power bus broadcast to every cell (+ its connector contact)
+    bus_contact = {b[0]: b[2] for b in ADG714_BUS}
+    broadcast = {"SCLK": ("SPI_SCLK", 1), "SYNC_N": ("SPI_SYNC_N", 24),
+                 "RESET_N": ("SPI_RESET_N", 23), "VDD": ("+3V3", 2),
+                 "GND": ("GND", 4), "VSS": ("GND", 21)}
+    for sig, (net, pin) in broadcast.items():
+        for cr in cell_refs:
+            nets[net].append((cr, pin))
+        if bus_contact.get(sig):
+            nets[net].append((edge, bus_contact[sig]))
+    # DIN/DOUT daisy chain (not a broadcast): edge -> cell1 DIN, DOUT->DIN..., last -> edge
+    if ordered:
+        nets["SPI_DIN"] += [(edge, w["daisy_chain"]["head_din_contact"]), (ordered[0], 3)]
+        for i in range(len(ordered) - 1):
+            nets[f"SPI_CHAIN_{i + 1}"] += [(ordered[i], 22), (ordered[i + 1], 3)]
+        nets["SPI_DOUT"] += [(ordered[-1], 22), (edge, w["daisy_chain"]["tail_dout_contact"])]
+
+    lines = ['(export (version "E")', "  (design", f'    (source "stm32_authority {pkg}")',
+             '    (tool "stm32_authority"))', "  (components"]
+    for ref, value, fp in comps:
+        fpx = f' (footprint "{_sx(fp)}")' if fp else ""
+        lines.append(f'    (comp (ref "{_sx(ref)}") (value "{_sx(value)}"){fpx})')
+    lines.append("  )")
+    lines.append("  (nets")
+    for code, (name, nodes) in enumerate(sorted(nets.items()), start=1):
+        lines.append(f'    (net (code "{code}") (name "{_sx(name)}")')
+        for ref, pin in nodes:
+            lines.append(f'      (node (ref "{_sx(ref)}") (pin "{pin}"))')
+        lines.append("    )")
+    lines.append("  )")
+    lines.append(")")
+    return "\n".join(lines) + "\n"
 
 
 def to_switchmap_json(authority: dict) -> str:
@@ -1683,7 +1801,136 @@ def build(conn: sqlite3.Connection, package: str) -> dict:
     data["card_materials"] = card_materials(data)
     data["card_materials"]["current_budget"] = current_budget(
         data, per_part=_supply_delivery(conn, package, positions))
+    data["card_bom"] = card_bom(data)
     return data
+
+
+def _cubemx_regex(ref_name: str) -> str:
+    """Expand a CubeMX ref name into a prefix regex against a real ordering part
+    number: '(E-G)' -> a char set [EG], 'x' -> any char. E.g. 'STM32F407V(E-G)Tx'
+    matches 'STM32F407VGT6'."""
+    out, i, s = [], 0, ref_name.upper()
+    while i < len(s):
+        c = s[i]
+        if c == "(":
+            j = s.find(")", i)
+            if j == -1:
+                out.append(re.escape(c))
+                i += 1
+                continue
+            out.append("[" + re.escape(s[i + 1:j].replace("-", "")) + "]")
+            i = j + 1
+        elif c == "X":
+            out.append(".")
+            i += 1
+        else:
+            out.append(re.escape(c))
+            i += 1
+    return "^" + "".join(out)
+
+
+def resolve_part(conn: sqlite3.Connection, mpn: str) -> dict:
+    """Resolve the package-wide authority down to ONE exact MCU — the bench view.
+
+    The package authority is a UNION across every supported part, which over-states
+    what any single chip has (it asserts DFU/5V-tolerance/peripherals for pins that
+    a given part doesn't carry, and can't say which switches to close). Given a part
+    number this returns that part's concrete story: per pin its actual role, the
+    exact ADG714 switches to close for its rails, any rail this card mis-serves for
+    THIS part (the per-part face of a minority conflict), its service breakout, and
+    its family's 5V tolerance. Accepts an exact part number or a unique prefix.
+    Returns None if nothing matches."""
+    q = mpn.strip().upper()
+    row = conn.execute(
+        "SELECT id, package_name, family, line, part_number FROM mcu WHERE part_number = ?",
+        (mpn,)).fetchone()
+    if row is None:
+        # CubeMX stores ref names with variant groups + wildcards, e.g.
+        # 'STM32F407V(E-G)Tx', so a real ordering part number like 'STM32F407VGT6'
+        # needs pattern matching, not equality. Try an exact-prefix first, then match
+        # each ref name's expanded pattern against the user's part number.
+        cand = conn.execute(
+            "SELECT id, package_name, family, line, part_number FROM mcu "
+            "WHERE UPPER(part_number) LIKE ? ORDER BY part_number LIMIT 2", (q + "%",)).fetchall()
+        if len(cand) == 1:
+            row = cand[0]
+        else:
+            for r in conn.execute(
+                    "SELECT id, package_name, family, line, part_number FROM mcu"):
+                if re.match(_cubemx_regex(r[4]), q):
+                    row = r
+                    break
+    if row is None:
+        return None
+    mcu_id, package, family, line, part = row
+    a = build(conn, package)
+    pos_map = {p["position"]: p for p in a["positions"]}
+
+    roles_by_pin: dict = defaultdict(set)
+    for pin, rn, rc in conn.execute(
+        "SELECT p.physical_pin_number, pr.role_name, pr.role_class FROM mcu_package_pin p "
+        "JOIN pin_role pr ON pr.mcu_package_pin_id = p.id WHERE p.mcu_id = ?", (mcu_id,)):
+        roles_by_pin[int(pin)].add((rn, rc))
+
+    pins, close, conflicts = [], [], []
+    for pin, canon, raw, ec in conn.execute(
+        "SELECT physical_pin_number, canonical_pin_name, raw_pin_name, electrical_class "
+        "FROM mcu_package_pin WHERE mcu_id = ? ORDER BY physical_pin_number", (mcu_id,)):
+        pin = int(pin)
+        pos = pos_map.get(pin, {})
+        idents = {db.switch_identity(rn, rc) for (rn, rc) in roles_by_pin.get(pin, set())}
+        non_io = idents - {db.ID_IO}
+        chans = pos.get("assignment", {}).get("channels") or []
+        rail_ids = [i for i in sorted(non_io) if i in db._RAIL_OR_RETURN and i != db.ID_VSS]
+        pin_close, action, dest = [], None, None
+        if rail_ids:
+            for i in rail_ids:
+                net = db.TARGET_NET[i]
+                match = [c for c in chans if c["destination"] == net]
+                if match:
+                    action, dest = "close_switch", net
+                    for c in match:
+                        entry = {"cell": c["cell"], "channel": c["channel"], "rail": net}
+                        pin_close.append(entry)
+                        close.append({"pin": pin, **entry})
+                elif chans:
+                    # the card routes this pin's channel elsewhere: this exact part
+                    # needs `net` here but the dominant build does not provide it.
+                    action, dest = "rail_conflict", net
+                    conflicts.append({"pin": pin, "name": canon, "needs": net,
+                                      "card_routes_to": pos.get("assignment", {}).get("destination")})
+                else:
+                    action, dest = "direct", net
+        elif db.ID_VSS in non_io:
+            action = "ground"
+            dest = "VSSA_TGT" if "VSSA" in (raw or "").upper() else "GND"
+        elif non_io:
+            svc = [n for n in pos.get("breakout", {}).get("service_nets", []) if n]
+            action, dest = ("service", svc[0]) if svc else ("service", None)
+        else:
+            action, dest = "lane", None
+        fv = pos.get("five_v") or {}
+        pins.append({
+            "pin": pin, "name": canon, "raw": raw, "electrical_class": ec,
+            "identities": sorted(non_io), "action": action, "dest": dest,
+            "close_switches": pin_close,
+            "five_v_tolerant": (fv.get("by_family") or {}).get(family) if fv else None,
+            "is_boot1": pos.get("tags", {}).get("is_boot1", False),
+            "debug_role": pos.get("tags", {}).get("debug_role", []),
+        })
+    ea = a["extraction_access"]
+    return {
+        "part": part, "package": package, "family": family, "line": line,
+        "pins": pins,
+        "close_switches": sorted(close, key=lambda c: (c["cell"], c["channel"])),
+        "rail_conflicts": conflicts,        # rails THIS part needs that the card mis-serves
+        "boot_straps": ea.get("boot_straps"),
+        "debug_positions": ea.get("debug_positions"),
+        "note": ("Per-part resolution of the package union: exactly this MCU's pins, the "
+                 "ADG714 switches to close for its rails, any rail the dominant card "
+                 "mis-serves for this part, and its service breakout. 5V tolerance is this "
+                 "part's family value."),
+    }
 
 
 def raw_tsv(conn: sqlite3.Connection, package: str) -> str:
@@ -1910,6 +2157,10 @@ def write_authority(conn: sqlite3.Connection, package: str, out_dir: Path) -> di
         to_switchmap_c(data), encoding="utf-8", newline="\n")
     (out_dir / f"wiring_{package}.md").write_text(
         to_wiring_md(data), encoding="utf-8", newline="\n")
+    (out_dir / f"bom_{package}.csv").write_text(
+        to_card_bom_csv(data), encoding="utf-8", newline="\n")
+    (out_dir / f"card_{package}.net").write_text(
+        to_kicad_netlist(data), encoding="utf-8", newline="\n")
     svg_files = []
     try:
         from stm32_pins_tab import pin_map_svg
@@ -1924,7 +2175,8 @@ def write_authority(conn: sqlite3.Connection, package: str, out_dir: Path) -> di
                   f"pins_{package}.tsv", f"{package}_socket.kicad_sym",
                   f"pins_{package}.csv", f"authority_{package}.md",
                   f"switchmap_{package}.json", f"switchmap_{package}.h",
-                  f"wiring_{package}.md"] + svg_files,
+                  f"wiring_{package}.md", f"bom_{package}.csv",
+                  f"card_{package}.net"] + svg_files,
         "rollup": data["rollup"],
     }
 
