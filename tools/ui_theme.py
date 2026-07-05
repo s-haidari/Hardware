@@ -53,19 +53,20 @@ LIGHT_COLORS = {
     "DOT_IDLE": "#adb3ae",
 }
 
-# Categorical pin/net-type palette — one tuned family (≈L60 S48) on graphite.
-# This is the ONLY place colour lives; UI chrome stays neutral.
+# Categorical pin/net-type palette — one muted family (≈L58 S30) on graphite, so
+# the hue reads clearly on pins and nets without ever feeling loud. This is the
+# ONLY place colour lives; UI chrome stays neutral graphite (never tinted).
 CATEGORY = {
-    "power":    "#e0a94a",   # power rails: VTARGET / VDDA / VREF / VBAT
-    "ground":   "#7f93ad",   # returns: GND / VSSA
-    "core":     "#b58cd0",   # core cap: VCAP
-    "service":  "#66b884",   # service nets: OSC / NRST / BOOT0 / debug
-    "lane":     "#5d9cd6",   # default IO lane: CARD_LANE
-    "must":     "#e0685f",   # must-switch class
-    "osc":      "#e0a94a",   # oscillator class
+    "power":    "#c6a366",   # power rails: VTARGET / VDDA / VREF / VBAT
+    "ground":   "#7f8b9a",   # returns: GND / VSSA
+    "core":     "#a98cc0",   # core cap: VCAP
+    "service":  "#77a688",   # service nets: OSC / NRST / BOOT0 / debug
+    "lane":     "#6f93b5",   # default IO lane: CARD_LANE
+    "must":     "#c9736c",   # must-switch class
+    "osc":      "#c99f5e",   # oscillator class
     "fixed":    "#8b8f97",   # fixed / neutral
-    "breakout": "#5d9cd6",   # extraction breakout
-    "fivev":    "#3fb6a0",   # 5V-tolerant
+    "breakout": "#6f93b5",   # extraction breakout
+    "fivev":    "#5fa393",   # 5V-tolerant
 }
 
 
@@ -152,7 +153,7 @@ def status(kind: str) -> str:
 
 
 # ── Fonts ────────────────────────────────────────────────────────────────────
-UI_FONT_STACK = ("Geist", "Inter", "Segoe UI Variable Text", "Segoe UI")
+UI_FONT_STACK = ("Space Grotesk", "Geist", "Inter", "Segoe UI Variable Text", "Segoe UI")
 MONO_FONT_STACK = ("JetBrains Mono", "Cascadia Mono", "Consolas")
 
 

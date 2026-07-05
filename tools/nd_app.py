@@ -442,7 +442,7 @@ def main():
     here = Path(__file__).resolve().parent
     for ttf in glob.glob(str(here / "fonts" / "*.ttf")):
         QFontDatabase.addApplicationFont(ttf)
-    for fam in ("Geist", "Inter", "Segoe UI Variable Text", "Segoe UI"):
+    for fam in ("Space Grotesk", "Geist", "Inter", "Segoe UI Variable Text", "Segoe UI"):
         if fam in set(QFontDatabase().families()):
             app.setFont(QFont(fam, 9))
             break
