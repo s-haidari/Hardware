@@ -235,11 +235,11 @@ def _bom_panel(ctx, state) -> QWidget:
                          (f"{res.get('line_count', 0)} Line Items", "mut")])
             rows = []
             for r in res.get("rows", []):
-                rows.append([W.body(", ".join(r.get("refs", [])[:6]), mono=True), str(r.get("qty", "")),
-                             W.body(str(r.get("value", "")), dim=True), W.body(str(r.get("mpn", "")), mono=True),
-                             W.body(str(r.get("manufacturer", ""))), W.body(str(r.get("footprint", "")), dim=True)])
+                rows.append([", ".join(r.get("refs", [])[:6]), str(r.get("qty", "")),
+                             str(r.get("value", "")), str(r.get("mpn", "")),
+                             str(r.get("manufacturer", "")), str(r.get("footprint", ""))])
             result.addWidget(W.data_table(["Refs", "Qty", "Value", "Part Number", "Manufacturer", "Footprint"],
-                                          rows, stretch_col=4), 1)
+                                          rows, stretch_col=(4, 5), mono_cols={0, 3}, dim_cols={2, 5}), 1)
 
         run_populate(ctx, lambda: LM.bom_from_kicad_schematic(sch), populate, busy="Building BOM...")
 
@@ -255,11 +255,11 @@ def _bom_panel(ctx, state) -> QWidget:
                          (f"{res.get('line_count', 0)} Line Items", "mut")])
             rows = []
             for r in res.get("rows", []):
-                rows.append([W.body(str(r.get("mpn", "")), mono=True), W.body(str(r.get("manufacturer", ""))),
-                             W.body(str(r.get("value", "")), dim=True), W.body(str(r.get("footprint", "")), dim=True),
+                rows.append([str(r.get("mpn", "")), str(r.get("manufacturer", "")),
+                             str(r.get("value", "")), str(r.get("footprint", "")),
                              str(r.get("total_qty", ""))])
             result.addWidget(W.data_table(["Part Number", "Manufacturer", "Value", "Footprint", "Total"],
-                                          rows, stretch_col=0), 1)
+                                          rows, stretch_col=(1, 3), mono_cols={0}, dim_cols={2, 3}), 1)
 
         run_populate(ctx, lambda: LM.consolidated_bom(boards), populate, busy="Consolidating BOM...")
 

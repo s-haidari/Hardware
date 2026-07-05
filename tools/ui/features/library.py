@@ -53,10 +53,11 @@ def _parts_panel(ctx, _state) -> QWidget:
 
     trows = []
     for g in rows[:2000]:
-        trows.append([W.body(str(g.get("mpn") or g.get("name") or ""), mono=True),
-                      W.body(str(g.get("manufacturer") or ""), dim=True),
+        trows.append([str(g.get("mpn") or g.get("name") or ""),
+                      str(g.get("manufacturer") or ""),
                       _asset_flags(g.get("has_symbol"), g.get("has_footprint"), g.get("has_model"))])
-    lay.addWidget(W.data_table(["Part Number", "Manufacturer", "Assets"], trows, stretch_col=1), 1)
+    lay.addWidget(W.data_table(["Part Number", "Manufacturer", "Assets"], trows,
+                               stretch_col=(0, 1), mono_cols={0}, dim_cols={1}), 1)
     return root
 
 

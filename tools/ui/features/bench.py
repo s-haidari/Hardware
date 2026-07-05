@@ -850,7 +850,7 @@ class BenchFeature(F.Feature):
         panels = [
             ("Overview", lambda c: W.scroll_body(_authority_panel(c, state))),
             ("Profiles", lambda c: W.scroll_body(_profiles_panel(c, state))),
-            ("MCU Pinout Viewer", lambda c: _resolver_panel(c, state)),
+            ("MCU Pinout Viewer", lambda c: W.scroll_body(_resolver_panel(c, state))),
             ("Exports", lambda c: W.scroll_body(_outputs_panel(c, state))),
         ]
         ws = W.Workspace(ctx, "Bench", panels, header=header)

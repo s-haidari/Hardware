@@ -310,33 +310,53 @@ def dl(pairs: Sequence[Tuple[str, QWidget]], key_width: int = 136) -> QWidget:
 
 
 # ── data table ───────────────────────────────────────────────────────────────
-def data_table(columns: Sequence[str], rows: Sequence[Sequence], stretch_col: int = 0) -> QTableWidget:
-    """A dense, borderless-feeling table. Cells may be str or QWidget."""
+def data_table(columns: Sequence[str], rows: Sequence[Sequence], stretch_col=0,
+               mono_cols=(), dim_cols=(), max_col: int = 300) -> QTableWidget:
+    """A structured table with light row and column separators.
+
+    Cells may be a plain str (rendered as a native, elide-capable item) or a
+    QWidget (tokens, tags, asset flags). Plain-text columns can be styled mono
+    or dim by index via `mono_cols` / `dim_cols`. `stretch_col` accepts one index
+    or several; stretched columns share the leftover width. Non-stretch columns
+    are content-sized but capped at `max_col`, and long text elides rather than
+    forcing a horizontal scrollbar."""
+    from PyQt5.QtGui import QColor
+    stretch = set(stretch_col) if isinstance(stretch_col, (list, tuple, set)) else {stretch_col}
+    mono_cols = set(mono_cols); dim_cols = set(dim_cols)
+
     tbl = QTableWidget(len(rows), len(columns))
     tbl.setHorizontalHeaderLabels([c.upper() for c in columns])
     tbl.verticalHeader().hide()
     tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
     tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
     tbl.setSelectionMode(QAbstractItemView.SingleSelection)
-    tbl.setShowGrid(False)
+    tbl.setShowGrid(True)
+    tbl.setGridStyle(Qt.SolidLine)
     tbl.setWordWrap(False)
+    tbl.setTextElideMode(Qt.ElideRight)
+    tbl.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
     tbl.horizontalHeader().setHighlightSections(False)
+    tbl.horizontalHeader().setMinimumSectionSize(52)
     tbl.verticalHeader().setDefaultSectionSize(34)
+
+    mono = T.mono_font(9)
     for r, row in enumerate(rows):
         for cidx, cell in enumerate(row):
             if isinstance(cell, QWidget):
                 tbl.setCellWidget(r, cidx, cell)
             else:
                 it = QTableWidgetItem(str(cell))
+                if cidx in mono_cols:
+                    it.setFont(mono)
+                it.setToolTip(str(cell))
                 tbl.setItem(r, cidx, it)
-    # Column sizing: Qt's ResizeToContents ignores cell *widgets*, so a column of
-    # tokens/tags collapses. Measure both items and cell-widget hints ourselves.
+
     hdr = tbl.horizontalHeader()
     fm = tbl.fontMetrics()
     def _text_w(s):
         return fm.horizontalAdvance(s) if hasattr(fm, "horizontalAdvance") else fm.width(s)
     for c in range(len(columns)):
-        if c == stretch_col:
+        if c in stretch:
             hdr.setSectionResizeMode(c, QHeaderView.Stretch)
             continue
         hdr.setSectionResizeMode(c, QHeaderView.Interactive)
@@ -349,7 +369,23 @@ def data_table(columns: Sequence[str], rows: Sequence[Sequence], stretch_col: in
                 it = tbl.item(r, c)
                 if it is not None:
                     wmax = max(wmax, _text_w(it.text()) + 24)
-        tbl.setColumnWidth(c, wmax + 28)
+        wmax = min(wmax, max_col)
+        pad = 26 + (18 if c == len(columns) - 1 and c not in stretch else 0)
+        tbl.setColumnWidth(c, wmax + pad)
+
+    def _style():
+        dim = T.t("txt3")
+        for r in range(len(rows)):
+            for c in dim_cols:
+                it = tbl.item(r, c)
+                if it is not None:
+                    it.setForeground(QColor(dim))
+        tbl.setStyleSheet(
+            f"QTableWidget{{background:transparent;gridline-color:{T.t('stroke')};"
+            f"color:{T.t('txt1')};selection-background-color:{T.t('ctl')};selection-color:{T.t('txt1')};}}"
+            f"QHeaderView::section{{background:transparent;color:{T.t('txt2')};border:none;"
+            f"border-bottom:1px solid {T.t('stroke')};padding:6px 8px;font-weight:600;}}")
+    register_restyle(_style)
     return tbl
 
 
