@@ -524,6 +524,83 @@ def _pin_branches(a: dict, pos: int, cw: dict = None):
     return conn, kind, name, pcol, branches
 
 
+def _pin_chain(a: dict, pos: int, cw: dict = None) -> dict:
+    """Structured, refdes-level signal chain for one pin — the source of truth for
+    the rebuilt Connections view (schematic chain + Source/Drain ledger). Each row is
+    one physical path with the ADG714 Source/Drain terminals, the exact nets on each
+    side, and the in-line component (ZIF socket / switch cell / series resistor /
+    connector contact). Covers switched AND direct pins."""
+    cw = cw or sauth.card_wiring(a)
+    conn = next((c for c in sauth.socket_connections(a) if c["pin"] == pos), None)
+    p = next((x for x in a["positions"] if x["position"] == pos), None)
+    name = next(iter(p["pin_names"]), "") if (p and p["pin_names"]) else ""
+    kind = conn["kind"] if conn else "direct"
+    socket = cw.get("socket_refdes", "XU_TGT")
+    zif = cw.get("zif_socket", "ZIF socket")
+    cn = cw.get("connector")
+    connector = (cn.get("card") if isinstance(cn, dict) else cn) or "connector"
+    series = cw.get("series_r_refdes") or ""      # "" => this card has no lane series R
+    series_lbl = f"{series} · 33 Ω" if series else ""
+    src_net = f"{socket} Pin {pos} · {name}"
+
+    def _lane_net(v):
+        v = v or ""
+        return f"CARD_LANE_{pos:03d}" if v == "CARD_LANE" else v
+
+    rows = []
+    if kind == "switch":
+        chans = [x for x in cw["channels"] if x["socket_pin"] == pos]
+        for c in chans:
+            contacts = c.get("connector_contacts") or []
+            if contacts:
+                dvia = f"{connector} · " + " / ".join(_fmt_contact(x) for x in contacts)
+            elif c["rail"] == "GND":
+                dvia = "Ground Plane · Local Stitching Vias"
+            elif series:
+                dvia = f"{series} → {_fmt_contact(c.get('lane_contact', ''))}"
+            else:
+                dvia = f"{connector} · {_fmt_contact(c.get('lane_contact', ''))}"
+            rows.append({
+                "kind": "switch", "cell": c["cell_refdes"], "channel": c["channel"],
+                "s_term": f"{c['s_pin']} · Pin {c['s_pin_num']}",
+                "d_term": f"{c['d_pin']} · Pin {c['d_pin_num']}",
+                "source_net": src_net, "source_via": zif,
+                "drain_net": expandNet(c["rail"]), "drain_via": dvia,
+                "drain_cat": sauth._NET_CATEGORY.get(c["rail"], "lane"),
+            })
+        if chans:
+            c0 = chans[0]
+            rows.append({
+                "kind": "lane", "cell": None, "channel": None, "s_term": None, "d_term": None,
+                "source_net": src_net, "source_via": zif, "series": series_lbl or None,
+                "drain_net": _lane_net(c0.get("card_lane")),
+                "drain_via": f"{connector} · {_fmt_contact(c0.get('lane_contact', ''))}",
+                "drain_cat": "lane",
+            })
+    elif kind == "resistor":
+        rows.append({
+            "kind": "lane", "cell": None, "s_term": None, "d_term": None,
+            "source_net": src_net, "source_via": zif, "series": series_lbl or None,
+            "drain_net": _lane_net(conn["dest"]),
+            "drain_via": f"{connector} · {_fmt_contact(conn['contact'])}" if conn.get("contact") else connector,
+            "drain_cat": "lane",
+        })
+    else:
+        dest = conn["dest"] if conn else ""
+        lane = dest == "CARD_LANE"
+        rows.append({
+            "kind": "direct", "cell": None, "s_term": None, "d_term": None,
+            "source_net": src_net, "source_via": zif, "series": None,
+            "drain_net": _lane_net(dest),
+            "drain_via": (f"{connector} · {_fmt_contact(conn['contact'])}"
+                          if (conn and conn.get("contact") and not lane) else connector),
+            "drain_cat": conn["category"] if conn else "lane",
+        })
+    one_hot = sum(1 for r in rows if r["kind"] == "switch") > 1
+    return {"pos": pos, "name": name, "kind": kind, "socket": socket, "zif": zif,
+            "connector": connector, "series": series, "rows": rows, "one_hot": one_hot}
+
+
 class _NumItem(QTableWidgetItem):
     """Table item that sorts by its numeric UserRole, so the Pin column orders
     1, 2, ... 10, ... 64 rather than lexicographically (1, 10, 11, ... 2, ...)."""
@@ -859,6 +936,80 @@ class ConnectionDiagram(QWidget):
             p.drawText(QRectF(pad, top + sockH + 4, W - 2 * pad, 16),
                        Qt.AlignLeft,
                        "◇  mutually exclusive — one branch closed at a time (firmware one-hot)")
+
+
+class _ConnectionLedger(QWidget):
+    """Native Source/Drain ledger for the selected pin: per branch (ADG714 channel or
+    direct lane), the exact Source and Drain terminals, the net connected on each side,
+    and the in-line component — spelled out in full (the diagram elides; this never
+    does). Columns: Side · ADG714 Terminal · Connected Net · Through Component."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._lay = QVBoxLayout(self)
+        self._lay.setContentsMargins(0, 0, 0, 0)
+        self._lay.setSpacing(12)
+
+    def set_data(self, a, pos, cw):
+        while self._lay.count():
+            it = self._lay.takeAt(0)
+            w = it.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+        if not a or pos is None:
+            return
+        for r in _pin_chain(a, pos, cw)["rows"]:
+            self._lay.addWidget(self._block(r))
+
+    def _block(self, r):
+        fam = _SVG_FONT.split(",")[0]
+        mono = _SVG_MONO.split(",")[0].strip("'")
+        w = QWidget()
+        g = QGridLayout(w)
+        g.setContentsMargins(0, 0, 0, 0)
+        g.setHorizontalSpacing(14)
+        g.setVerticalSpacing(4)
+        g.setColumnStretch(2, 3)
+        g.setColumnStretch(3, 3)
+        if r["kind"] == "switch":
+            title = f"Channel {r['channel']} · {r['cell']}"
+        elif r["kind"] == "lane":
+            title = "Default Card Lane"
+        else:
+            title = "Direct Route"
+        hdr = QLabel(title.upper())
+        hf = QFont(fam, 8)
+        hf.setLetterSpacing(QFont.PercentageSpacing, 106)
+        hdr.setFont(hf)
+        hdr.setStyleSheet(f"color:{_MUT};")
+        g.addWidget(hdr, 0, 0, 1, 4)
+
+        def cell(txt, color, font, wrap=False, bold=False):
+            lb = QLabel(str(txt))
+            lb.setFont(font)
+            lb.setWordWrap(wrap)
+            lb.setStyleSheet(f"color:{color};" + ("font-weight:600;" if bold else ""))
+            lb.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+            return lb
+
+        def row(ri, side, term, net, via, bright):
+            g.addWidget(cell(side, _TXT if bright else _MUT, QFont(fam, 8), bold=True), ri, 0)
+            g.addWidget(cell(term or "—", _TXT, QFont(mono, 8)), ri, 1)
+            g.addWidget(cell(net, _TXT, QFont(mono, 8), wrap=True), ri, 2)
+            g.addWidget(cell(via, _MUT, QFont(fam, 8), wrap=True), ri, 3)
+
+        if r["kind"] == "switch":
+            row(1, "Source", r["s_term"], r["source_net"], r["source_via"], True)
+            row(2, "Drain", r["d_term"], r["drain_net"], r["drain_via"], False)
+        else:
+            row(1, "Source", None, r["source_net"], r["source_via"], True)
+            ri = 2
+            if r.get("series"):
+                row(ri, "Series", None, r["series"], "", False)
+                ri += 1
+            row(ri, "Drain", None, r["drain_net"], r["drain_via"], False)
+        return w
 
 
 class ConnectionRow(QFrame):
@@ -1243,9 +1394,12 @@ class Stm32PinsWidget(QWidget):
         self.insp_header = QLabel("Select a pin")
         self.insp_header.setTextFormat(Qt.RichText)
         iv.addWidget(self.insp_header)
-        iv.addWidget(uw.SectionHeader("Connections"))
+        iv.addWidget(uw.SectionHeader("Signal Path"))
         self.diagram = ConnectionDiagram()
         iv.addWidget(self.diagram)
+        iv.addWidget(uw.SectionHeader("Source / Drain"))
+        self.ledger = _ConnectionLedger()       # exact terminals + nets, no elision
+        iv.addWidget(self.ledger)
         iv.addWidget(uw.SectionHeader("Detail"))
         self.pin_detail = _KeyValuePanel()      # native rows, not an HTML table
         self.pin_detail.setMinimumHeight(150)
@@ -1419,6 +1573,8 @@ class Stm32PinsWidget(QWidget):
                     tbl.blockSignals(prev)
             if getattr(self, "diagram", None) is not None and self.authority:
                 self.diagram.set_data(self.authority, pos, self._cw())
+            if getattr(self, "ledger", None) is not None and self.authority:
+                self.ledger.set_data(self.authority, pos, self._cw())
             if self.authority:
                 p = next((x for x in self.authority["positions"]
                           if x["position"] == pos), None)
@@ -1597,6 +1753,8 @@ class Stm32PinsWidget(QWidget):
             self.cells_view.setHtml("")
         if getattr(self, "diagram", None) is not None:
             self.diagram.set_data(None, None, None)
+        if getattr(self, "ledger", None) is not None:
+            self.ledger.set_data(None, None, None)
         if getattr(self, "insp_header", None) is not None:
             self.insp_header.setText(
                 f"<span style='color:{_MUT};font-size:11pt'>No package loaded</span>")
@@ -1643,6 +1801,8 @@ class Stm32PinsWidget(QWidget):
             self.cells_view.setHtml(cells_html(self.authority))
         if getattr(self, "diagram", None) is not None:
             self.diagram.set_data(None, None, None)
+        if getattr(self, "ledger", None) is not None:
+            self.ledger.set_data(None, None, None)
         if getattr(self, "insp_header", None) is not None:
             self.insp_header.setText(
                 f"<span style='color:{_MUT};font-size:11pt'>Select a pin on the map</span>")

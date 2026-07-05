@@ -522,6 +522,50 @@ class AuthorityTests(unittest.TestCase):
         w.conn_list.filter_combo.setCurrentText("All")
         self.assertEqual(len(w.conn_list._rows), 64)
 
+    def test_pin_chain_source_drain(self):
+        """The rebuilt Connections view's structured signal chain (Source/Drain ledger):
+        exact ADG714 terminals + the net on each side, the ZIF/connector/series
+        components spelled out, the GND ground-plane special-case, and the per-card
+        gating of the 33 Ohm lane series resistor (present on 7C, absent on 7B)."""
+        try:
+            import stm32_pins_tab as tab
+        except Exception as e:  # pragma: no cover
+            raise unittest.SkipTest(f"stm32_pins_tab (PyQt5) unavailable: {e}")
+
+        # LQFP64 (card 7B): switched pin has a switch branch (S/D terminals, rail via
+        # the receptacle) PLUS a DIRECT default-lane branch with NO series resistor.
+        a64 = auth.build(self.conn, "LQFP64")
+        cw64 = auth.card_wiring(a64)
+        ch = tab._pin_chain(a64, 1, cw64)                         # VBAT, must-switch
+        self.assertEqual(ch["kind"], "switch")
+        sw = next(r for r in ch["rows"] if r["kind"] == "switch")
+        self.assertTrue(sw["s_term"].startswith("S") and "Pin" in sw["s_term"])
+        self.assertTrue(sw["d_term"].startswith("D") and "Pin" in sw["d_term"])
+        self.assertIn("J_SOCKET64_1 Pin 1", sw["source_net"])     # socket pin on the source side
+        self.assertIn("VBAT", sw["source_net"])
+        self.assertEqual(sw["source_via"], cw64["zif_socket"])    # Yamaichi ZIF (source component)
+        self.assertIn("VBAT_TARGET", sw["drain_net"])             # display-expanded rail
+        self.assertIn("Samtec", sw["drain_via"])                  # connector (drain component)
+        lane = next(r for r in ch["rows"] if r["kind"] == "lane")
+        self.assertIsNone(lane["series"])                         # 7B: no lane series resistor
+        self.assertIn("CARD_LANE_001", lane["drain_net"])
+
+        # LQFP100 (card 7C): the default lane rides a 33 Ohm R_IO_LANE series resistor,
+        # and a GND-routed channel delivers to the ground plane, not a fake contact.
+        a100 = auth.build(self.conn, "LQFP100")
+        cw100 = auth.card_wiring(a100)
+        lane100 = next(r for r in tab._pin_chain(a100, 2, cw100)["rows"]
+                       if r["kind"] == "lane")
+        self.assertIsNotNone(lane100["series"])
+        self.assertIn("R_IO_LANE", lane100["series"])
+        self.assertIn("33", lane100["series"])
+        gnd_chan = next((c for c in cw100["channels"] if c["rail"] == "GND"), None)
+        self.assertIsNotNone(gnd_chan)                            # 7C grounds some pins
+        gr = next(r for r in tab._pin_chain(a100, gnd_chan["socket_pin"], cw100)["rows"]
+                  if r["kind"] == "switch" and r["drain_net"] == "GND")
+        self.assertIn("Ground Plane", gr["drain_via"])           # ground plane, not a contact
+        self.assertEqual(gr["source_via"], cw100["zif_socket"])  # LQFP100 Yamaichi ZIF
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
