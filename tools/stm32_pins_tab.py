@@ -189,11 +189,11 @@ def _pin_detail_rows(p: dict) -> list:
     and the HTML export."""
     fv = p.get("five_v")
     if fv is None:
-        fvt = "Not applicable (non-GPIO)"
+        fvt = "Not Applicable (non-GPIO)"
     elif fv["tolerant"]:
-        fvt = "Yes (except in oscillator mode)" if fv.get("caveat") == "osc-mode" else "Yes"
+        fvt = "Yes (Except in Oscillator Mode)" if fv.get("caveat") == "osc-mode" else "Yes"
     elif any(fv["by_family"].values()):
-        fvt = "Part-dependent"
+        fvt = "Part-Dependent"
     else:
         fvt = "No"
     bk = p.get("breakout", {})
@@ -1418,13 +1418,13 @@ class Stm32PinsWidget(QWidget):
         self._packages_populated = False
         bar.addWidget(self.pkg_combo)
         bar.addStretch()
-        self.btn_build = uw.button("Build database", "default", lucide_icon("wrench", LUCIDE_AMBER))
+        self.btn_build = uw.button("Build Database", "default", lucide_icon("wrench", LUCIDE_AMBER))
         self.btn_build.clicked.connect(self.build_database)
         bar.addWidget(self.btn_build)
-        self.btn_gen = uw.button("Export pin data", "default", lucide_icon("save", LUCIDE_GREEN))
+        self.btn_gen = uw.button("Export Pin Data", "default", lucide_icon("save", LUCIDE_GREEN))
         self.btn_gen.clicked.connect(self.generate)
         bar.addWidget(self.btn_gen)
-        self.btn_vault = uw.button("Save to vault", "primary", lucide_icon("file-up", LUCIDE_GREEN))
+        self.btn_vault = uw.button("Save to Vault", "primary", lucide_icon("file-up", LUCIDE_GREEN))
         self.btn_vault.setToolTip("Write the pin data into the Obsidian Brain vault")
         self.btn_vault.clicked.connect(self.generate_to_vault)
         bar.addWidget(self.btn_vault)

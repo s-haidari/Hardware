@@ -141,11 +141,11 @@ class ManagerView(QWidget):
         self.btn_refresh.clicked.connect(self.refresh)
         bar.addWidget(self.btn_refresh)
         for label, slot in [("Import ZIPs", self._process_zips),
-                            ("Clean leftovers", self._clean),
+                            ("Clean Leftovers", self._clean),
                             ("Repair", self._repair),
-                            ("Remove duplicates", self._dedupe),
-                            ("Register libraries", self._register),
-                            ("Render board", self._render_board)]:
+                            ("Remove Duplicates", self._dedupe),
+                            ("Register Libraries", self._register),
+                            ("Render Board", self._render_board)]:
             b = PushButton(label)
             b.clicked.connect(slot)
             bar.addWidget(b)
@@ -161,14 +161,14 @@ class ManagerView(QWidget):
         # view controls: grouped toggle + filter
         vc = QHBoxLayout()
         vc.setSpacing(8)
-        vc.addWidget(BodyLabel("Group by component"))
+        vc.addWidget(BodyLabel("Group by Component"))
         self.group_sw = SwitchButton()
         self.group_sw.setChecked(True)
         self.group_sw.checkedChanged.connect(lambda *_: self.refresh())
         vc.addWidget(self.group_sw)
         vc.addStretch(1)
         self.search = SearchLineEdit()
-        self.search.setPlaceholderText("Filter parts…")
+        self.search.setPlaceholderText("Filter Parts…")
         self.search.setFixedWidth(300)
         self.search.textChanged.connect(self._apply_filter)
         vc.addWidget(self.search)

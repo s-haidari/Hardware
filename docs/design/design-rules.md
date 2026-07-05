@@ -78,13 +78,13 @@ the same: decoration standing in for design.
 - **Dense is allowed; noisy is not.** This is a pro engineering tool — density is fine
   when it has rhythm, alignment, and air. Cramped-with-boxes is the failure mode.
 - **Motion is minimal and purposeful,** and respects reduced-motion.
-- **Copy is design material.** **Title Case for labels, headings, and named terms**
-  ("Signal Path", "Source and Drain", "Connected Net", "Must-Switch", "Default Card Lane",
-  "Pin Names") — minor words like "and/or/the" stay lowercase. **Sentence case only for**
-  full sentences (the one-hot note), data values ("Part-dependent", "Not applicable", "Yes"),
-  and action buttons per Windows guidance ("Clean leftovers", "Save changes"). Never
-  all-lowercase. No abbreviations, no em dashes. Signal names, refdes, and nets keep their
-  real casing (PE3, GND, U_SW_L100_1).
+- **Copy is design material. Title Case for ALL UI text** — labels, headings, named terms,
+  buttons, values ("Signal Path", "Source and Drain", "Connected Net", "Must-Switch",
+  "Default Card Lane", "Pin Names", "Save to Vault", "Part-Dependent", "Not Applicable").
+  Minor words ("and/or/the/in") stay lowercase. **Sentence case ONLY for an actual sentence**
+  — the one-hot note, a status/error message, the switch rationale. Never all-lowercase. No
+  abbreviations, no em dashes. Signal names, refdes, and nets keep their real casing
+  (PE3, GND, U_SW_L100_1).
 
 ---
 
