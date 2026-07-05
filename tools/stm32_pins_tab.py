@@ -8,6 +8,7 @@ third nav tab.
 from __future__ import annotations
 
 import html
+import json
 import os
 from pathlib import Path
 
@@ -2340,11 +2341,56 @@ class Stm32PinsWidget(QWidget):
                     f"{drift}\n\nFix the build cards or the claims files, then save again.")
                 self.status.setText("Vault save aborted: drift gate failed (nothing written).")
                 return
+            # Fabric DRC on every package being written: structural rules that hold
+            # with or without a claims file. A violation aborts before any write.
+            for pkg in pkgs:
+                findings = sauth.fabric_drc(sauth.build(conn, pkg))
+                bad = [f for f in findings if not f["ok"]]
+                if bad:
+                    detail = "\n".join(f"{f['rule']}: {f['detail']}" for f in bad)
+                    QMessageBox.warning(
+                        self, "Generate → Vault",
+                        f"Switch-fabric DRC FAILED for {pkg} — nothing was written:"
+                        f"\n\n{detail}")
+                    self.status.setText(
+                        f"Vault save aborted: fabric DRC failed for {pkg} (nothing written).")
+                    return
+            # remember the previous authorities so the save can say WHAT changed
+            olds = {}
+            for v in vdirs:
+                for pkg in pkgs:
+                    f = Path(v) / f"pinout_authority_{pkg}.json"
+                    if f.exists():
+                        try:
+                            olds[(str(v), pkg)] = json.loads(f.read_text(encoding="utf-8"))
+                        except Exception:      # noqa: BLE001
+                            pass
             # hash what's there so the save can report changed vs unchanged
             probe = [f"pinout_authority_{p}.json" for p in pkgs]
             before = {str(v): _hashes(v, probe) for v in vdirs}
             written = [sauth.write_authority(conn, pkg, vdir)
                        for vdir in vdirs for pkg in pkgs]
+            # semantic diff: the exact pins whose routing moved since the last save
+            diff_lines = []
+            for v in vdirs:
+                for pkg in pkgs:
+                    old = olds.get((str(v), pkg))
+                    f = Path(v) / f"pinout_authority_{pkg}.json"
+                    if old is None or not f.exists():
+                        continue
+                    try:
+                        new = json.loads(f.read_text(encoding="utf-8"))
+                    except Exception:          # noqa: BLE001
+                        continue
+                    for ln in sauth.authority_diff(old, new):
+                        diff_lines.append(f"{pkg}: {ln}")
+                break                          # one vault dir is representative
+            if diff_lines and self.ctx:
+                self.ctx.log("Authority changes since the last save:")
+                for ln in diff_lines[:40]:
+                    self.ctx.log("  " + ln)
+                if len(diff_lines) > 40:
+                    self.ctx.log(f"  … and {len(diff_lines) - 40} more")
             changed = []
             for v in vdirs:
                 after = _hashes(v, probe)

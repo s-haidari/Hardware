@@ -371,6 +371,12 @@ def connect(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
+def list_packages(conn: sqlite3.Connection) -> list:
+    """Every package name in the database, sorted."""
+    return [r[0] for r in conn.execute(
+        "SELECT DISTINCT package_name FROM mcu ORDER BY package_name")]
+
+
 def classifier_rev(conn: sqlite3.Connection) -> int:
     """The classifier revision that built this DB (0 = pre-stamp database)."""
     try:

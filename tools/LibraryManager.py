@@ -431,6 +431,22 @@ def insert_blocks_into_target(target_text: str, blocks: List[str]) -> str:
         return f'(kicad_symbol_lib (version 20211014) (generator "LibraryManager.py")\n{body}\n)\n'
     return target_text[:last_close] + "\n" + "\n".join(blocks) + "\n" + target_text[last_close:]
 
+def _snapshot_then_write(symbol_lib_path: Path, new_text: str, log: UILog):
+    """Destructive symbol-library rewrite with an undo copy: snapshot the current
+    file into libs/.trash/<timestamp>/ first, then write. A failed snapshot logs
+    and continues (the user asked for the operation); a restore is one copy-back."""
+    try:
+        src = Path(symbol_lib_path)
+        if src.exists():
+            from datetime import datetime as _dt
+            dst_dir = src.parent / ".trash" / _dt.now().strftime("%Y%m%d_%H%M%S")
+            dst_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst_dir / src.name)
+    except Exception as e:                     # noqa: BLE001
+        log.write(f"Trash snapshot failed (continuing): {e}")
+    write_text(symbol_lib_path, new_text)
+
+
 def remove_symbol_by_name(symbol_lib_path: Path, name: str, log: UILog) -> bool:
     """Remove a symbol block by name from the .kicad_sym library"""
     try:
@@ -450,7 +466,7 @@ def remove_symbol_by_name(symbol_lib_path: Path, name: str, log: UILog) -> bool:
             '(kicad_symbol_lib (version 20211014) (generator "LibraryManager.py")\n)\n',
             new_blocks
         )
-        write_text(symbol_lib_path, new_text)
+        _snapshot_then_write(symbol_lib_path, new_text, log)
         log.write(f"Deleted symbol '{name}' from {symbol_lib_path.name}")
         return True
     except Exception as e:
@@ -482,7 +498,7 @@ def dedupe_symbol_library(symbol_lib_path: Path, log: UILog) -> int:
                     '(kicad_symbol_lib (version 20211014) (generator "LibraryManager.py")\n)\n',
                     kept
                 )
-                write_text(symbol_lib_path, new_text)
+                _snapshot_then_write(symbol_lib_path, new_text, log)
                 log.write(f"Removed {removed} duplicate symbol(s); kept {len(kept)} unique.")
             else:
                 log.write("No duplicate symbols to remove.")
@@ -517,7 +533,7 @@ def remove_symbols_by_indices(symbol_lib_path: Path, expected: Dict[int, str],
                 '(kicad_symbol_lib (version 20211014) (generator "LibraryManager.py")\n)\n',
                 kept
             )
-            write_text(symbol_lib_path, new_text)
+            _snapshot_then_write(symbol_lib_path, new_text, log)
             log.write(f"Deleted {removed} symbol(s).")
         return removed
     except Exception as e:
@@ -796,6 +812,51 @@ def associate_parts_from_cfg(cfg: Dict[str, str], overrides: Optional[dict] = No
                            overrides if overrides is not None else load_group_overrides(cfg))
 
 
+# ── canonical part identity from the symbol's own properties ──────────────────
+# SnapEDA / Component Search Engine / Mouser-style symbols embed the part's real
+# identity as symbol properties (in this library: Value holds the manufacturer
+# part number, MANUFACTURER the maker, plus Datasheet/Description). Deriving the
+# identity from the symbol makes it the single source of truth for EXISTING parts
+# and every FUTURE download alike — no side index to maintain.
+_PROP_RE = re.compile(r'\(property\s+"((?:[^"\\]|\\.)*)"\s+"((?:[^"\\]|\\.)*)"')
+
+# candidate property names, most-specific first (compared case/sep-insensitively)
+_MPN_KEYS = ("manufacturerpartnumber", "mpn", "mouserpartnumber", "mouserpartno",
+             "partnumber", "partno", "value")
+_MFR_KEYS = ("manufacturer", "mfr", "mfg", "brand", "vendor")
+_PLACEHOLDERS = {"", "~", "*", "-", "n/a", "na", "none", "value"}
+
+
+def extract_symbol_properties(block: str) -> Dict[str, str]:
+    """{property name -> value} for one symbol block (quote-unescaped)."""
+    out: Dict[str, str] = {}
+    for k, v in _PROP_RE.findall(block or ""):
+        out[k.replace('\\"', '"')] = v.replace('\\"', '"')
+    return out
+
+
+def part_identity(props: Dict[str, str], fallback: str = "") -> Dict[str, Optional[str]]:
+    """Canonical identity from symbol properties: the manufacturer part number
+    (Mouser's canonical name), the manufacturer, and the datasheet/description.
+    Falls back to `fallback` (e.g. the footprint stem) when nothing usable exists."""
+    norm = {k.lower().replace(" ", "").replace("_", "").replace("-", ""): v.strip()
+            for k, v in (props or {}).items()}
+
+    def pick(keys):
+        for k in keys:
+            v = norm.get(k, "")
+            if v and v.lower() not in _PLACEHOLDERS:
+                return v
+        return None
+
+    return {
+        "mpn": pick(_MPN_KEYS) or (fallback or None),
+        "manufacturer": pick(_MFR_KEYS),
+        "datasheet": pick(("datasheet",)),
+        "description": pick(("description", "ki_description")),
+    }
+
+
 def scan_library_grouped(cfg: Dict[str, str], overrides: Optional[dict] = None) -> List[dict]:
     """One row per logical part for the future grouped library view.
 
@@ -836,6 +897,16 @@ def scan_library_grouped(cfg: Dict[str, str], overrides: Optional[dict] = None) 
     model_names = {p.name for p in mdl_dir.glob("*")
                    if p.suffix.lower() in (".step", ".stp", ".wrl")} if mdl_dir.exists() else set()
 
+    # symbol name -> its property dict, read once (identity source for every row)
+    sym_props: Dict[str, Dict[str, str]] = {}
+    sym_path = Path(cfg["SymbolLib"])
+    if sym_path.exists():
+        try:
+            for b in extract_symbol_blocks(read_text(sym_path)):
+                sym_props[extract_symbol_name(b)] = extract_symbol_properties(b)
+        except Exception:                      # noqa: BLE001
+            pass
+
     rows: List[dict] = []
     for g in groups:
         fp = g.get("footprint")
@@ -854,8 +925,20 @@ def scan_library_grouped(cfg: Dict[str, str], overrides: Optional[dict] = None) 
 
         name = symbols[0] if symbols else fp
 
+        # canonical identity from the first symbol that carries usable properties
+        ident = {"mpn": None, "manufacturer": None, "datasheet": None, "description": None}
+        for s in symbols:
+            cand = part_identity(sym_props.get(s, {}), fallback="")
+            if cand["mpn"] or cand["manufacturer"]:
+                ident = cand
+                break
+
         rows.append({
             "name": name,
+            "mpn": ident["mpn"] or name,       # the part's canonical (Mouser) name
+            "manufacturer": ident["manufacturer"],
+            "datasheet": ident["datasheet"],
+            "description": ident["description"],
             "footprint": fp,
             "symbols": symbols,
             "model": model,
@@ -951,7 +1034,7 @@ def remove_symbol_by_index(symbol_lib_path: Path, index: int, log: UILog,
             '(kicad_symbol_lib (version 20211014) (generator "LibraryManager.py")\n)\n',
             blocks
         )
-        write_text(symbol_lib_path, new_text)
+        _snapshot_then_write(symbol_lib_path, new_text, log)
         log.write(f"Deleted one copy of symbol '{found_name}' from {symbol_lib_path.name}")
         return True
     except Exception as e:

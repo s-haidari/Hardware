@@ -260,31 +260,33 @@ class ManagerView(QWidget):
             self.write(f"Refresh failed: {e}")
 
     def _render_grouped(self):
-        cols = ["Part", "Symbol", "Footprint", "3D Model", "Status"]
+        cols = ["Part", "Manufacturer", "Symbol", "Footprint", "3D Model", "Status"]
         self.table.setColumnCount(len(cols))
         self.table.setHorizontalHeaderLabels(cols)
         rows = [g for g in self._groups if g.get("footprint") is not None]
         self._rows_view = rows           # table row index -> group dict (for the preview)
         self.table.setRowCount(len(rows))
         n_fp = n_mdl = n_sym = 0
+        st_col = len(cols) - 1
         for r, g in enumerate(rows):
             n_fp += 1
             n_mdl += 1 if g.get("model") else 0
             syms = g.get("symbols") or []
             n_sym += len(syms)
-            vals = [g["footprint"], ", ".join(syms), g["footprint"],
-                    g.get("model") or "—",
+            # the part's canonical (Mouser / manufacturer) name from its own symbol
+            vals = [g.get("mpn") or g["footprint"], g.get("manufacturer") or "—",
+                    ", ".join(syms), g["footprint"], g.get("model") or "—",
                     "Dangling" if g.get("dangling") else "OK"]
             for c, v in enumerate(vals):
                 it = QTableWidgetItem(str(v))
-                if c == 4 and g.get("dangling"):
+                if c == st_col and g.get("dangling"):
                     it.setForeground(_qcolor(ui_theme.status("warn")))
                 self.table.setItem(r, c, it)
         # fill the viewport: text columns share the width, Status hugs its content
         hdr = self.table.horizontalHeader()
-        for c in range(4):
+        for c in range(st_col):
             hdr.setSectionResizeMode(c, QHeaderView.Stretch)
-        hdr.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(st_col, QHeaderView.ResizeToContents)
         self._ro["items"].setText(str(len(rows)))
         self._ro["symbols"].setText(str(n_sym))
         self._ro["footprints"].setText(str(n_fp))

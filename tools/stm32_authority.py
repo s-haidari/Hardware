@@ -620,6 +620,155 @@ def lint_card(authority: dict, claims: dict) -> list:
     return findings
 
 
+# ── switch-fabric DRC: structural rules every generated fabric must satisfy ────
+# Unlike the drift gate (which checks a package against ITS build card's claims),
+# the DRC runs on any package with no claims file — it is what makes opening the
+# untested packages safe, and it catches engine regressions the counts can miss.
+
+def fabric_drc(authority: dict) -> list:
+    """Design-rule check over the authority dict. Returns findings
+    [{rule, ok, detail}]; all ok == a well-formed fabric."""
+    r = authority["rollup"]
+    # TARGET_NET plus the split OSC pair's OUT half and the analog-ground override
+    # (VSSA pins ground to VSSA_TGT, Connector Contract contact 24)
+    known_nets = set(db.TARGET_NET.values()) | {"SERVICE_OSC_OUT", "VSSA_TGT"}
+    findings = []
+
+    def add(rule, ok, detail=""):
+        findings.append({"rule": rule, "ok": bool(ok), "detail": detail})
+
+    switched = [p for p in authority["positions"] if p["assignment"].get("channels")]
+    chans = [(p["position"], c) for p in switched for c in p["assignment"]["channels"]]
+
+    # 1. every must-switch pin owns at least one channel
+    missing = [p["position"] for p in authority["positions"]
+               if p["switch_class"] == db.SWITCH_MUST and not p["assignment"].get("channels")]
+    add("must_switch_pins_have_channels", not missing,
+        f"pins without a channel: {missing}" if missing else f"{r['must_switch_count']} pins covered")
+
+    # 2. the rollup count matches the actual channel list
+    add("channel_count_matches_rollup", len(chans) == r["channel_count"],
+        f"rollup {r['channel_count']} vs actual {len(chans)}")
+
+    # 3. packing: cell indices within the built bank, at most 8 channels per cell,
+    #    and no (cell, channel) terminal pair assigned twice
+    cells_used = {c["cell"] for _, c in chans}
+    add("cell_indices_in_range",
+        all(1 <= n <= r["cells_as_built"] for n in cells_used),
+        f"cells used {sorted(cells_used)} of {r['cells_as_built']} built")
+    per_cell: dict = {}
+    for _, c in chans:
+        per_cell[c["cell"]] = per_cell.get(c["cell"], 0) + 1
+    over = {k: v for k, v in per_cell.items() if v > 8}
+    add("no_cell_over_8_channels", not over, f"overpacked: {over}" if over else "")
+    pairs = [(c["cell"], c["channel"]) for _, c in chans]
+    dups = sorted({p for p in pairs if pairs.count(p) > 1})
+    add("no_duplicate_terminal_pairs", not dups, f"duplicated: {dups}" if dups else "")
+    add("cells_min_le_built", r["cells_min"] <= r["cells_as_built"],
+        f"min {r['cells_min']} vs built {r['cells_as_built']}")
+
+    # 4. one-hot groups: a pin's channels must route to distinct rails (two channels
+    #    to the same rail on one pin is a wiring error, not a role choice)
+    bad_groups = []
+    for p in switched:
+        rails = [c["destination"] for c in p["assignment"]["channels"]]
+        if len(rails) != len(set(rails)):
+            bad_groups.append(p["position"])
+    add("exclusive_groups_distinct_rails", not bad_groups,
+        f"pins with duplicate rails: {bad_groups}" if bad_groups else "")
+
+    # 5. every channel destination is a known net
+    unknown = sorted({c["destination"] for _, c in chans
+                      if c["destination"] not in known_nets})
+    add("destinations_known", not unknown, f"unknown nets: {unknown}" if unknown else "")
+
+    # 6. oscillator-optional pins route only to the oscillator service nets
+    bad_osc = [p["position"] for p in switched
+               if p["switch_class"] == db.SWITCH_OSC_OPTIONAL
+               and any(not c["destination"].startswith("SERVICE_OSC")
+                       for c in p["assignment"]["channels"])]
+    add("osc_pins_route_to_osc_nets", not bad_osc,
+        f"osc pins off SERVICE_OSC_*: {bad_osc}" if bad_osc else "")
+    return findings
+
+
+def fabric_drc_ok(findings) -> bool:
+    return all(f["ok"] for f in findings)
+
+
+# ── current budget: hard capacities from the fabric vs a labelled assumption ──
+# The per-channel continuous-current rating of the ADG714 (~30 mA, Analog Devices
+# datasheet — verify against the revision you stock) times the paralleled channel
+# count per rail is a hard capacity. The target's draw is an ASSUMPTION the user
+# must check against their MCU's datasheet; it is labelled as such in the output.
+ADG714_CHANNEL_MA = 30
+
+def current_budget(authority: dict, assumed_target_draw_ma: int = 240) -> dict:
+    """Per-rail current capacity of the switch fabric. Returns {rails: {rail:
+    {channels, capacity_ma}}, assumed_target_draw_ma, findings, note}."""
+    per_rail: dict = {}
+    for p in authority["positions"]:
+        for c in p["assignment"].get("channels", []):
+            per_rail[c["destination"]] = per_rail.get(c["destination"], 0) + 1
+    rails = {rail: {"channels": n, "capacity_ma": n * ADG714_CHANNEL_MA}
+             for rail, n in sorted(per_rail.items())}
+    findings = []
+    for rail in ("VTARGET", "GND"):
+        cap = rails.get(rail, {}).get("capacity_ma", 0)
+        if cap and cap < assumed_target_draw_ma:
+            findings.append(
+                f"{rail}: capacity {cap} mA ({rails[rail]['channels']} channels x "
+                f"{ADG714_CHANNEL_MA} mA) is below the assumed target draw of "
+                f"{assumed_target_draw_ma} mA — parallel more channels or verify the draw.")
+    return {
+        "per_channel_ma": ADG714_CHANNEL_MA,
+        "assumed_target_draw_ma": assumed_target_draw_ma,
+        "rails": rails,
+        "findings": findings,
+        "note": ("Capacities are channels x the ADG714 continuous rating "
+                 f"(~{ADG714_CHANNEL_MA} mA per channel — verify against the datasheet "
+                 "revision you stock). The target draw is an assumption; check it "
+                 "against the socketed MCU's datasheet at your clock/voltage."),
+    }
+
+
+# ── semantic authority diff: WHAT changed between two saved authorities ────────
+
+def _route_of(p: dict) -> str:
+    chans = p["assignment"].get("channels") or []
+    if chans:
+        return "+".join(sorted({c["destination"] for c in chans}))
+    return p["assignment"].get("destination") or p["assignment"].get("net") or ""
+
+
+def authority_diff(old: dict, new: dict) -> list:
+    """Human-readable per-pin and rollup differences between two authority dicts
+    (full or slim/JSON form). Empty list == semantically identical fabrics."""
+    lines = []
+    if old.get("package") != new.get("package"):
+        return [f"package: {old.get('package')} -> {new.get('package')}"]
+    ro, rn = old.get("rollup", {}), new.get("rollup", {})
+    for k in sorted(set(ro) | set(rn)):
+        if ro.get(k) != rn.get(k):
+            lines.append(f"rollup {k}: {ro.get(k)} -> {rn.get(k)}")
+    po = {p["position"]: p for p in old.get("positions", [])}
+    pn = {p["position"]: p for p in new.get("positions", [])}
+    for pos in sorted(set(po) | set(pn)):
+        a, b = po.get(pos), pn.get(pos)
+        if a is None:
+            lines.append(f"pin {pos}: added")
+            continue
+        if b is None:
+            lines.append(f"pin {pos}: removed")
+            continue
+        if a.get("switch_class") != b.get("switch_class"):
+            lines.append(f"pin {pos} class: {a.get('switch_class')} -> {b.get('switch_class')}")
+        ra, rb = _route_of(a), _route_of(b)
+        if ra != rb:
+            lines.append(f"pin {pos} route: {ra or '(none)'} -> {rb or '(none)'}")
+    return lines
+
+
 # ── self-contained reporting (analysis only; the physical ADG714 build is the
 #    vault's authority — this layer just makes the tool legible without it) ──────
 
@@ -1274,6 +1423,7 @@ def build(conn: sqlite3.Connection, package: str) -> dict:
         "positions": positions,
     }
     data["card_materials"] = card_materials(data)
+    data["card_materials"]["current_budget"] = current_budget(data)
     return data
 
 

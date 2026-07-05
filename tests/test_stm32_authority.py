@@ -569,5 +569,92 @@ class AuthorityTests(unittest.TestCase):
         self.assertEqual(gr["source_via"], cw100["zif_socket"])  # LQFP100 Yamaichi ZIF
 
 
+class FabricLogicTests(unittest.TestCase):
+    """The pre-handoff logic additions: fabric DRC, the semantic authority diff,
+    the current-budget capacities, and the multi-package unlock sweep."""
+
+    @classmethod
+    def setUpClass(cls):
+        src = db.default_cubemx_source()
+        if not src:
+            raise unittest.SkipTest("CubeMX XML source not found")
+        import tempfile
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.dbp = Path(cls._tmp.name) / "t.sqlite"
+        db.build_database(Path(src), cls.dbp)
+        cls.conn = db.connect(cls.dbp)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.conn.close()
+        cls._tmp.cleanup()
+
+    def test_fabric_drc_green_on_shipped_packages(self):
+        for pkg in ("LQFP64", "LQFP100"):
+            a = auth.build(self.conn, pkg)
+            findings = auth.fabric_drc(a)
+            bad = [f for f in findings if not f["ok"]]
+            self.assertEqual(bad, [], f"{pkg} DRC: {bad}")
+            self.assertTrue(auth.fabric_drc_ok(findings))
+
+    def test_fabric_drc_detects_corruption(self):
+        import copy
+        a = copy.deepcopy(auth.build(self.conn, "LQFP64"))
+        sw = next(p for p in a["positions"] if p["assignment"].get("channels"))
+        # duplicate rail inside one pin's exclusive group + an unknown destination
+        ch = dict(sw["assignment"]["channels"][0])
+        ch["destination"] = "NOT_A_NET"
+        sw["assignment"]["channels"].append(ch)
+        findings = {f["rule"]: f for f in auth.fabric_drc(a)}
+        self.assertFalse(findings["destinations_known"]["ok"])
+        self.assertFalse(findings["channel_count_matches_rollup"]["ok"])
+        self.assertFalse(auth.fabric_drc_ok(findings.values()))
+
+    def test_authority_diff_reports_route_moves(self):
+        import copy
+        a = auth.build(self.conn, "LQFP64")
+        self.assertEqual(auth.authority_diff(a, a), [])       # identical -> empty
+        b = copy.deepcopy(a)
+        sw = next(p for p in b["positions"] if p["assignment"].get("channels"))
+        sw["assignment"]["channels"][0]["destination"] = "GND"
+        lines = auth.authority_diff(a, b)
+        self.assertTrue(any(f"pin {sw['position']} route:" in ln for ln in lines), lines)
+
+    def test_current_budget_capacities(self):
+        a = auth.build(self.conn, "LQFP100")
+        cb = a["card_materials"]["current_budget"]
+        self.assertEqual(cb["per_channel_ma"], auth.ADG714_CHANNEL_MA)
+        # capacities = channels x rating, and the fabric's rails are all present
+        rails = {}
+        for p in a["positions"]:
+            for c in p["assignment"].get("channels", []):
+                rails[c["destination"]] = rails.get(c["destination"], 0) + 1
+        self.assertEqual({k: v["channels"] for k, v in cb["rails"].items()}, rails)
+        for v in cb["rails"].values():
+            self.assertEqual(v["capacity_ma"], v["channels"] * auth.ADG714_CHANNEL_MA)
+        self.assertIn("verify", cb["note"])                   # the assumption is labelled
+
+    def test_leaded_packages_build_and_pass_drc(self):
+        """The unlock sweep: every leaded/QFN package in the DB builds a fabric
+        that passes the structural DRC (the 2-package limit was only hardcoding)."""
+        pkgs = [p for p in db.list_packages(self.conn)
+                if p.startswith(("LQFP", "UFQFPN", "VFQFPN", "TSSOP"))]
+        self.assertGreaterEqual(len(pkgs), 8, pkgs)
+        for pkg in pkgs:
+            a = auth.build(self.conn, pkg)
+            bad = [f for f in auth.fabric_drc(a) if not f["ok"]]
+            self.assertEqual(bad, [], f"{pkg}: {bad}")
+
+    def test_stale_database_refused(self):
+        """A DB stamped by an older classifier must be refused by build()."""
+        self.conn.execute("UPDATE meta SET value='1' WHERE key='classifier_rev'")
+        try:
+            with self.assertRaises(ValueError):
+                auth.build(self.conn, "LQFP64")
+        finally:
+            self.conn.execute("UPDATE meta SET value=? WHERE key='classifier_rev'",
+                              (str(db.CLASSIFIER_REV),))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -396,9 +396,39 @@ def load_footprint(path: Path) -> Optional[_Footprint]:
         return None
 
 
+_IMG_CACHE: dict = {}           # render cache; keyed per-kind below (LRU)
+_IMG_CACHE_MAX = 48
+
+
+def _img_cache_get(key):
+    if key in _IMG_CACHE:
+        _IMG_CACHE[key] = _IMG_CACHE.pop(key)
+        return _IMG_CACHE[key]
+    return None
+
+
+def _img_cache_put(key, img):
+    if img is None:
+        return
+    _IMG_CACHE[key] = img
+    while len(_IMG_CACHE) > _IMG_CACHE_MAX:
+        _IMG_CACHE.pop(next(iter(_IMG_CACHE)))
+
+
 def render_footprint_image(path: Path, px: int = 420) -> Optional[QImage]:
+    try:
+        key = ("fp", str(path), Path(path).stat().st_mtime, px)
+    except OSError:
+        key = None
+    if key is not None:
+        hit = _img_cache_get(key)
+        if hit is not None:
+            return hit
     fp = load_footprint(path)
-    return fp.render(px) if fp else None
+    img = fp.render(px) if fp else None
+    if key is not None:
+        _img_cache_put(key, img)
+    return img
 
 
 def footprint_summary(path: Path) -> Optional[dict]:
@@ -416,6 +446,16 @@ COL_SYMPIN = QColor("#9fb0c8")
 
 
 def render_symbol_image(block_text: str, px: int = 280) -> Optional[QImage]:
+    key = ("sym", hash(block_text), px)
+    hit = _img_cache_get(key)
+    if hit is not None:
+        return hit
+    img = _render_symbol_image_uncached(block_text, px)
+    _img_cache_put(key, img)
+    return img
+
+
+def _render_symbol_image_uncached(block_text: str, px: int = 280) -> Optional[QImage]:
     try:
         root = parse_sexpr(block_text)
         if not root or root[0] != "symbol":
@@ -697,9 +737,21 @@ def load_step_mesh(step_path: Path):
     WRL/VRML through the built-in VRML reader. Unsupported suffixes are logged
     (not silently swallowed) and return (None, None) — so a .wrl model is no
     longer fed into the STEP reader (which raised → blank preview)."""
+    # mesh cache: STEP -> glb conversion takes seconds; re-selecting the same part
+    # should not re-run OpenCASCADE. Keyed by (path, mtime) so edits invalidate.
+    try:
+        key = (str(step_path), Path(step_path).stat().st_mtime)
+    except OSError:
+        key = None
+    if key is not None and key in _MESH_CACHE:
+        _MESH_CACHE[key] = _MESH_CACHE.pop(key)      # LRU refresh
+        return _MESH_CACHE[key]
+
     fmt = model_format(step_path)
     if fmt == "vrml":
-        return load_vrml_mesh(step_path)
+        vf = load_vrml_mesh(step_path)
+        _mesh_cache_put(key, vf)
+        return vf
     if fmt != "step":
         _log.warning("fp_render: unsupported 3D model format %r (%s)",
                      Path(step_path).suffix, step_path)
@@ -709,7 +761,8 @@ def load_step_mesh(step_path: Path):
     import cascadio
     import trimesh
     import numpy as np
-    glb = tempfile.NamedTemporaryFile(suffix=".glb", delete=False).name
+    fd, glb = tempfile.mkstemp(suffix=".glb")        # own the handle; close before use
+    os.close(fd)
     try:
         with _suppress_native_stderr():
             cascadio.step_to_glb(str(step_path), glb, tol_linear=0.05, tol_angular=0.3)
@@ -720,12 +773,26 @@ def load_step_mesh(step_path: Path):
             mesh = scene.dump(concatenate=True)
         else:
             mesh = scene
-        return np.asarray(mesh.vertices, float), np.asarray(mesh.faces, int)
+        vf = np.asarray(mesh.vertices, float), np.asarray(mesh.faces, int)
+        _mesh_cache_put(key, vf)
+        return vf
     finally:
         try:
             os.unlink(glb)
         except Exception:
             pass
+
+
+_MESH_CACHE: dict = {}          # (path, mtime) -> (verts, faces); insertion-ordered LRU
+_MESH_CACHE_MAX = 6             # meshes can be large; keep the working set small
+
+
+def _mesh_cache_put(key, vf):
+    if key is None or vf[0] is None:
+        return
+    _MESH_CACHE[key] = vf
+    while len(_MESH_CACHE) > _MESH_CACHE_MAX:
+        _MESH_CACHE.pop(next(iter(_MESH_CACHE)))
 
 
 _load_step_mesh = load_step_mesh   # backward-compatible alias
