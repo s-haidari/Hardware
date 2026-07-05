@@ -668,7 +668,9 @@ def library_sourcing_report(cfg: Dict[str, str], lookup, throttle: float = 0.0) 
         life = (res.get("lifecycle") or "").lower()
         obsolete = any(w in life for w in
                        ("obsolete", "eol", "end of life", "nrnd", "not recommended", "discontinued"))
-        rows.append({"symbol": name, "mpn": mpn, "found": True,
+        source = res.get("source", "Mouser")         # chain tags the provider that found it
+        rows.append({"symbol": name, "mpn": mpn, "found": True, "source": source,
+                     "on_mouser": source == "Mouser",
                      "mouser_pn": res.get("mouser_pn"), "manufacturer": res.get("manufacturer"),
                      "lifecycle": res.get("lifecycle"), "stock": res.get("stock") or 0,
                      "unit_price": res.get("unit_price"), "lead_time": res.get("lead_time"),
@@ -678,13 +680,16 @@ def library_sourcing_report(cfg: Dict[str, str], lookup, throttle: float = 0.0) 
     counts = {"parts": len(rows),
               "found": sum(1 for r in rows if r["found"]),
               "not_found": sum(1 for r in rows if not r["found"]),
+              "on_mouser": sum(1 for r in rows if r.get("on_mouser")),
+              "not_on_mouser": sum(1 for r in rows if r["found"] and not r.get("on_mouser")),
               "obsolete_nrnd": sum(1 for r in rows if r.get("obsolete")),
               "out_of_stock": sum(1 for r in rows if r["found"] and not r.get("in_stock"))}
 
-    L = ["# Library Sourcing (Mouser)", "",
-         f"**{counts['found']} / {counts['parts']} parts found** — "
-         f"{counts['obsolete_nrnd']} obsolete/NRND, {counts['out_of_stock']} out of stock, "
-         f"{counts['not_found']} not on Mouser.", ""]
+    L = ["# Library Sourcing", "",
+         f"**{counts['found']} / {counts['parts']} parts found** "
+         f"({counts['on_mouser']} on Mouser, {counts['not_on_mouser']} via a fallback, "
+         f"{counts['not_found']} not found) — {counts['obsolete_nrnd']} obsolete/NRND, "
+         f"{counts['out_of_stock']} out of stock.", ""]
     flags = [r for r in rows if r.get("obsolete") or (r["found"] and not r.get("in_stock"))]
     if flags:
         L += ["## Needs attention", ""]
@@ -697,9 +702,14 @@ def library_sourcing_report(cfg: Dict[str, str], lookup, throttle: float = 0.0) 
             rep = f" — replace with {r['suggested_replacement']}" if r.get("suggested_replacement") else ""
             L.append(f"- **{r['symbol']}** ({r['mpn']}): {', '.join(why)}{rep}")
         L.append("")
+    elsewhere = [r for r in rows if r["found"] and not r.get("on_mouser")]
+    if elsewhere:
+        L += ["## Not on Mouser (found on a fallback)", ""]
+        L += [f"- {r['symbol']} ({r['mpn']}) — via {r['source']}" for r in elsewhere] + [""]
     nf = [r for r in rows if not r["found"]]
     if nf:
-        L += ["## Not found on Mouser", ""] + [f"- {r['symbol']} ({r['mpn']})" for r in nf] + [""]
+        L += ["## Not found on any provider", ""]
+        L += [f"- {r['symbol']} ({r['mpn']})" for r in nf] + [""]
     return {"rows": rows, "counts": counts, "markdown": "\n".join(L) + "\n"}
 
 
@@ -759,55 +769,79 @@ class _NullLog:
         pass
 
 
-def make_mouser_lookup(api_key: str, timeout: int = 8):
-    """A lookup(mpn) -> identity dict backed by the Mouser Search API. Requires a
-    Mouser API key (the user's, from config). Returns None for anything it can't
-    resolve and NEVER raises — a network/auth/parse failure just means 'no data'."""
+def _parse_mouser_part(p: dict) -> dict:
+    """One Mouser API part -> our normalized field dict."""
+    breaks = p.get("PriceBreaks") or []
+    try:
+        stock = int(p.get("AvailabilityInStock") or 0)
+    except (TypeError, ValueError):
+        stock = 0
+    return {"mpn": p.get("ManufacturerPartNumber"),
+            "manufacturer": p.get("Manufacturer"),
+            "datasheet": p.get("DataSheetUrl"),
+            "description": p.get("Description"),
+            "mouser_pn": p.get("MouserPartNumber"),
+            "category": p.get("Category"),
+            "lifecycle": p.get("LifecycleStatus") or "Active",   # null = active
+            "rohs": p.get("ROHSStatus"),
+            "stock": stock,
+            "lead_time": p.get("LeadTime"),
+            "unit_price": (breaks[0].get("Price") if breaks else None),
+            "url": p.get("ProductDetailUrl"),
+            "suggested_replacement": p.get("SuggestedReplacement")}
+
+
+def _mouser_post(endpoint: str, api_key: str, payload: dict, timeout: int = 8):
+    """POST to a Mouser Search API endpoint; return the parsed JSON or None (never
+    raises)."""
     import json as _json
     import urllib.request
+    try:
+        req = urllib.request.Request(
+            f"https://api.mouser.com/api/v1/search/{endpoint}?apiKey={api_key}",
+            data=_json.dumps(payload).encode(), headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return _json.loads(r.read().decode())
+    except Exception:                                # noqa: BLE001
+        return None
 
+
+def make_mouser_lookup(api_key: str, timeout: int = 8):
+    """A lookup(mpn) -> normalized part dict backed by the Mouser Search API. Requires a
+    Mouser API key. Returns None for anything it can't resolve and NEVER raises."""
     def lookup(mpn):
         if not (api_key and mpn):
             return None
-        try:
-            body = _json.dumps({"SearchByPartRequest": {"mouserPartNumber": mpn,
-                                                        "partSearchOptions": "Exact"}}).encode()
-            req = urllib.request.Request(
-                f"https://api.mouser.com/api/v1/search/partnumber?apiKey={api_key}",
-                data=body, headers={"Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                data = _json.loads(r.read().decode())
-            parts = (data.get("SearchResults") or {}).get("Parts") or []
-            if not parts:
-                return None
-            # exact MPN match if present, else the first hit
-            up = mpn.strip().upper()
-            p = next((x for x in parts
-                      if (x.get("ManufacturerPartNumber") or "").upper() == up), parts[0])
-            breaks = p.get("PriceBreaks") or []
-            price = (breaks[0].get("Price") if breaks else None)
-            try:
-                stock = int(p.get("AvailabilityInStock") or 0)
-            except (TypeError, ValueError):
-                stock = 0
-            # Mouser leaves LifecycleStatus null for active parts
-            lifecycle = p.get("LifecycleStatus") or "Active"
-            return {"mpn": p.get("ManufacturerPartNumber"),
-                    "manufacturer": p.get("Manufacturer"),
-                    "datasheet": p.get("DataSheetUrl"),
-                    "description": p.get("Description"),
-                    "mouser_pn": p.get("MouserPartNumber"),
-                    "category": p.get("Category"),
-                    "lifecycle": lifecycle,
-                    "rohs": p.get("ROHSStatus"),
-                    "stock": stock,
-                    "lead_time": p.get("LeadTime"),
-                    "unit_price": price,
-                    "url": p.get("ProductDetailUrl"),
-                    "suggested_replacement": p.get("SuggestedReplacement")}
-        except Exception:                            # noqa: BLE001 — never raise to the UI
+        data = _mouser_post("partnumber", api_key,
+                            {"SearchByPartRequest": {"mouserPartNumber": mpn,
+                                                     "partSearchOptions": "Exact"}}, timeout)
+        parts = ((data or {}).get("SearchResults") or {}).get("Parts") or []
+        if not parts:
             return None
+        up = mpn.strip().upper()
+        p = next((x for x in parts
+                  if (x.get("ManufacturerPartNumber") or "").upper() == up), parts[0])
+        return _parse_mouser_part(p)
     return lookup
+
+
+def search_parts(query: str, cfg: Dict[str, str] = None, limit: int = 10) -> dict:
+    """Built-in part lookup: search Mouser by MPN or keyword and return up to `limit`
+    normalized results (manufacturer, datasheet, stock, price, lifecycle, Mouser P/N,
+    url). No import needed — for looking a part up before you use it. Returns
+    {query, results, error}."""
+    import os
+    key = (cfg or {}).get("MouserApiKey") or os.environ.get("MOUSER_API_KEY")
+    if not key:
+        return {"query": query, "results": [], "error": "no Mouser API key configured"}
+    if not (query or "").strip():
+        return {"query": query, "results": [], "error": "empty query"}
+    data = _mouser_post("keyword", key,
+                        {"SearchByKeywordRequest": {"keyword": query.strip(),
+                                                    "records": max(1, min(limit, 50)),
+                                                    "startingRecord": 0}})
+    parts = ((data or {}).get("SearchResults") or {}).get("Parts") or []
+    return {"query": query, "results": [_parse_mouser_part(p) for p in parts[:limit]], "error": ""}
 
 
 def footprint_has_model(footprint_text: str) -> bool:
@@ -1205,6 +1239,94 @@ def mouser_lookup_from_config(cfg: Dict[str, str] = None):
     return make_mouser_lookup(key) if key else None
 
 
+def make_provider_chain(providers):
+    """providers: [(name, lookup_fn)] in PREFERENCE order (Mouser first). Returns a
+    lookup(mpn) that tries each provider in order and returns the FIRST hit tagged with
+    'source'=<name>, else None. So a part Mouser lacks but a fallback carries comes back
+    with source != 'Mouser' — the exact signal used to flag it."""
+    def chain(mpn):
+        for name, fn in providers:
+            try:
+                r = fn(mpn)
+            except Exception:                        # noqa: BLE001 — a dead provider is just skipped
+                r = None
+            if r:
+                return {**r, "source": name}
+        return None
+    return chain
+
+
+def make_digikey_lookup(client_id: str, client_secret: str, timeout: int = 8):
+    """A lookup(mpn) backed by the DigiKey Product Information API (OAuth2 client
+    credentials) — a FALLBACK for parts Mouser does not carry. Requires a DigiKey client
+    id + secret in config. Returns None on any failure and never raises. Best-effort:
+    verify the response mapping against your DigiKey API tier; a mismatch just yields no
+    fallback (Mouser still works)."""
+    import json as _json
+    import urllib.request
+    import urllib.parse
+    token = {"v": None}
+
+    def _auth():
+        try:
+            body = urllib.parse.urlencode(
+                {"grant_type": "client_credentials", "client_id": client_id,
+                 "client_secret": client_secret}).encode()
+            req = urllib.request.Request(
+                "https://api.digikey.com/v1/oauth2/token", data=body,
+                headers={"Content-Type": "application/x-www-form-urlencoded"})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                token["v"] = _json.loads(r.read().decode()).get("access_token")
+        except Exception:                            # noqa: BLE001
+            token["v"] = None
+        return token["v"]
+
+    def lookup(mpn):
+        if not (client_id and client_secret and mpn):
+            return None
+        tok = token["v"] or _auth()
+        if not tok:
+            return None
+        try:
+            req = urllib.request.Request(
+                "https://api.digikey.com/products/v4/search/"
+                f"{urllib.parse.quote(str(mpn), safe='')}/productdetails",
+                headers={"Authorization": f"Bearer {tok}", "X-DIGIKEY-Client-Id": client_id,
+                         "accept": "application/json"})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                p = (_json.loads(r.read().decode()) or {}).get("Product") or {}
+            if not p:
+                return None
+            return {"mpn": p.get("ManufacturerProductNumber"),
+                    "manufacturer": (p.get("Manufacturer") or {}).get("Name"),
+                    "datasheet": p.get("DatasheetUrl"),
+                    "description": (p.get("Description") or {}).get("ProductDescription"),
+                    "lifecycle": (p.get("ProductStatus") or {}).get("Status") or "Active",
+                    "stock": p.get("QuantityAvailable") or 0,
+                    "unit_price": p.get("UnitPrice"),
+                    "url": p.get("ProductUrl")}
+        except Exception:                            # noqa: BLE001
+            return None
+    return lookup
+
+
+def providers_from_config(cfg: Dict[str, str] = None):
+    """The distributor lookup chain built from configured keys, Mouser PREFERRED first,
+    then DigiKey as a fallback. Returns a single lookup(mpn) (source-tagged) or None if
+    no provider is configured."""
+    import os
+    cfg = cfg or {}
+    providers = []
+    mk = cfg.get("MouserApiKey") or os.environ.get("MOUSER_API_KEY")
+    if mk:
+        providers.append(("Mouser", make_mouser_lookup(mk)))
+    did = cfg.get("DigiKeyClientId") or os.environ.get("DIGIKEY_CLIENT_ID")
+    dsec = cfg.get("DigiKeyClientSecret") or os.environ.get("DIGIKEY_CLIENT_SECRET")
+    if did and dsec:
+        providers.append(("DigiKey", make_digikey_lookup(did, dsec)))
+    return make_provider_chain(providers) if providers else None
+
+
 def consolidated_bom(boards: Dict[str, list], lookup=None) -> dict:
     """Merge the BOMs of several boards into one purchasing list.
 
@@ -1235,25 +1357,40 @@ def consolidated_bom(boards: Dict[str, list], lookup=None) -> dict:
 
     if lookup:
         for m in merged.values():
-            if m["mpn"] and (not m["manufacturer"] or not m["datasheet"]):
-                res = lookup(m["mpn"])
-                if res:
-                    for f in ("manufacturer", "datasheet"):
-                        if not m[f] and res.get(f):
-                            m[f] = res[f]
+            if not m["mpn"]:
+                m["source"] = ""                     # generic passive, no distributor lookup
+                continue
+            res = lookup(m["mpn"])
+            if res:
+                m["source"] = res.get("source", "Mouser")
+                for f in ("manufacturer", "datasheet"):
+                    if not m[f] and res.get(f):
+                        m[f] = res[f]
+            else:
+                m["source"] = "NOT FOUND"
 
     rows = sorted(merged.values(), key=lambda r: (r["value"].lower(), r["footprint"].lower()))
+    sourced = bool(lookup)
     import csv as _csv
     import io as _io
     buf = _io.StringIO()
     w = _csv.writer(buf, lineterminator="\n")
-    w.writerow(["MPN", "Manufacturer", "Value", "Footprint", "Total"]
-               + board_names + ["Datasheet"])
+    head = ["MPN", "Manufacturer", "Value", "Footprint", "Total"] + board_names + ["Datasheet"]
+    if sourced:
+        head.insert(5, "Source")                     # which provider carries it (or NOT FOUND)
+    w.writerow(head)
     for r in rows:
-        w.writerow([r["mpn"], r["manufacturer"], r["value"], r["footprint"], r["total_qty"]]
-                   + [r["per_board"].get(b, 0) for b in board_names] + [r["datasheet"]])
-    return {"rows": rows, "board_names": board_names, "csv": buf.getvalue(),
-            "line_count": len(rows), "total_parts": sum(r["total_qty"] for r in rows)}
+        row = [r["mpn"], r["manufacturer"], r["value"], r["footprint"], r["total_qty"]]
+        if sourced:
+            row.append(r.get("source", ""))
+        row += [r["per_board"].get(b, 0) for b in board_names] + [r["datasheet"]]
+        w.writerow(row)
+    out = {"rows": rows, "board_names": board_names, "csv": buf.getvalue(),
+           "line_count": len(rows), "total_parts": sum(r["total_qty"] for r in rows)}
+    if sourced:
+        out["not_on_mouser"] = [r["mpn"] or r["value"] for r in rows
+                                if r.get("source") not in ("Mouser", "")]
+    return out
 
 
 def bom_from_kicad_schematic(sch_path, lookup=None,
@@ -1764,7 +1901,7 @@ def finalize_import(cfg: Dict[str, str], log: UILog, lookup=None) -> dict:
                   f"{linked['model_count']} 3D model(s)")
     enriched = {"written": False, "changes": [], "looked_up": 0}
     if lookup is None:
-        lookup = mouser_lookup_from_config(cfg)
+        lookup = providers_from_config(cfg)          # Mouser preferred, fallbacks after
     if lookup:
         enriched = enrich_library(cfg, lookup, log=log, dry_run=False)
         if enriched.get("changes"):

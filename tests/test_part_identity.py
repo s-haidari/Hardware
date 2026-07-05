@@ -96,6 +96,48 @@ class EnrichTests(unittest.TestCase):
         self.assertIn("mouser_pn", dict(changed))
 
 
+class ProviderChainTests(unittest.TestCase):
+    def test_chain_prefers_first_then_falls_back(self):
+        mouser = lambda m: {"manufacturer": "ADI"} if m == "ON_M" else None
+        digikey = lambda m: {"manufacturer": "TI"} if m in ("ON_M", "ON_DK") else None
+        chain = LM.make_provider_chain([("Mouser", mouser), ("DigiKey", digikey)])
+        self.assertEqual(chain("ON_M")["source"], "Mouser")     # preferred wins
+        self.assertEqual(chain("ON_DK")["source"], "DigiKey")   # fallback when Mouser misses
+        self.assertIsNone(chain("NOWHERE"))
+        # a throwing provider is skipped, not fatal
+        boom = lambda m: (_ for _ in ()).throw(RuntimeError("x"))
+        self.assertEqual(LM.make_provider_chain([("Boom", boom), ("DigiKey", digikey)])("ON_DK")["source"],
+                         "DigiKey")
+
+    def test_providers_from_config(self):
+        self.assertIsNone(LM.providers_from_config({}))                    # no keys
+        self.assertIsNotNone(LM.providers_from_config({"MouserApiKey": "k"}))  # Mouser only
+
+    def test_search_parts_needs_a_key(self):
+        r = LM.search_parts("anything", {})
+        self.assertIn("Mouser", r["error"])
+        self.assertEqual(r["results"], [])
+        self.assertEqual(LM.search_parts("", {"MouserApiKey": "k"})["error"], "empty query")
+
+    def test_sourcing_flags_not_on_mouser(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            sym = pathlib.Path(td) / "S.kicad_sym"
+            sym.write_text(
+                '(kicad_symbol_lib\n'
+                '  (symbol "A" (property "Value" "ON_M" (at 0 0 0)) (property "MANUFACTURER" "ADI" (at 0 0 0)))\n'
+                '  (symbol "B" (property "Value" "ON_DK" (at 0 0 0)) (property "MANUFACTURER" "TI" (at 0 0 0)))\n)\n',
+                encoding="utf-8")
+            chain = LM.make_provider_chain([
+                ("Mouser", lambda m: {"manufacturer": "ADI", "stock": 5} if m == "ON_M" else None),
+                ("DigiKey", lambda m: {"manufacturer": "TI", "stock": 5} if m == "ON_DK" else None)])
+            rep = LM.library_sourcing_report(
+                {"SymbolLib": str(sym), "FootprintLib": td, "ModelLib": td}, chain)
+            self.assertEqual(rep["counts"]["on_mouser"], 1)
+            self.assertEqual(rep["counts"]["not_on_mouser"], 1)
+            self.assertIn("via DigiKey", rep["markdown"])
+
+
 class LibrarySourcingTests(unittest.TestCase):
     def test_flags_obsolete_and_out_of_stock(self):
         import tempfile
