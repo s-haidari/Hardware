@@ -98,8 +98,8 @@ _COLS = ["Pin", "Side", "Pin Name(s)", "Role Set", "Switch",
          "Destination", "Peripherals", "Breakout", "VDD (V)"]
 
 _SWITCH_LABEL = {
-    sdb.SWITCH_MUST: "Must-switch",
-    sdb.SWITCH_OSC_OPTIONAL: "Optional oscillator",
+    sdb.SWITCH_MUST: "Must-Switch",
+    sdb.SWITCH_OSC_OPTIONAL: "Optional Oscillator",
     sdb.SWITCH_NONE: "Fixed",
 }
 
@@ -179,7 +179,7 @@ def expandNet(s: str) -> str:
 
 
 _CAT_WORD = {"power": "Power", "analog": "Analog", "ground": "Ground",
-             "core": "Core", "service": "Service", "lane": "Card lane"}
+             "core": "Core", "service": "Service", "lane": "Card Lane"}
 
 
 def _pin_detail_rows(p: dict) -> list:
@@ -201,14 +201,14 @@ def _pin_detail_rows(p: dict) -> list:
     el = p.get("electrical", {}) or {}
     why = sauth.switch_rationale(p)
     dest = p["assignment"].get("destination") or p["assignment"].get("net") or ""
-    cat = _CAT_WORD.get(sauth._NET_CATEGORY.get(dest, "lane"), "Card lane")
+    cat = _CAT_WORD.get(sauth._NET_CATEGORY.get(dest, "lane"), "Card Lane")
     rows = [
-        ("Pin names", _counts(p["pin_names"])),
+        ("Pin Names", _counts(p["pin_names"])),
         ("Roles", _counts(p["role_set"])),
         ("Category", cat),
     ]
     if why:
-        rows.append(("Why it switches", why))
+        rows.append(("Why It Switches", why))
     if p.get("peripherals"):
         rows.append(("Peripherals", ", ".join(p["peripherals"])))
     if bnets or bk.get("trace"):
@@ -220,7 +220,7 @@ def _pin_detail_rows(p: dict) -> list:
     boot = ", ".join(p["tags"].get("bootloader_periph", []))
     if boot:
         rows.append(("Bootloader", boot))
-    rows += [("5 V tolerant", fvt), ("Supply voltage", _fmt_rng(el.get("vdd_range_v")))]
+    rows += [("5 V Tolerant", fvt), ("Supply Voltage", _fmt_rng(el.get("vdd_range_v")))]
     return rows
 
 
@@ -508,7 +508,7 @@ def _pin_branches(a: dict, pos: int, cw: dict = None):
             rname = cw.get("series_r_refdes", "")
             branches.append({
                 "caption": "DEFAULT IO LANE",
-                "via": f"{rname} · 33 Ω series" if rname else "Direct route",
+                "via": f"{rname} · 33 Ω Series" if rname else "Direct Route",
                 "via2": "" if rname else "No series resistor on this card",
                 "to": c0["card_lane"],
                 "to2": _fmt_contact(c0["lane_contact"]) if c0.get("lane_contact") else "Lane Row",
@@ -518,7 +518,7 @@ def _pin_branches(a: dict, pos: int, cw: dict = None):
         rname = cw.get("series_r_refdes", "R_IO_LANE")
         branches.append({
             "caption": "IO LANE",
-            "via": f"{rname} · 33 Ω series", "via2": "",
+            "via": f"{rname} · 33 Ω Series", "via2": "",
             "to": conn["dest"], "to2": _fmt_contact(conn["contact"]),
             "color": _CAT_COLOR["lane"],
         })
@@ -526,7 +526,7 @@ def _pin_branches(a: dict, pos: int, cw: dict = None):
         lane_dest = conn and conn["dest"] == "CARD_LANE"
         branches.append({
             "caption": "DIRECT",
-            "via": "Direct route", "via2": "",
+            "via": "Direct Route", "via2": "",
             "to": conn["dest"] if conn else "",
             "to2": (_fmt_contact(conn["contact"])
                     if (conn and conn["contact"] and not lane_dest) else
@@ -806,7 +806,7 @@ class PinMapWidget(QWidget):
 class ConnectionDiagram(QWidget):
     """The selected pin's rails, drawn as signal flow: the ZIF socket on the left,
     then one branch per physical path — through an ADG714 switch cell (with its
-    Source/Drain terminal pins) or a 33 Ω series resistor — to the delivered net,
+    Source/Drain terminal pins) or a 33 Ω Series resistor — to the delivered net,
     which is coloured by type and labelled with its connector contact. Replaces the
     dense text fabric: you read a pin's whole story at a glance."""
 
@@ -970,7 +970,7 @@ class _ConnectionLedger(QWidget):
         h = QHBoxLayout(w); h.setContentsMargins(0, 0, 0, 8); h.setSpacing(12)
         h.addWidget(self._lab("Side", mono=False, size=9.5, weight=QFont.Normal, color=_FAINT, fixed=self.W_SIDE))
         h.addWidget(self._lab("Terminal", mono=False, size=9.5, weight=QFont.Normal, color=_FAINT, fixed=self.W_TERM))
-        h.addWidget(self._lab("Connected net", mono=False, size=9.5, weight=QFont.Normal, color=_FAINT), 2)
+        h.addWidget(self._lab("Connected Net", mono=False, size=9.5, weight=QFont.Normal, color=_FAINT), 2)
         h.addWidget(self._lab("Through", mono=False, size=9.5, weight=QFont.Normal, color=_FAINT), 3)
         return w
 
@@ -981,9 +981,9 @@ class _ConnectionLedger(QWidget):
         if r["kind"] == "switch":
             name, role = f"Channel {r['channel']} · {r['cell']}", "Switched"
         elif r["kind"] == "lane":
-            name, role = "Default card lane", ("Series resistor" if r.get("series") else "Direct route")
+            name, role = "Default Card Lane", ("Series Resistor" if r.get("series") else "Direct Route")
         else:
-            name, role = "Direct route", ("Series resistor" if r.get("series") else "Direct route")
+            name, role = "Direct Route", ("Series Resistor" if r.get("series") else "Direct Route")
         h.addWidget(_Dot(cat, 7))
         h.addWidget(self._lab(name, mono=True, size=10.5, weight=QFont.DemiBold, color=_TXT))
         h.addStretch(1)
@@ -1112,13 +1112,13 @@ class _PinHeaderBar(QWidget):
         chip.setStyleSheet(f"color:{ccol};background:{_wash(ccol)};border-radius:6px;padding:4px 10px;")
         self._l1.addWidget(chip)
 
-        # line 2 — dim metadata: category dot + word, side, 5 V-tolerant
+        # line 2 — dim metadata: category dot + word, side, 5 V-Tolerant
         parts = []
         if cat:
             parts.append((_CAT_COLOR.get(cat, _MUT), _CAT_WORD.get(cat, cat.title())))
         side = (p.get("side", "") or "").title()
         if side:
-            parts.append((None, f"{side} side"))
+            parts.append((None, f"{side} Side"))
         fv = p.get("five_v")
         if fv and fv.get("tolerant"):
             parts.append((None, "5 V-Tolerant"))
@@ -1436,12 +1436,12 @@ class Stm32PinsWidget(QWidget):
 
         # ── readout band (shared instrument fascia) ──
         self.readout = uw.ReadoutBand([
-            ("must", "Must-switch", _SWITCH_COLOR[sdb.SWITCH_MUST]),
+            ("must", "Must-Switch", _SWITCH_COLOR[sdb.SWITCH_MUST]),
             ("osc", "Oscillator", _SWITCH_COLOR[sdb.SWITCH_OSC_OPTIONAL]),
             ("fixed", "Fixed", None),
             ("breakout", "Breakout", _BREAKOUT_COLOR),
-            ("fivev", "5 V-tolerant", None),
-            ("io", "Per-pin I/O", None),
+            ("fivev", "5 V-Tolerant", None),
+            ("io", "Per-Pin I/O", None),
             ("vdda", "VDDA (V)", None),
         ])
         root.addWidget(self.readout)
@@ -1513,10 +1513,10 @@ class Stm32PinsWidget(QWidget):
         self.insp_header = _PinHeaderBar()
         self.insp_header.set_message("Select a pin")
         iv.addWidget(self.insp_header)
-        iv.addWidget(uw.SectionHeader("Signal path"))
+        iv.addWidget(uw.SectionHeader("Signal Path"))
         self.diagram = ConnectionDiagram()
         iv.addWidget(self.diagram)
-        iv.addWidget(uw.SectionHeader("Source and drain"))
+        iv.addWidget(uw.SectionHeader("Source and Drain"))
         self.ledger = _ConnectionLedger()       # exact terminals + nets, no elision
         iv.addWidget(self.ledger)
         iv.addWidget(uw.SectionHeader("Detail"))
@@ -2186,7 +2186,7 @@ class Stm32PinsWidget(QWidget):
         for pkg, w in sorted(by_pkg.items()):
             r = w["rollup"]
             L += [f"## {pkg}", "",
-                  f"- Must-switch pins: **{r['must_switch_count']}** "
+                  f"- Must-Switch pins: **{r['must_switch_count']}** "
                   f"(+{r['osc_optional_count']} oscillator-optional)",
                   f"- Channels: **{r['channel_count']}** — cells: "
                   f"**{r['cells_min']}** minimum / **{r['cells_as_built']}** as built",

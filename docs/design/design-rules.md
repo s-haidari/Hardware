@@ -78,11 +78,13 @@ the same: decoration standing in for design.
 - **Dense is allowed; noisy is not.** This is a pro engineering tool — density is fine
   when it has rhythm, alignment, and air. Cramped-with-boxes is the failure mode.
 - **Motion is minimal and purposeful,** and respects reduced-motion.
-- **Copy is design material.** **Sentence case** — capitalize only the first word and any
-  proper nouns / acronyms ("Signal path", "Must-switch", "Connected net"), never Title Case
-  ("Signal Path") and never all-lowercase ("signal path"). No abbreviations, no em dashes,
-  complete sentences for notes. Signal names, refdes, and nets keep their real casing
-  (PE3, GND, U_SW_L100_1).
+- **Copy is design material.** **Title Case for labels, headings, and named terms**
+  ("Signal Path", "Source and Drain", "Connected Net", "Must-Switch", "Default Card Lane",
+  "Pin Names") — minor words like "and/or/the" stay lowercase. **Sentence case only for**
+  full sentences (the one-hot note), data values ("Part-dependent", "Not applicable", "Yes"),
+  and action buttons per Windows guidance ("Clean leftovers", "Save changes"). Never
+  all-lowercase. No abbreviations, no em dashes. Signal names, refdes, and nets keep their
+  real casing (PE3, GND, U_SW_L100_1).
 
 ---
 

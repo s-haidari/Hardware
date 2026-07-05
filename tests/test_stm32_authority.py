@@ -214,7 +214,7 @@ class AuthorityTests(unittest.TestCase):
         self.assertIn("VCAP required", s)
         p46 = next(p for p in a["positions"] if p["position"] == 46)
         d46 = tab._pin_detail_html(p46)
-        self.assertIn("Pin names", d46)             # sentence-case labels
+        self.assertIn("Pin Names", d46)             # Title-Case labels
         self.assertIn("Category", d46)
         self.assertNotIn("adg714_source", d46)      # redundant rows dropped (shown in the diagram)
         self.assertNotIn("Destination", d46)
