@@ -704,28 +704,39 @@ def library_sourcing_report(cfg: Dict[str, str], lookup, throttle: float = 0.0) 
 
 
 def enrich_library(cfg: Dict[str, str], lookup, log: UILog = None,
-                   fields=("manufacturer", "datasheet", "description"),
+                   fields=("manufacturer", "datasheet", "description", "mouser_pn"),
                    dry_run: bool = True) -> dict:
-    """Enrich every symbol's BLANK identity fields from a distributor lookup.
+    """Enrich every symbol's BLANK identity/ordering fields from a distributor lookup.
 
-    `lookup(mpn) -> {mpn, manufacturer, datasheet, description}` (or None). Safe by
-    construction: fills blanks only, matches on the symbol's OWN existing MPN, runs
-    under _LIB_LOCK, and snapshots the library to .trash before any write. dry_run=True
-    (default) computes the exact per-symbol changes WITHOUT writing — the caller shows
-    them for confirmation, then calls again with dry_run=False. Returns a report:
-    {changes:[{symbol, mpn, filled:[(field,value)]}], written:bool, symbols:int}."""
+    `lookup(mpn) -> {...}` (or None). Safe by construction: fills blanks only, matches
+    on the symbol's OWN existing MPN, runs under _LIB_LOCK, and snapshots the library to
+    .trash before any write. A symbol whose target properties are ALL already filled is
+    skipped WITHOUT an API call, so repeated runs (e.g. after each ZIP import) only query
+    the genuinely new/incomplete parts. dry_run=True (default) computes the changes
+    without writing. Returns {changes, written, symbols, looked_up}."""
     sym_path = Path(cfg.get("SymbolLib", ""))
     if not sym_path.exists():
-        return {"error": "no symbol library", "changes": [], "written": False, "symbols": 0}
+        return {"error": "no symbol library", "changes": [], "written": False,
+                "symbols": 0, "looked_up": 0}
     with _LIB_LOCK:
         text = read_text(sym_path)
         blocks = extract_symbol_blocks(text)
-        changes, edits = [], []
+        changes, edits, looked_up = [], [], 0
         for b in blocks:
             name = extract_symbol_name(b)
-            ident = part_identity(extract_symbol_properties(b), fallback=name)
+            props = extract_symbol_properties(b)
+            ident = part_identity(props, fallback=name)
             mpn = ident.get("mpn")
-            res = lookup(mpn) if mpn else None
+            if not mpn:
+                continue
+            # only spend an API call if a target property is actually blank
+            needs = any(not (props.get(_ENRICH_PROPERTY.get(f, "")) or "").strip()
+                        or (props.get(_ENRICH_PROPERTY.get(f, "")) or "").strip().lower()
+                        in _PLACEHOLDERS for f in fields)
+            if not needs:
+                continue
+            looked_up += 1
+            res = lookup(mpn)
             if not res:
                 continue
             nb, filled = enrich_symbol(b, res, fields)
@@ -739,7 +750,8 @@ def enrich_library(cfg: Dict[str, str], lookup, log: UILog = None,
                 new_text = new_text.replace(old, new, 1)
             _snapshot_then_write(sym_path, new_text, log or _NullLog())
             written = True
-        return {"changes": changes, "written": written, "symbols": len(blocks)}
+        return {"changes": changes, "written": written, "symbols": len(blocks),
+                "looked_up": looked_up}
 
 
 class _NullLog:
@@ -1739,7 +1751,30 @@ def remove_part_artifacts(zip_path: Optional[Path], part_dir: Optional[Path], lo
         except Exception as e:
             log.write(f"WARN del zip {zip_path}: {e}")
 
-def process_zip(zip_path: Path, cfg: Dict[str, str], log: UILog, commit: bool = True):
+def finalize_import(cfg: Dict[str, str], log: UILog, lookup=None) -> dict:
+    """Post-merge finishing for imported parts, so a ZIP drop yields a READY part with
+    no extra clicks: auto-link any missing footprint / 3D model, then (if a Mouser key
+    is configured) fill blank manufacturer / datasheet / description / Mouser P/N. Both
+    steps are idempotent and fill-blanks-only, so this is safe after every import — only
+    the new/incomplete parts are touched, and a network failure just skips enrichment
+    (the import still succeeds). Returns {linked, enriched}."""
+    linked = auto_assign_library(cfg, dry_run=False, log=log)
+    if linked.get("footprint_count") or linked.get("model_count"):
+        log.write(f"Auto-linked {linked['footprint_count']} footprint(s), "
+                  f"{linked['model_count']} 3D model(s)")
+    enriched = {"written": False, "changes": [], "looked_up": 0}
+    if lookup is None:
+        lookup = mouser_lookup_from_config(cfg)
+    if lookup:
+        enriched = enrich_library(cfg, lookup, log=log, dry_run=False)
+        if enriched.get("changes"):
+            log.write(f"Enriched {len(enriched['changes'])} symbol(s) from Mouser "
+                      f"({enriched.get('looked_up', 0)} looked up)")
+    return {"linked": linked, "enriched": enriched}
+
+
+def process_zip(zip_path: Path, cfg: Dict[str, str], log: UILog, commit: bool = True,
+                finalize: bool = True):
     base = zip_path.stem
     log.write(f"Processing: {base}")
     if not wait_file_ready(zip_path):
@@ -1753,6 +1788,10 @@ def process_zip(zip_path: Path, cfg: Dict[str, str], log: UILog, commit: bool = 
             return
         move_files(part_dir, cfg, log)
         remove_part_artifacts(zip_path, part_dir, log)
+        # Finish the part: link footprint/3D + enrich from Mouser (batch runs defer
+        # this to one pass at the end, finalize=False).
+        if finalize:
+            finalize_import(cfg, log)
         log.write(f"Done processing {base}")
         # Single-zip path (e.g. the watcher) commits immediately; batch runs skip
         # this and commit once at the end (commit=False).
@@ -1775,9 +1814,10 @@ def process_existing_zips(cfg: Dict[str, str], log: UILog, refresh_cb=None, prog
             if progress_cb:
                 progress_cb(i, total, z.stem)
             names.append(z.stem)
-            process_zip(z, cfg, log, commit=False)   # defer git to one batch commit
-        # One commit + one push for the whole batch.
+            process_zip(z, cfg, log, commit=False, finalize=False)   # defer git + finalize
+        # One finalize (link + enrich) + one commit + one push for the whole batch.
         if names:
+            finalize_import(cfg, log)
             if len(names) == 1:
                 msg = f"Auto-update: processed {names[0]}"
             else:

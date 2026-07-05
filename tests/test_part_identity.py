@@ -126,6 +126,49 @@ class LibrarySourcingTests(unittest.TestCase):
             self.assertIn("NEWPART", rep["markdown"])         # replacement surfaced
             self.assertIn("OLD", rep["markdown"])
 
+    def test_enrich_skips_already_complete_parts(self):
+        """No API call is spent on a part whose target fields are all filled — so
+        enrich is cheap to run after every ZIP import."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            sym = pathlib.Path(td) / "S.kicad_sym"
+            sym.write_text(
+                '(kicad_symbol_lib\n'
+                '  (symbol "DONE" (property "Value" "PART_A" (at 0 0 0)) '
+                '(property "MANUFACTURER" "ADI" (at 0 0 0)) (property "Datasheet" "http://a" (at 0 0 0)) '
+                '(property "Description" "x" (at 0 0 0)) (property "Mouser Part Number" "584-A" (at 0 0 0)))\n'
+                '  (symbol "NEW" (property "Value" "PART_B" (at 0 0 0)) '
+                '(property "MANUFACTURER" "TI" (at 0 0 0)))\n)\n', encoding="utf-8")
+            calls = []
+
+            def lookup(mpn):
+                calls.append(mpn)
+                return {"datasheet": "http://ds", "description": "d", "mouser_pn": "584-B"}
+            r = LM.enrich_library({"SymbolLib": str(sym), "FootprintLib": td, "ModelLib": td},
+                                  lookup, dry_run=False)
+            self.assertEqual(r["looked_up"], 1)          # only NEW
+            self.assertEqual(calls, ["PART_B"])          # DONE skipped, no call
+            self.assertIn("http://ds", sym.read_text(encoding="utf-8"))
+
+    def test_finalize_import_links_and_enriches(self):
+        """finalize_import (run automatically after a ZIP import) links footprint/3D
+        and enriches from the given lookup in one pass."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            tp = pathlib.Path(td)
+            (tp / "S.kicad_sym").write_text(
+                '(kicad_symbol_lib\n  (symbol "STM32F407" '
+                '(property "Value" "STM32F407VGT6" (at 0 0 0)) '
+                '(property "MANUFACTURER" "ST" (at 0 0 0)))\n)\n', encoding="utf-8")
+            (tp / "STM32F407.kicad_mod").write_text('(footprint "STM32F407" (pad "1" smd))', encoding="utf-8")
+            cfg = {"SymbolLib": str(tp / "S.kicad_sym"), "FootprintLib": str(tp), "ModelLib": str(tp)}
+            res = LM.finalize_import(cfg, LM._NullLog(),
+                                     lookup=lambda m: {"datasheet": "http://ds", "mouser_pn": "511-X"})
+            self.assertEqual(res["linked"]["footprint_count"], 1)      # linked STM32F407 footprint
+            txt = (tp / "S.kicad_sym").read_text(encoding="utf-8")
+            self.assertIn("http://ds", txt)                            # enriched datasheet
+            self.assertIn("511-X", txt)                                # Mouser P/N written
+
     def test_enrich_library_dry_run_then_write(self):
         import tempfile
         with tempfile.TemporaryDirectory() as td:
