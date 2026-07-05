@@ -19,13 +19,16 @@ from PyQt5.QtGui import QImage, QPainter, QColor, QPen, QBrush, QPolygonF, QFont
 from PyQt5.QtCore import QPointF, QRectF, Qt
 
 # Layer colours on the dark viewport background
-BG = QColor("#14161a")
-COL_COPPER = QColor("#c2913e")
-COL_HOLE = QColor("#14161a")
-COL_SILK = QColor("#d9dee5")
-COL_CRTYD = QColor("#7f8aa0")
-COL_FAB = QColor("#5b6673")
-COL_OTHER = QColor("#8a93a3")
+# Grayscale palette (color is reserved for pin/net data elsewhere; the component
+# previews are monochrome). Light -> dark ramp keeps the layer hierarchy readable:
+# silk (lightest, drawn on top) > copper pads > courtyard > fab.
+BG = QColor("#16171a")
+COL_COPPER = QColor("#bcbcbc")     # pads — the prominent element
+COL_HOLE = QColor("#16171a")       # through-hole void = background
+COL_SILK = QColor("#dedede")       # silk (lightest, drawn last / on top)
+COL_CRTYD = QColor("#7c7c7c")
+COL_FAB = QColor("#585858")
+COL_OTHER = QColor("#8c8c8c")
 
 
 def _tokenize(s: str):
@@ -387,11 +390,12 @@ class _Footprint:
                 p.drawEllipse(QPointF(0, 0), dr * scale / 2, dr * scale / 2)
             p.restore()
             # pad number, centred and upright (sized to fit even thin pads)
-            fs = int(min(max(pw, ph) * 0.42, min(pw, ph) * 0.95))
+            fs = int(min(max(pw, ph) * 0.5, min(pw, ph) * 0.95))
             if num and fs >= 7:
-                label_font.setPixelSize(min(fs, 20))
+                label_font.setPixelSize(min(fs, 28))
+                label_font.setBold(True)
                 p.setFont(label_font)
-                p.setPen(QPen(QColor("#1c1407")))
+                p.setPen(QPen(QColor("#161616")))     # bold dark text, legible on gray pad
                 p.drawText(QRectF(T(x, y).x() - max(pw, ph) / 2, T(x, y).y() - max(pw, ph) / 2,
                                   max(pw, ph), max(pw, ph)),
                            Qt.AlignCenter, num)
@@ -462,8 +466,8 @@ def footprint_summary(path: Path) -> Optional[dict]:
 # graphics + pins, the way the schematic editor shows it. Y is up in symbols,
 # so it is flipped for display.
 # ---------------------------------------------------------------------------
-COL_SYMBODY = QColor("#c9a063")
-COL_SYMPIN = QColor("#9fb0c8")
+COL_SYMBODY = QColor("#c6c6c6")    # grayscale — body graphics
+COL_SYMPIN = QColor("#a2a2a2")     # grayscale — pins
 
 
 def render_symbol_image(block_text: str, px: int = 280) -> Optional[QImage]:
@@ -560,7 +564,7 @@ def _render_symbol_image_uncached(block_text: str, px: int = 280) -> Optional[QI
                         y + ln * 0.62 * math.sin(math.radians(ang)))
                 p.setPen(QPen(QColor("#d9dee5"))); p.setFont(pin_font)
                 p.drawText(QRectF(mid.x() - 14, mid.y() - 9, 28, 18), Qt.AlignCenter, num)
-        p.setBrush(QBrush(QColor(201, 160, 99, 28)))
+        p.setBrush(QBrush(QColor(198, 198, 198, 26)))   # grayscale body fill
         for (a, b, c2, d) in rects:
             p.setPen(QPen(COL_SYMBODY, 2)); p.drawRect(QRectF(T(a, b), T(c2, d)))
         p.setBrush(Qt.NoBrush)

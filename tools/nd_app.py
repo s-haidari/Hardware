@@ -154,9 +154,7 @@ class ManagerView(QWidget):
                 ("Remove Duplicates", self._dedupe,
                  "Remove duplicate symbols from the symbol library"),
                 ("Register Libraries", self._register,
-                 "Register the symbol and footprint libraries in KiCad's library tables"),
-                ("Render Board", self._render_board,
-                 "Render a .kicad_pcb board to an image using kicad-cli")]:
+                 "Register the symbol and footprint libraries in KiCad's library tables")]:
             b = PushButton(label)
             b.setToolTip(tip)
             b.clicked.connect(slot)
