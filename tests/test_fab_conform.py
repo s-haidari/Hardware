@@ -41,6 +41,28 @@ class FabPresetTests(unittest.TestCase):
     def test_presets_registry(self):
         self.assertEqual(set(fp.PRESETS), {"OSH Park 2-layer", "OSH Park 4-layer"})
 
+    def test_stackup_block_wellformed(self):
+        b = fp.stackup_block(fp.OSH_PARK_2LAYER)
+        self.assertEqual(b.count("("), b.count(")"))
+        self.assertIn('(copper_finish "ENIG")', b)
+        self.assertEqual(b.count('(type "copper")'), 2)          # 2-layer -> 2 copper
+        self.assertEqual(fp.stackup_block(fp.OSH_PARK_4LAYER).count('(type "copper")'), 4)
+
+    def test_set_board_stackup_insert_and_replace(self):
+        # insert where none exists
+        pcb = '(kicad_pcb (setup (pad_to_mask_clearance 0.05)) (net 0 ""))'
+        new, ch = oc.set_board_stackup(pcb, fp.OSH_PARK_2LAYER)
+        self.assertTrue(ch)
+        self.assertIn("(stackup", new)
+        self.assertEqual(new.count("("), new.count(")"))
+        # replace an existing one, dropping the old finish
+        pcb2 = '(kicad_pcb (setup (stackup (layer "F.Cu" (type "copper")) (copper_finish "HASL"))))'
+        new2, ch2 = oc.set_board_stackup(pcb2, fp.OSH_PARK_4LAYER)
+        self.assertTrue(ch2)
+        self.assertIn("ENIG", new2)
+        self.assertNotIn("HASL", new2)
+        self.assertEqual(new2.count('(type "copper")'), 4)
+
 
 class ConformTests(unittest.TestCase):
     _PCB = ('(kicad_pcb (footprint "R"\n'

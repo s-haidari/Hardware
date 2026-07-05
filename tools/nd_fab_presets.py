@@ -96,6 +96,36 @@ OSH_PARK_4LAYER = FabPreset(
 PRESETS = {p.name: p for p in (OSH_PARK_2LAYER, OSH_PARK_4LAYER)}
 
 
+def _fmt(v) -> str:
+    s = f"{float(v):.4f}".rstrip("0").rstrip(".")
+    return s or "0"
+
+
+def stackup_block(preset: FabPreset, indent: str = "    ") -> str:
+    """The KiCad (stackup …) s-expression for a preset's physical layer stack —
+    the piece the setup sync did not cover. Wraps the preset's copper/dielectric
+    stack with the standard silk/paste/mask layers and the copper finish. The
+    4-layer dielectric thicknesses inherit the preset's VERIFY caveat."""
+    mask = f'(color "{preset.soldermask.title()}") '
+    L = ["(stackup",
+         '  (layer "F.SilkS" (type "Top Silk Screen"))',
+         '  (layer "F.Paste" (type "Top Solder Paste"))',
+         f'  (layer "F.Mask" (type "Top Solder Mask") {mask}(thickness 0.01))']
+    for name, kind, thick, mat in preset.stackup:
+        if kind == "copper":
+            L.append(f'  (layer "{name}" (type "copper") (thickness {_fmt(thick)}))')
+        else:
+            L.append(f'  (layer "{name}" (type "{kind}") (thickness {_fmt(thick)}) '
+                     f'(material "{mat}") (epsilon_r 4.5) (loss_tangent 0.02))')
+    L += [f'  (layer "B.Mask" (type "Bottom Solder Mask") {mask}(thickness 0.01))',
+          '  (layer "B.Paste" (type "Bottom Solder Paste"))',
+          '  (layer "B.SilkS" (type "Bottom Silk Screen"))',
+          f'  (copper_finish "{preset.finish}")',
+          "  (dielectric_constraints no)",
+          ")"]
+    return ("\n" + indent).join(L)
+
+
 def apply_to_project_settings(settings, preset: FabPreset):
     """Return a copy of a ProjectSettings (mils) populated from a FabPreset (mm).
 

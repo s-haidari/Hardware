@@ -128,6 +128,25 @@ def conform_schematic_text(sch_text: str, targets: dict) -> tuple:
     return sch_text, counts
 
 
+def set_board_stackup(pcb_text: str, preset) -> tuple:
+    """Insert or replace the (stackup …) block inside a .kicad_pcb's (setup …) with the
+    preset's physical stack (the gap the setup sync left). Returns (new_text, changed)."""
+    from nd_fab_presets import stackup_block
+    block = stackup_block(preset, indent="    ")
+    sm = re.search(r"\(setup\b", pcb_text)
+    if not sm:
+        return pcb_text, False
+    s0, s1 = sm.start(), _span_end(pcb_text, sm.start())
+    setup = pcb_text[s0:s1]
+    km = re.search(r"\(stackup\b", setup)
+    if km:
+        new_setup = setup[:km.start()] + block + setup[_span_end(setup, km.start()):]
+    else:
+        at = sm.end() - s0                         # just past "(setup"
+        new_setup = setup[:at] + "\n    " + block + setup[at:]
+    return pcb_text[:s0] + new_setup + pcb_text[s1:], True
+
+
 def _conform_one(path: Path, pcb_targets: dict, sch_targets: dict) -> tuple:
     """(new_text, counts) for a single file; ('' , {}) if nothing applies."""
     text = path.read_text(encoding="utf-8", errors="replace")
