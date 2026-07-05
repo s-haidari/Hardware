@@ -251,7 +251,7 @@ class Verdict(QFrame):
         text.addWidget(self._title)
         self._sub = None
         if subtitle:
-            self._sub = QLabel(subtitle); self._sub.setFont(T.ui_font(9))
+            self._sub = QLabel(subtitle); self._sub.setFont(T.ui_font(9)); self._sub.setWordWrap(True)
             text.addWidget(self._sub)
         lay.addLayout(text)
         lay.addStretch(1)

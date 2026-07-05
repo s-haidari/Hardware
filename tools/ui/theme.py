@@ -190,6 +190,16 @@ QComboBox {{ background: {c['ctl']}; border: 1px solid {c['stroke']}; border-rad
 QComboBox QAbstractItemView {{ background: {c['card']}; border: 1px solid {c['stroke']};
     selection-background-color: {c['ctl_hover']}; color: {c['txt1']}; }}
 
+QSpinBox, QDoubleSpinBox {{ background: {c['ctl']}; border: 1px solid {c['stroke']};
+    border-radius: 4px; color: {c['txt1']}; padding: 4px 6px; }}
+QSpinBox:focus, QDoubleSpinBox:focus {{ border: 1px solid {c['txt3']}; }}
+QSpinBox::up-button, QSpinBox::down-button,
+QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{ width: 0; border: none; }}
+QCheckBox {{ color: {c['txt1']}; spacing: 8px; }}
+QCheckBox::indicator {{ width: 15px; height: 15px; border: 1px solid {c['stroke']};
+    border-radius: 3px; background: {c['ctl']}; }}
+QCheckBox::indicator:checked {{ background: {c['accent']}; border-color: {c['accent']}; }}
+
 QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
 QScrollBar::handle:vertical {{ background: {c['ctl_hover']}; border-radius: 4px; min-height: 24px; }}
 QScrollBar:horizontal {{ background: transparent; height: 10px; margin: 2px; }}

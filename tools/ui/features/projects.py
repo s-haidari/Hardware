@@ -12,7 +12,8 @@ import subprocess
 from pathlib import Path
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QComboBox, QCheckBox
+from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QComboBox,
+                             QCheckBox, QDoubleSpinBox, QSpinBox, QGridLayout, QScrollArea, QFrame)
 
 from .. import theme as T
 from .. import widgets as W
@@ -26,6 +27,7 @@ import nd_kicad_checks as kchecks
 import nd_netclass_manager as ncm
 import nd_board_setup
 import nd_fab_presets as fabp
+import nd_object_conform as conform
 import LibraryManager as LM
 import nd_git
 import fp_render
@@ -346,33 +348,74 @@ def _rename_panel(ctx, state) -> QWidget:
     return root
 
 
-# ── Net Classes (real vault standard + validate + sync) ──────────────────────
+# ── Net Classes — comprehensive + editable, OSH Park / KiCad aligned ─────────
+def _spin(val, is_int=False, width=84, lo=0.0, hi=20.0, decimals=3):
+    if is_int:
+        s = QSpinBox(); s.setRange(int(lo), int(hi) if hi > 200 else 200); s.setValue(int(val or 0))
+    else:
+        s = QDoubleSpinBox(); s.setDecimals(decimals); s.setRange(lo, hi); s.setSingleStep(0.005)
+        s.setValue(float(val or 0.0))
+    s.setButtonSymbols(s.NoButtons); s.setAlignment(Qt.AlignRight); s.setFixedWidth(width)
+    return s
+
+
+_NC_FIELDS = [
+    ("clearance", "Clearance"), ("track_width", "Track Width"),
+    ("via_diameter", "Via Diameter"), ("via_drill", "Via Drill"),
+    ("microvia_diameter", "Microvia Diameter"), ("microvia_drill", "Microvia Drill"),
+    ("diff_pair_width", "Differential Pair Width"), ("diff_pair_gap", "Differential Pair Gap"),
+]
+
+
 def _netclass_panel(ctx, state) -> QWidget:
     root = QWidget(); lay = QVBoxLayout(root); lay.setContentsMargins(24, 16, 24, 24); lay.setSpacing(14)
     mgr = ncm.load_vault_standard()
     profiles = ncm.netclass_profiles()
     bar = QHBoxLayout(); bar.setSpacing(8)
     bar.addWidget(W.eyebrow("Profile"))
-    bar.addWidget(W.Segmented(profiles, tip="Net-class profile") if profiles else W.body("Vault Standard"))
+    if profiles:
+        bar.addWidget(W.Segmented(profiles, tip="Net-class profile"))
     bar.addStretch(1)
-    b_val = W.btn("Validate", "ghost", "Check every class against the fab minimums")
-    b_sync = W.btn("Sync To Projects", "primary", "Write the profile into the discovered projects")
+    b_val = W.btn("Validate", "ghost", "Check every class against the OSH Park and KiCad minimums")
+    b_sync = W.btn("Sync To Projects", "primary", "Write these net classes into the discovered projects")
     bar.addWidget(b_val); bar.addWidget(b_sync)
     lay.addLayout(bar)
 
-    rows = []
-    for name in mgr.list_netclasses():
+    grid_w = QFrame(); grid_w.setObjectName("ndcard")
+    W.register_restyle(lambda: grid_w.setStyleSheet(
+        f"QFrame#ndcard{{background:{T.t('card')};border:1px solid {T.t('stroke')};border-radius:8px;}}"))
+    grid = QGridLayout(grid_w); grid.setContentsMargins(14, 12, 14, 12)
+    grid.setHorizontalSpacing(10); grid.setVerticalSpacing(9)
+    grid.addWidget(W.eyebrow("Net Class"), 0, 0)
+    for c, (_f, label) in enumerate(_NC_FIELDS, start=1):
+        h = W.eyebrow(label); h.setWordWrap(True); h.setAlignment(Qt.AlignHCenter)
+        h.setFixedWidth(120 if label.startswith("Differential") else 98)
+        grid.addWidget(h, 0, c, Qt.AlignHCenter)
+    grid.addWidget(W.eyebrow("Priority"), 0, len(_NC_FIELDS) + 1)
+    rows_map = {}
+    for r, name in enumerate(mgr.list_netclasses(), start=1):
         nc = mgr.net_classes[name]
-        rows.append([W.body(name, mono=True), str(nc.clearance), str(nc.track_width),
-                     str(nc.via_diameter), str(nc.via_drill),
-                     W.body(str(nc.diff_pair_width) if nc.diff_pair_width else "None",
-                            dim=not nc.diff_pair_width, mono=bool(nc.diff_pair_width))])
-    lay.addWidget(W.data_table(["Net Class", "Clearance", "Track", "Via", "Drill", "Differential Pair"], rows, stretch_col=0))
-    lay.addWidget(W.eyebrow("Values In Millimetres"))
+        grid.addWidget(W.body(name, mono=True), r, 0)
+        spins = {}
+        for c, (f, _label) in enumerate(_NC_FIELDS, start=1):
+            sp = _spin(getattr(nc, f, 0.0)); grid.addWidget(sp, r, c); spins[f] = sp
+        pr = _spin(getattr(nc, "priority", 0), is_int=True, width=64)
+        grid.addWidget(pr, r, len(_NC_FIELDS) + 1); spins["priority"] = pr
+        rows_map[name] = spins
+    area = QScrollArea(); area.setWidgetResizable(True); area.setFrameShape(QFrame.NoFrame)
+    area.setWidget(grid_w); area.setMaximumHeight(340)
+    lay.addWidget(area)
+    lay.addWidget(W.eyebrow("Values In Millimetres, Aligned To OSH Park And KiCad Design Rules"))
     status = QVBoxLayout(); lay.addLayout(status); lay.addStretch(1)
 
+    def apply_edits():
+        for name, spins in rows_map.items():
+            nc = mgr.net_classes[name]
+            for f, sp in spins.items():
+                setattr(nc, f, int(sp.value()) if f == "priority" else float(sp.value()))
+
     def validate():
-        clear_layout(status)
+        clear_layout(status); apply_edits()
         issues = ncm.validate_netclasses(mgr)
         if not issues:
             status.addWidget(W.tag("All Classes Meet The Fab Minimums", "ok"))
@@ -381,6 +424,7 @@ def _netclass_panel(ctx, state) -> QWidget:
                 status.addWidget(W.body(f"{iss.get('netclass', '')}: {iss.get('issue', '')}", dim=True))
 
     def sync():
+        apply_edits()
         if not state.projects:
             ctx.services.log("No projects to sync."); return
 
@@ -400,56 +444,156 @@ def _netclass_panel(ctx, state) -> QWidget:
     return root
 
 
-# ── Board Setup (real load_board_setup) ──────────────────────────────────────
+# ── Board Setup — editable + save ────────────────────────────────────────────
 def _boardsetup_panel(ctx, state) -> QWidget:
     root = QWidget(); lay = QVBoxLayout(root); lay.setContentsMargins(24, 16, 24, 24); lay.setSpacing(14)
     boards = state.boards() if state.project else []
-    lay.addWidget(W.eyebrow("Board Setup"))
+    bar = QHBoxLayout(); bar.addWidget(W.eyebrow("Board Setup")); bar.addStretch(1)
+    b_save = W.btn("Save To Board", "primary", "Write these values into the board file (a .bak is kept)")
+    bar.addWidget(b_save); lay.addLayout(bar)
     if not boards:
         lay.addWidget(W.body("No board found in the project.", dim=True)); lay.addStretch(1); return root
+    board = boards[0]
     try:
-        setup = nd_board_setup.load_board_setup(boards[0])
+        setup = nd_board_setup.load_board_setup(board, include_aliases=False)
     except Exception as e:  # noqa: BLE001
         lay.addWidget(W.body(f"Could not read board setup: {e}", dim=True)); lay.addStretch(1); return root
-    pairs = []
-    for key in sorted(setup):
-        val = setup[key]
-        pairs.append((key.replace("_", " ").title(), W.body(str(val), mono=True)))
-    if pairs:
-        lay.addWidget(W.dl(pairs, key_width=240))
-    else:
-        lay.addWidget(W.body("This board carries no explicit setup overrides (KiCad defaults).", dim=True))
-    lay.addWidget(W.body(boards[0].name, dim=True, mono=True))
+
+    card = W.Card(pad=16)
+    fields = {}
+    explicit = set(setup)
+
+    def _row(key, label_extra=""):
+        row = QHBoxLayout(); row.setSpacing(12)
+        lab = W.body(key.replace("_", " ").title())
+        row.addWidget(lab)
+        if key not in explicit:
+            row.addWidget(W.tag("Default", "mut"))
+        row.addStretch(1)
+        return row
+
+    for key in sorted(nd_board_setup.SETUP_NUMERIC_KEYS):
+        row = _row(key); sp = _spin(setup.get(key, 0.0), width=96, lo=-10.0, hi=50.0, decimals=4)
+        row.addWidget(sp); fields[key] = ("num", sp); card.body.addLayout(row)
+    for key in sorted(nd_board_setup.SETUP_COORD_KEYS):
+        row = _row(key); val = setup.get(key, (0.0, 0.0))
+        sx = _spin(val[0], width=96, lo=-1000.0, hi=1000.0); sy = _spin(val[1], width=96, lo=-1000.0, hi=1000.0)
+        row.addWidget(sx); row.addWidget(sy)
+        fields[key] = ("coord", (sx, sy)); card.body.addLayout(row)
+    for key in sorted(nd_board_setup.SETUP_BOOL_KEYS):
+        row = _row(key); cb = QCheckBox(); cb.setChecked(bool(setup.get(key, False)))
+        row.addWidget(cb); fields[key] = ("bool", cb); card.body.addLayout(row)
+    lay.addWidget(card)
+    lay.addWidget(W.body("Values In Millimetres. Rows Marked Default Are Not Yet Set On The Board.", dim=True))
+    lay.addWidget(W.body(board.name, dim=True, mono=True))
     lay.addStretch(1)
+
+    def save():
+        values = {}
+        for key, (kind, w) in fields.items():
+            if kind == "bool":
+                values[key] = w.isChecked()
+            elif kind == "coord":
+                values[key] = (w[0].value(), w[1].value())
+            else:
+                values[key] = w.value()
+        run_populate(ctx, lambda: nd_board_setup.save_board_setup(board, values, backup=True),
+                     lambda r, ok: ctx.services.log("Board setup saved." if ok else "Save failed, see status."),
+                     busy="Saving board setup...")
+    b_save.clicked.connect(save)
     return root
 
 
-# ── Fab Standard (real presets + conform) ────────────────────────────────────
+def _ts():
+    import time
+    return time.strftime("%Y%m%d-%H%M%S")
+
+
+# ── Fab Standard — presets + wired conform (preview + apply) ──────────────────
+def _pcb_targets(p):
+    """Text-size targets for nd_object_conform, drawn from the selected preset."""
+    t = {}
+    for layer, h, w in (("silk", "silk_text_height", "silk_text_thickness"),
+                        ("fab", "fab_text_height", "fab_text_thickness")):
+        hv = getattr(p, h, None); wv = getattr(p, w, None)
+        if hv is not None and wv is not None:
+            t[layer] = (hv, wv)
+    return t
+
+
 def _fab_panel(ctx, state) -> QWidget:
     root = QWidget(); lay = QVBoxLayout(root); lay.setContentsMargins(24, 16, 24, 24); lay.setSpacing(14)
-    top = QHBoxLayout(); top.addStretch(1)
-    top.addWidget(W.btn("Preview Conform", "ghost", "Preview text and stackup conform"))
-    top.addWidget(W.btn("Apply", "primary", "Apply the preset, stackup and net classes"))
+    presets = {"OSH Park 4-Layer": fabp.OSH_PARK_4LAYER, "OSH Park 2-Layer": fabp.OSH_PARK_2LAYER}
+    sel = {"preset": fabp.OSH_PARK_4LAYER}
+
+    top = QHBoxLayout(); top.setSpacing(10)
+    top.addWidget(W.eyebrow("Preset"))
+    top.addWidget(W.Segmented(list(presets.keys()), on_change=lambda n: sel.update(preset=presets[n]),
+                              tip="Choose the fabrication preset to conform against"))
+    top.addStretch(1)
+    b_prev = W.btn("Preview Conform", "ghost", "Preview the text-size conform without writing any files")
+    b_apply = W.btn("Apply", "primary", "Conform board text sizes to the preset (a .bak is kept per file)")
+    top.addWidget(b_prev); top.addWidget(b_apply)
     lay.addLayout(top)
+
     grid = QHBoxLayout(); grid.setSpacing(16)
     for preset in (fabp.OSH_PARK_4LAYER, fabp.OSH_PARK_2LAYER):
         card = W.Card(pad=16)
-        card.body.addWidget(W.body(preset.name, mono=False))
-        card.body.itemAt(0).widget().setFont(T.ui_font(10, semibold=True))
+        title = W.body(preset.name); title.setFont(T.ui_font(10, semibold=True))
+        card.body.addWidget(title)
         card.body.addWidget(W.dl([
-            ("Min Track", W.body(f"{preset.min_track_width} mm", mono=True)),
-            ("Min Clearance", W.body(f"{preset.min_clearance} mm", mono=True)),
-            ("Min Drill", W.body(f"{preset.min_drill} mm", mono=True)),
-            ("Copper", W.body(f"{preset.copper_oz} oz", mono=True)),
+            ("Min Track", W.body(f"{round(preset.min_track_width, 4):g} mm", mono=True)),
+            ("Min Clearance", W.body(f"{round(preset.min_clearance, 4):g} mm", mono=True)),
+            ("Min Drill", W.body(f"{round(preset.min_drill, 4):g} mm", mono=True)),
+            ("Copper", W.body(f"{round(preset.copper_oz, 2):g} oz", mono=True)),
             ("Finish", W.body(str(preset.finish))),
         ], key_width=120))
         grid.addWidget(card)
     grid.addStretch(1)
     lay.addLayout(grid)
-    if getattr(fabp.OSH_PARK_4LAYER, "verify_note", ""):
-        note = W.Verdict("Verify Before Ordering", fabp.OSH_PARK_4LAYER.verify_note, "warn")
-        lay.addWidget(note)
+
+    note_full = getattr(fabp.OSH_PARK_4LAYER, "verify_note", "")
+    if note_full:
+        v = W.Verdict("Verify Before Ordering",
+                      "Confirm the current OSH Park service capabilities before you order. "
+                      "These presets track the published four-layer and two-layer rules.", "warn")
+        v.setToolTip(note_full)
+        lay.addWidget(v)
+
+    result = QVBoxLayout(); result.setSpacing(6); lay.addLayout(result)
     lay.addStretch(1)
+
+    def run_conform(apply: bool):
+        p = sel["preset"]
+        files = list(state.boards() if state.project else [])
+        if not files:
+            ctx.services.log("No board found to conform."); return
+        pcb_t = _pcb_targets(p)
+        ts = _ts()
+        clear_layout(result)
+        result.addWidget(W.body("Applying..." if apply else "Previewing...", dim=True))
+
+        def job():
+            return conform.conform_project(files, pcb_t, {}, ts, dry_run=not apply)
+
+        def populate(rep, ok):
+            clear_layout(result)
+            if not rep:
+                result.addWidget(W.body("Conform unavailable, see status.", dim=True)); return
+            total = rep.get("total") or rep.get("changed") or 0
+            head = f"{'Applied' if apply else 'Preview'}   {total} Text Objects"
+            result.addWidget(W.eyebrow(head))
+            for f in rep.get("files", []) or []:
+                nm = Path(str(f.get("path", ""))).name or str(f.get("path", ""))
+                counts = f.get("counts")
+                cnt = sum(counts.values()) if isinstance(counts, dict) else (f.get("changed") or 0)
+                result.addWidget(W.body(f"{nm}   {cnt} Changed", dim=True, mono=True))
+            ctx.services.log("Fabrication conform applied." if apply else "Fabrication conform preview ready.")
+
+        run_populate(ctx, job, populate, busy=("Applying conform..." if apply else "Previewing conform..."))
+
+    b_prev.clicked.connect(lambda: run_conform(False))
+    b_apply.clicked.connect(lambda: run_conform(True))
     return root
 
 
