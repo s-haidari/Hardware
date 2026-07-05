@@ -83,3 +83,6 @@ app/backend/data/
 # --- Generated STM32 pin database (rebuild from the app) ---
 tools/data/
 *.sqlite
+
+# --- Machine-local config + secrets (Mouser API key etc.) — never commit ---
+tools/config.json
