@@ -43,12 +43,14 @@ class ProjectsState:
         roots = [Path(rr), Path(rr).parent] if rr else []
         for r in roots:
             try:
-                for p in nd_wizard.discover_projects(r):
+                for p in kicad_tools.discover_kicad_projects(r):
                     if str(p) not in seen:
                         seen.add(str(p)); self.projects.append(Path(p))
             except Exception:  # noqa: BLE001
                 pass
-        self.project = self.projects[0] if self.projects else None
+        # Prefer a project named like the main board (Master) over archived/sub sheets
+        self.project = next((p for p in self.projects if p.name.lower() == "master"),
+                            self.projects[0] if self.projects else None)
         self._refreshers = []
 
     def names(self):
@@ -148,8 +150,10 @@ def _health_panel(ctx, state) -> QWidget:
             for f in res.get("findings", []):
                 kind = str(f.get("kind", "")).replace("_", " ").title()
                 sev = f.get("severity", "info")
+                detail = str(f.get("detail", ""))
+                detail = detail[:1].upper() + detail[1:]
                 rows.append([W.body(str(f.get("ref", "")), mono=True), W.body(kind),
-                             W.body(str(f.get("detail", ""))), W.tag(sev.title(), _SEV.get(sev, "mut"))])
+                             W.body(detail), W.tag(sev.title(), _SEV.get(sev, "mut"))])
             result.addWidget(W.data_table(["Ref", "Kind", "Detail", "Severity"], rows, stretch_col=2), 1)
 
         run_populate(ctx, lambda: phealth.audit_schematic(sch, fp_dirs, mdl_dirs), populate, busy="Auditing schematic...")
@@ -173,8 +177,9 @@ def _health_panel(ctx, state) -> QWidget:
             rows = []
             for f in res.get("findings", []):
                 sev = f.get("severity", "info")
+                msg = str(f.get("message", "")); msg = msg[:1].upper() + msg[1:]
                 rows.append([W.tag(sev.title(), _SEV.get(sev, "mut")), W.body(str(f.get("rule", "")), mono=True),
-                             W.body(str(f.get("message", ""))), W.body(str(f.get("where", "")), dim=True)])
+                             W.body(msg), W.body(str(f.get("where", "")), dim=True)])
             if not rows:
                 result.addWidget(W.body(f"{kind.upper()} clean.", dim=True))
             else:
@@ -407,7 +412,10 @@ def _boardsetup_panel(ctx, state) -> QWidget:
     for key in sorted(setup):
         val = setup[key]
         pairs.append((key.replace("_", " ").title(), W.body(str(val), mono=True)))
-    lay.addWidget(W.dl(pairs, key_width=240))
+    if pairs:
+        lay.addWidget(W.dl(pairs, key_width=240))
+    else:
+        lay.addWidget(W.body("This board carries no explicit setup overrides (KiCad defaults).", dim=True))
     lay.addWidget(W.body(boards[0].name, dim=True, mono=True))
     lay.addStretch(1)
     return root
@@ -512,6 +520,8 @@ class ProjectsFeature(F.Feature):
         if state.names():
             combo = QComboBox(); combo.addItems(state.names()); combo.setFixedWidth(220)
             combo.setToolTip("Choose a discovered KiCad project")
+            if state.project:
+                combo.setCurrentText(state.project.name)   # match the preferred default
             combo.currentTextChanged.connect(state.set_project)
             header = W.hstack(W.eyebrow("Project"), combo, spacing=8)
         panels = [

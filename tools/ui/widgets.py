@@ -320,7 +320,7 @@ def data_table(columns: Sequence[str], rows: Sequence[Sequence], stretch_col: in
                 it = tbl.item(r, c)
                 if it is not None:
                     wmax = max(wmax, _text_w(it.text()) + 24)
-        tbl.setColumnWidth(c, wmax + 20)
+        tbl.setColumnWidth(c, wmax + 28)
     return tbl
 
 

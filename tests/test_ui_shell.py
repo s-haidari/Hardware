@@ -66,6 +66,8 @@ def test_shell_builds_every_panel_and_both_themes():
     win = NetdeckShell(LM.load_config())
     try:
         assert win._stack.count() >= 4
+        for i in range(win._stack.count()):
+            win._select(i)                       # lazily build each workspace page
         for ws in win.findChildren(W.Workspace):
             for k in range(len(ws._panels)):
                 ws._select(k)                    # forces the panel to build; must not raise

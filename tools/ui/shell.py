@@ -15,6 +15,7 @@ import threading
 from pathlib import Path
 
 from PyQt5.QtCore import Qt, QObject, pyqtSignal
+from PyQt5.QtGui import QPalette
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout,
                              QVBoxLayout, QPushButton, QStackedWidget, QFrame, QLabel)
 
@@ -118,9 +119,10 @@ class NetdeckShell(QMainWindow):
 
         lay.addWidget(W.eyebrow("Workspaces"))
         self._nav_items = []
+        self._page_specs = []          # [feature, built?] — pages build lazily on first nav
         for idx, feat in enumerate(ordered):
-            page = self._safe_build(feat)
-            self._stack.addWidget(page)
+            self._stack.addWidget(QWidget())
+            self._page_specs.append([feat, False])
             item = NavItem(feat.title, lambda _=False, k=idx: self._select(k))
             if feat.id == "settings":
                 self._foot_items.append((idx, item))
@@ -153,6 +155,13 @@ class NetdeckShell(QMainWindow):
             return w
 
     def _select(self, k: int):
+        spec = self._page_specs[k]
+        if not spec[1]:
+            page = self._safe_build(spec[0])
+            old = self._stack.widget(k)
+            self._stack.removeWidget(old); old.deleteLater()
+            self._stack.insertWidget(k, page)
+            spec[1] = True
         self._stack.setCurrentIndex(k)
         for i, item in enumerate(self._nav_items):
             item.set_selected(i == k)
@@ -161,10 +170,28 @@ class NetdeckShell(QMainWindow):
     def apply_theme(self, dark: bool):
         self._dark = dark
         T.set_theme(dark)
+        self._apply_palette()               # so unstyled surfaces (scroll viewports) match
         self.setStyleSheet(T.qss(dark))
         W.restyle_all()
         if hasattr(self, "_theme_btn"):
             self._theme_btn.setText("Dark Theme" if dark else "Light Theme")
+
+    @staticmethod
+    def _apply_palette():
+        """Theme the app QPalette so plain/unstyled Fusion widgets (QScrollArea
+        viewports, holders) use the theme surface instead of the light default."""
+        app = QApplication.instance()
+        if app is None:
+            return
+        pal = QPalette()
+        for role, key in ((QPalette.Window, "surface"), (QPalette.Base, "card"),
+                          (QPalette.AlternateBase, "surface"), (QPalette.Text, "txt1"),
+                          (QPalette.WindowText, "txt1"), (QPalette.Button, "card"),
+                          (QPalette.ButtonText, "txt1"), (QPalette.Highlight, "accent"),
+                          (QPalette.HighlightedText, "on_accent"), (QPalette.ToolTipBase, "card"),
+                          (QPalette.ToolTipText, "txt1"), (QPalette.PlaceholderText, "txt3")):
+            pal.setColor(role, T.qcolor(key))
+        app.setPalette(pal)
 
     def _toggle_theme(self):
         self.apply_theme(not self._dark)
