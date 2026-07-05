@@ -222,5 +222,39 @@ class KicadBomTests(unittest.TestCase):
             self.assertEqual(LM.bom_from_kicad_schematic(str(p))["rows"], [])
 
 
+class ConsolidatedBomTests(unittest.TestCase):
+    @staticmethod
+    def _sch(parts):
+        body = "\n".join(
+            f'  (symbol (lib_id "L:X") (property "Reference" "{r}" (at 0 0 0)) '
+            f'(property "Value" "{v}" (at 0 0 0)) (property "Footprint" "{fp}" (at 0 0 0)))'
+            for r, v, fp in parts)
+        return f"(kicad_sch (version 1)\n{body}\n)"
+
+    def test_merges_across_boards_with_per_board_qty(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            tp = pathlib.Path(td)
+            (tp / "parent.kicad_sch").write_text(
+                self._sch([("R1", "10k", "R_0402"), ("R2", "10k", "R_0402"),
+                           ("U1", "STM32H753", "LQFP144")]), encoding="utf-8")
+            (tp / "card.kicad_sch").write_text(
+                self._sch([("R1", "10k", "R_0402"), ("R2", "10k", "R_0402"),
+                           ("R3", "10k", "R_0402")]), encoding="utf-8")
+            b = LM.consolidated_bom({"Parent": [str(tp / "parent.kicad_sch")],
+                                     "Card": [str(tp / "card.kicad_sch")]})
+            self.assertEqual(b["board_names"], ["Parent", "Card"])
+            r10k = next(r for r in b["rows"] if r["value"] == "10k")
+            self.assertEqual(r10k["total_qty"], 5)                 # 2 parent + 3 card
+            self.assertEqual(r10k["per_board"], {"Parent": 2, "Card": 3})
+            self.assertEqual(b["total_parts"], 6)                  # 5 R + 1 U
+            # a per-board column exists in the CSV
+            self.assertIn("Total,Parent,Card", b["csv"])
+
+    def test_mouser_lookup_from_config_needs_a_key(self):
+        self.assertIsNone(LM.mouser_lookup_from_config({}))
+        self.assertIsNotNone(LM.mouser_lookup_from_config({"MouserApiKey": "abc"}))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

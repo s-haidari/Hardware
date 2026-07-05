@@ -1085,6 +1085,66 @@ def _natural_ref(ref: str):
     return (m.group(1), int(m.group(2))) if m else (ref or "", 0)
 
 
+def mouser_lookup_from_config(cfg: Dict[str, str] = None):
+    """A Mouser lookup callable if a key is configured, else None. Reads the key from
+    cfg['MouserApiKey'] or the MOUSER_API_KEY environment variable, so the key lives in
+    the machine-local config (never committed) or the environment."""
+    import os
+    key = (cfg or {}).get("MouserApiKey") or os.environ.get("MOUSER_API_KEY")
+    return make_mouser_lookup(key) if key else None
+
+
+def consolidated_bom(boards: Dict[str, list], lookup=None) -> dict:
+    """Merge the BOMs of several boards into one purchasing list.
+
+    `boards`: {board_name: [.kicad_sch sheet paths]} — one entry per board (parent +
+    each card), each a list of its schematic sheets. Runs the smart per-sheet BOM,
+    groups by MPN (else value+footprint) across ALL boards, sums the quantity, and
+    keeps the per-board breakdown + reference designators. If a `lookup` is given it
+    fills blank manufacturer/datasheet once per unique part. Returns {rows,
+    board_names, csv, line_count, total_parts}. Read-only."""
+    board_names = list(boards)
+    merged: dict = {}
+    for board, sheets in boards.items():
+        for sheet in sheets:
+            for r in bom_from_kicad_schematic(sheet)["rows"]:
+                key = r["mpn"] or ("VF", r["value"], r["footprint"])
+                m = merged.setdefault(key, {
+                    "mpn": r["mpn"], "manufacturer": r["manufacturer"], "value": r["value"],
+                    "footprint": r["footprint"], "datasheet": r["datasheet"],
+                    "description": r["description"], "total_qty": 0,
+                    "per_board": {}, "refs_by_board": {}})
+                m["total_qty"] += r["qty"]
+                m["per_board"][board] = m["per_board"].get(board, 0) + r["qty"]
+                m["refs_by_board"][board] = sorted(
+                    set(m["refs_by_board"].get(board, []) + r["refs"]), key=_natural_ref)
+                for f in ("manufacturer", "datasheet", "description"):
+                    if not m[f] and r.get(f):
+                        m[f] = r[f]
+
+    if lookup:
+        for m in merged.values():
+            if m["mpn"] and (not m["manufacturer"] or not m["datasheet"]):
+                res = lookup(m["mpn"])
+                if res:
+                    for f in ("manufacturer", "datasheet"):
+                        if not m[f] and res.get(f):
+                            m[f] = res[f]
+
+    rows = sorted(merged.values(), key=lambda r: (r["value"].lower(), r["footprint"].lower()))
+    import csv as _csv
+    import io as _io
+    buf = _io.StringIO()
+    w = _csv.writer(buf, lineterminator="\n")
+    w.writerow(["MPN", "Manufacturer", "Value", "Footprint", "Total"]
+               + board_names + ["Datasheet"])
+    for r in rows:
+        w.writerow([r["mpn"], r["manufacturer"], r["value"], r["footprint"], r["total_qty"]]
+                   + [r["per_board"].get(b, 0) for b in board_names] + [r["datasheet"]])
+    return {"rows": rows, "board_names": board_names, "csv": buf.getvalue(),
+            "line_count": len(rows), "total_parts": sum(r["total_qty"] for r in rows)}
+
+
 def bom_from_kicad_schematic(sch_path, lookup=None,
                              enrich_fields=("manufacturer", "datasheet")) -> dict:
     """Smart BOM from a KiCad 6+/7+ schematic (.kicad_sch), using our identity + enrich
