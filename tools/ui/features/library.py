@@ -1,16 +1,19 @@
 """Library — the KiCad parts library workspace (Parts, Sourcing, Import).
 
-Parts reads the real library (scan_library_grouped + library_health_report).
-Sourcing and Import present the real actions on the pure LibraryManager helpers;
-the live Mouser / write paths wire in as those panels are fleshed out.
+All three panels are wired to the pure LibraryManager helpers. Slow / mutating
+operations (Mouser lookups, dedupe, repair, auto-assign, ZIP import) run off the
+GUI thread via the shell's async service and log to the status line.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFileDialog
 
 from .. import theme as T
 from .. import widgets as W
+from ..util import LogSink, run_populate, clear_layout
 from .. import feature as F
 
 import LibraryManager as LM
@@ -23,7 +26,7 @@ def _asset_flags(has_sym, has_fp, has_mdl) -> QWidget:
         chip.setFixedHeight(20); chip.setFixedWidth(34)
         W.register_restyle(lambda chip=chip, on=on: chip.setStyleSheet(
             f"background:{T.t('ctl_hover') if on else 'transparent'};"
-            f"color:{T.t('txt1') if on else T.t('txt3')};border-radius:3px;padding:0 5px;"
+            f"color:{T.t('txt1') if on else T.t('txt3')};border-radius:3px;padding:0 4px;"
             + ("" if on else f"border:1px solid {T.t('stroke')};")))
         h.addWidget(chip)
     h.addStretch(1)
@@ -62,47 +65,101 @@ def _sourcing_panel(ctx, _state) -> QWidget:
     root = QWidget()
     lay = QVBoxLayout(root); lay.setContentsMargins(24, 16, 24, 24); lay.setSpacing(14)
     bar = QHBoxLayout(); bar.setSpacing(8)
-    bar.addWidget(W.eyebrow("Mouser Sourcing Report"))
-    bar.addStretch(1)
+    summary = QHBoxLayout(); summary.setSpacing(8)
+    bar.addLayout(summary); bar.addStretch(1)
+    btn_refresh = W.btn("Refresh From Mouser", "primary", "Query stock, pricing and lifecycle for every part")
     bar.addWidget(W.btn("Enrich From Part Number", "ghost",
-                        "Fill blank symbol properties from the distributor, dry run first"))
-    bar.addWidget(W.btn("Refresh From Mouser", "default", "Re-query stock, pricing and lifecycle"))
+                        "Fill blank symbol properties from Mouser (dry run first)"))
+    bar.addWidget(btn_refresh)
     lay.addLayout(bar)
-    has_key = bool((ctx.cfg or {}).get("MouserApiKey"))
-    lay.addWidget(W.body(
-        "Mouser API key configured. Run a refresh to pull live stock, pricing and lifecycle."
-        if has_key else
-        "No Mouser API key configured. Add one in Settings to enable live sourcing.",
-        dim=not has_key))
-    lay.addStretch(1)
+    result = QVBoxLayout(); lay.addLayout(result, 1)
+
+    lookup = LM.providers_from_config(ctx.cfg)
+    if lookup is None:
+        result.addWidget(W.body("No Mouser API key configured. Add one in Settings to enable live sourcing.", dim=True))
+        btn_refresh.setEnabled(False)
+        return root
+
+    def refresh():
+        clear_layout(result)
+        result.addWidget(W.body("Querying Mouser...", dim=True))
+
+        def populate(rep, ok):
+            clear_layout(result)
+            for i in reversed(range(summary.count())):
+                w = summary.itemAt(i).widget()
+                if w:
+                    w.deleteLater()
+            if not rep:
+                result.addWidget(W.body("Sourcing report unavailable.", dim=True)); return
+            c = rep.get("counts", {})
+            for txt, kind in ((f"{c.get('found', 0)} Found", "mut"),
+                              (f"{c.get('not_on_mouser', 0)} Not On Mouser", "warn"),
+                              (f"{c.get('obsolete_nrnd', 0)} NRND Or EOL", "err")):
+                summary.addWidget(W.tag(txt, kind))
+            trows = []
+            for r in rep.get("rows", []):
+                on = r.get("on_mouser")
+                life = r.get("lifecycle") or "None"
+                life_w = W.tag("NRND", "err") if r.get("obsolete") else (W.body(life) if life != "None" else W.body("None", dim=True))
+                price = r.get("unit_price")
+                trows.append([W.body(str(r.get("mpn", "")), mono=True), W.body(str(r.get("manufacturer") or ""), dim=True),
+                              W.tag("Yes", "ok") if on else W.tag("No", "warn"), life_w,
+                              str(r.get("stock", "")), f"${price:.2f}" if price else "None",
+                              W.body(str(r.get("lead_time") or "None"), dim=True)])
+            result.addWidget(W.data_table(
+                ["Part Number", "Manufacturer", "On Mouser", "Lifecycle", "Stock", "Unit", "Lead"],
+                trows, stretch_col=0), 1)
+
+        run_populate(ctx, lambda: LM.library_sourcing_report(ctx.cfg, lookup), populate,
+                     busy="Refreshing sourcing report from Mouser...")
+
+    btn_refresh.clicked.connect(refresh)
     return root
 
 
 def _import_panel(ctx, _state) -> QWidget:
     root = QWidget()
     lay = QVBoxLayout(root); lay.setContentsMargins(24, 16, 24, 24); lay.setSpacing(14)
+    log = LogSink(ctx.services)
+
     drop = W.Card(pad=30)
-    dl = QLabel("Drop A Vendor ZIP To Import"); dl.setFont(T.ui_font(10, semibold=True))
-    dl.setAlignment(Qt.AlignHCenter)
+    dl = QLabel("Import A Vendor ZIP"); dl.setFont(T.ui_font(10, semibold=True)); dl.setAlignment(Qt.AlignHCenter)
     W.register_restyle(lambda: dl.setStyleSheet(f"color:{T.t('txt1')};background:transparent;"))
     drop.body.addWidget(dl)
-    steps = W.eyebrow("Extract   Move   Merge   Auto-Link   Enrich   Commit")
-    steps.setAlignment(Qt.AlignHCenter)
+    steps = W.eyebrow("Extract   Move   Merge   Auto-Link   Enrich   Commit"); steps.setAlignment(Qt.AlignHCenter)
     drop.body.addWidget(steps)
+
+    def import_zip():
+        fn, _ = QFileDialog.getOpenFileName(root, "Select a vendor ZIP",
+                                            str(ctx.cfg.get("Downloads") or ctx.cfg.get("RepoRoot") or "."),
+                                            "ZIP Archives (*.zip)")
+        if not fn:
+            return
+        run_populate(ctx, lambda: LM.process_zip(Path(fn), ctx.cfg, log, commit=False, finalize=True),
+                     lambda r, ok: ctx.services.log("Import finished." if ok else "Import failed, see status."),
+                     busy=f"Importing {Path(fn).name}...")
+
+    pick = W.btn("Choose ZIP...", "primary", "Extract, move, merge, auto-link, enrich, then commit", import_zip)
+    row = QHBoxLayout(); row.addStretch(1); row.addWidget(pick); row.addStretch(1)
+    drop.body.addLayout(row)
     lay.addWidget(drop)
 
-    grid = QHBoxLayout(); grid.setSpacing(16)
+    def action(fn, busy):
+        run_populate(ctx, fn, lambda r, ok: ctx.services.log("Done." if ok else "Failed, see status."), busy=busy)
+
     maint = W.Card(pad=16)
     maint.body.addWidget(W.eyebrow("Maintenance"))
-    for label, tip in (("Dedupe Symbol Library", "Remove duplicate symbols"),
-                       ("Repair Footprint And Model Links", "Fix broken links across the library"),
-                       ("Auto-Assign Library", "Link missing footprints and models by identity"),
-                       ("Restore From Trash", "Restore a snapshot from the .trash safety net")):
-        b = W.btn(label, "default", tip); b.setLayoutDirection(Qt.LeftToRight)
+    for label, tip, fn, busy in (
+            ("Dedupe Symbol Library", "Remove duplicate symbols",
+             lambda: LM.dedupe_symbol_library(Path(ctx.cfg["SymbolLib"]), log), "Deduping symbols..."),
+            ("Repair Footprint And Model Links", "Fix broken links across the library",
+             lambda: LM.repair_library(ctx.cfg, log), "Repairing links..."),
+            ("Auto-Assign Library", "Link missing footprints and models by identity",
+             lambda: LM.auto_assign_library(ctx.cfg, dry_run=False, log=log), "Auto-assigning...")):
+        b = W.btn(label, "default", tip, lambda fn=fn, busy=busy: action(fn, busy))
         maint.body.addWidget(b)
-    grid.addWidget(maint)
-    grid.addStretch(1)
-    lay.addLayout(grid)
+    lay.addWidget(maint)
     lay.addStretch(1)
     return root
 

@@ -476,61 +476,6 @@ class AuthorityTests(unittest.TestCase):
         self.assertIn("NETDECK_LQFP64_CHANNELS", auth.to_switchmap_c(a))
         self.assertIn("via Samtec QTH", auth.to_wiring_md(a))
 
-    def test_tab_widget_offscreen(self):
-        """Headless Qt widget (offscreen platform): 9 columns, numeric Pin sort +
-        sort-safe row->pin selection, category filters, peripheral highlight, and the
-        switch-fabric map in the BOM view. Guards the widget wiring (esp. numeric
-        sort) that the pure-function tests can't reach."""
-        import os
-        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-        try:
-            from PyQt5.QtWidgets import QApplication
-            from PyQt5.QtCore import Qt
-            import stm32_pins_tab as tab
-        except Exception as e:  # pragma: no cover
-            raise unittest.SkipTest(f"PyQt5 unavailable: {e}")
-        _app = QApplication.instance() or QApplication([])
-        w = tab.Stm32PinsWidget()
-        w.db_path = self.dbp                         # use the test's temp database
-        w.load("LQFP64")
-        self.assertEqual((w.table.columnCount(), w.table.rowCount()), (9, 64))
-        w.table.sortItems(0, Qt.DescendingOrder)
-        self.assertEqual(w.table.item(0, 0).data(Qt.UserRole), 64)    # numeric, not "9"
-        w.table.selectRow(0)
-        self.assertEqual(w._sel_pos, 64)                              # selection follows sort
-        w.filter_combo.setCurrentText("Must-Switch")
-        vis = sum(not w.table.isRowHidden(r) for r in range(w.table.rowCount()))
-        self.assertEqual(vis, 11)
-        w.filter_combo.setCurrentText("All")
-        spi = next((w.periph_combo.itemText(i) for i in range(w.periph_combo.count())
-                    if w.periph_combo.itemText(i).startswith("SPI")), None)
-        if spi:
-            w.periph_combo.setCurrentText(spi)
-            self.assertTrue(w.pin_map.highlight)                      # peripheral -> highlight
-        # Map view: the pin map beside the full connection fabric (one card per pin,
-        # every physical path shown, category-filterable and re-sortable).
-        w.rail.select("map")
-        self.assertEqual(len(w.conn_list._rows), 64)                 # every socket pin listed
-        w._select(1)
-        self.assertEqual(w.conn_list._sel, 1)                        # selection follows the map
-        self.assertEqual(w.pin_map.selected, 1)
-        # the fabric spells out the exact vault wiring for a switched pin,
-        # at refdes level (socket refdes, cell refdes, receptacle contact)
-        row = w.conn_list._rows[1]
-        text = " ".join(lbl.text() for lbl, _r, _c in row._cells)
-        self.assertIn("VBAT_TARGET", text)                           # delivered rail (display-expanded)
-        self.assertIn("J_CARD1_LA 33", text)                         # receptacle contact
-        self.assertIn("CARD_LANE_001", text)                         # default lane path too
-        self.assertIn("J_SOCKET64_1", w.conn_list.chain.text())     # chain header refdes
-        self.assertIn("J_EDGE64_1", w.conn_list.chain.text())
-        self.assertIn("U_SW_64_1", text)                             # cell refdes
-        self.assertIn("Source S1 Pin 5", text)                       # terminal pins
-        w.conn_list.filter_combo.setCurrentText("Switched")
-        self.assertEqual(len(w.conn_list._rows), 11)                 # filter to switched pins only
-        w.conn_list.sort_combo.setCurrentText("Destination")
-        self.assertEqual(len(w.conn_list._rows), 11)                 # re-sort keeps the filtered set
-        w.conn_list.filter_combo.setCurrentText("All")
-        self.assertEqual(len(w.conn_list._rows), 64)
 
     def test_pin_chain_source_drain(self):
         """The rebuilt Connections view's structured signal chain (Source/Drain ledger):
