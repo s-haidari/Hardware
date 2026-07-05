@@ -146,19 +146,22 @@ def test_netclass_patterns_roundtrip(tmp_path):
 
 def test_vault_template_matches_obsidian_spec():
     import nd_netclass_manager as NCM
-    m = NCM.create_vault_standard_template()
+    m = NCM.create_vault_standard_template()      # default = OSH Park 4-layer profile
     names = m.list_netclasses()
-    assert len(names) == 18
-    # 43 patterns total per the Obsidian "Net Class Colors & Styles" table
-    assert sum(len(m.get_netclass(n).patterns) for n in names) == 43
+    # 19 classes now (added TGT_CORE for the VCAP 1.2V regulator nodes); patterns
+    # extended to fully cover the STM32 authority nets (JTAG TDI/NTRST, VCAP, the
+    # ADG714 control bus). Was 18/43 before the 2026-07-05 coverage pass.
+    assert len(names) == 19
+    assert sum(len(m.get_netclass(n).patterns) for n in names) >= 43
     g = m.get_netclass("GND")
     assert (g.track_width, g.via_diameter, g.via_drill) == (0.25, 0.6, 0.3)
-    s = m.get_netclass("SENSE")
+    s = m.get_netclass("SENSE")   # 4-layer signal floor
     assert (s.track_width, s.via_diameter, s.via_drill) == (0.15, 0.4572, 0.254)
     u = m.get_netclass("USB")
     assert (u.diff_pair_width, u.diff_pair_gap) == (0.20, 0.15)
     assert m.get_netclass("FAULT").line_style == "dashed"
     assert m.get_netclass("GND").priority == 0   # GND = highest precedence
+    assert "TGT_CORE" in names                    # VCAP regulator-node class
 
 
 # --- audit tier-1 regressions --------------------------------------------

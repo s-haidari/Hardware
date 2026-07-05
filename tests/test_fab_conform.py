@@ -33,10 +33,17 @@ class FabPresetTests(unittest.TestCase):
     def test_osh_park_4layer_is_tighter(self):
         p = fp.OSH_PARK_4LAYER
         self.assertAlmostEqual(p.min_track_width, 5 * fp.MIL)
+        self.assertAlmostEqual(p.min_annular_ring, 4 * fp.MIL)     # 4-layer: 4 mil ring
+        self.assertAlmostEqual(p.min_via_diameter, 18 * fp.MIL)    # -> 18 mil via (was 20)
         self.assertEqual(p.layers, 4)
         self.assertEqual(len([lyr for lyr in p.stackup if lyr[1] == "copper"]), 4)
+        self.assertEqual(p.inner_copper_oz, 0.5)
+        self.assertIn("FR408", p.material)                          # exact OSH Park material
         s = fp.apply_to_project_settings(ProjectSettings(), p)
         self.assertEqual(s.default_track_width, 5.0)
+        self.assertEqual(s.min_via_annular_width, 4.0)
+        self.assertEqual(s.solder_mask_clearance, 2.0)             # 2 mil mask expansion
+        self.assertEqual(s.min_hole_clearance, 5.0)                # 5 mil copper-to-hole
 
     def test_presets_registry(self):
         self.assertEqual(set(fp.PRESETS), {"OSH Park 2-layer", "OSH Park 4-layer"})

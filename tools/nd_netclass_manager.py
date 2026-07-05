@@ -508,59 +508,98 @@ class NetClassManager:
 # ═══════════════════════════════════════════════════════════════════
 # PRESET TEMPLATES
 # ═══════════════════════════════════════════════════════════════════
-def create_vault_standard_template() -> NetClassManager:
-    """Create the vault standard net class configuration"""
+# ── Fab profiles: the per-tier floors a net class is generated against ────────
+# Each profile sets the SIGNAL-class clearance / track / via / drill and the min
+# clearance every class is clamped up to, so the SAME vault taxonomy is emitted at
+# whatever floor the chosen OSH Park service allows. Signal vias sit at the fab
+# annular floor; power classes keep a heavier 0.6/0.3 via. Values in mm, verified
+# against docs.oshpark.com/design-tools/kicad (2026-07-05).
+NETCLASS_PROFILES = {
+    "OSH Park 4-layer": {"sig_clearance": 0.127, "sig_track": 0.15,
+                         "sig_via": 0.4572, "sig_drill": 0.254,
+                         "pwr_via": 0.6, "pwr_drill": 0.3,
+                         "min_clearance": 0.127, "min_track": 0.127},
+    "OSH Park 2-layer": {"sig_clearance": 0.1524, "sig_track": 0.1524,
+                         "sig_via": 0.508, "sig_drill": 0.254,
+                         "pwr_via": 0.6, "pwr_drill": 0.3,
+                         "min_clearance": 0.1524, "min_track": 0.1524},
+}
+DEFAULT_NETCLASS_PROFILE = "OSH Park 4-layer"
+
+# The vault taxonomy, fab-independent: (name, color, style, wire, bus, base_clearance,
+# base_track, kind, patterns, dp_width, dp_gap). kind drives which profile floor
+# applies: 'power'/'plane' keep a heavy via + wide track, 'signal' takes the profile's
+# signal via/track. Order is priority order (specific patterns above general).
+_VAULT_NETCLASSES = [
+    ("GND", "#5E8AC7", "solid", 0.2032, 0.3048, 0.127, 0.25, "plane",
+     ["*GND", "*VSSA_TGT", "*VSSDSI", "*CHASSIS"], None, None),
+    ("PWR_IN", "#B03A2E", "solid", 0.3048, 0.3048, 0.20, 0.60, "power",
+     ["*V_SYS", "*USB_VBUS*", "*CELL_IN*"], None, None),
+    ("PWR_5V", "#E07B39", "solid", 0.254, 0.3048, 0.127, 0.50, "power", ["*+5V"], None, None),
+    ("PWR_3V3", "#C99A2E", "solid", 0.254, 0.3048, 0.127, 0.40, "power",
+     ["*+3V3", "*+3V3_STATUS"], None, None),
+    ("PWR_1V8", "#A6B84F", "solid", 0.254, 0.3048, 0.127, 0.40, "power", ["*+1V8"], None, None),
+    ("TGT_PWR", "#C56FAE", "solid", 0.254, 0.3048, 0.127, 0.50, "power",
+     ["*VTARGET*", "*VDDA_TGT", "*VREF_TGT", "*VBAT_TGT"], None, None),
+    ("TGT_CORE", "#B060B0", "solid", 0.2032, 0.3048, 0.127, 0.30, "power",
+     ["*VCAP_NODE*", "*VCAP_DSI_NODE*", "*VDD12DSI*"], None, None),   # 1.2V regulator nodes
+    ("SW_NODE", "#E8B339", "solid", 0.254, 0.3048, 0.20, 0.50, "power",
+     ["*SW_5V", "*SW_3V3", "*SW_1V8", "*BST_*"], None, None),
+    ("SENSE", "#3FA7B5", "solid", 0.1524, 0.3048, 0.127, 0.15, "signal",
+     ["*FB_*", "*_SENSE"], None, None),
+    ("CTRL", "#6FA8DC", "solid", 0.1524, 0.3048, 0.127, 0.15, "signal",
+     ["*EN_*", "*_SEL", "*_RST"], None, None),
+    ("STATUS", "#93C47D", "solid", 0.1524, 0.3048, 0.127, 0.15, "signal",
+     ["*PG_*", "*_RDY"], None, None),
+    ("FAULT", "#C0392B", "dashed", 0.1524, 0.3048, 0.127, 0.15, "signal",
+     ["*FAULT*", "*KILL*", "*ALERT*", "*OCP*", "*EFUSE_FLT*"], None, None),
+    ("USB", "#D26FA0", "solid", 0.2032, 0.3048, 0.127, 0.20, "signal",
+     ["*USB_D*"], 0.20, 0.15),
+    ("SWD", "#7D6FB2", "solid", 0.1524, 0.3048, 0.127, 0.15, "signal",
+     ["*SWDIO*", "*SWCLK*", "*SWO*", "*TDI_PARENT*", "*NTRST_PARENT*", "*JTDI*",
+      "*JTMS*", "*JTCK*", "*NJTRST*", "*TRACESWO*"], None, None),   # full SWD + JTAG
+    ("SPI_SW", "#2E9E93", "solid", 0.1524, 0.3048, 0.127, 0.15, "signal",
+     ["*CARD_SW_*", "*SPI_SCLK*", "*SPI_DIN*", "*SPI_DOUT*", "*SPI_SYNC_N*",
+      "*SPI_RESET_N*", "*SPI_CHAIN_*"], None, None),   # ADG714 control bus
+    ("I2C_PWR", "#4E9E4E", "solid", 0.1524, 0.3048, 0.127, 0.15, "signal",
+     ["*I2C_PWR_*"], None, None),
+    ("LANE", "#A96FC2", "solid", 0.1524, 0.3048, 0.127, 0.15, "signal",
+     ["*CARD_LANE_*"], None, None),
+    ("ID", "#9C7A3C", "solid", 0.1524, 0.3048, 0.127, 0.15, "signal",
+     ["*CARD_PRESENT*", "*CARD_ID*", "*PKG_ID*"], None, None),
+    ("SERVICE", "#6E8FB0", "solid", 0.1524, 0.3048, 0.127, 0.15, "signal",
+     ["*SERVICE_*", "*UART_*", "*MCO*", "*BOOT0*", "*NRST*"], None, None),
+]
+
+
+def netclass_profiles() -> list:
+    """The available fab profiles (names) for the vault standard."""
+    return list(NETCLASS_PROFILES)
+
+
+def create_vault_standard_template(profile: str = DEFAULT_NETCLASS_PROFILE) -> NetClassManager:
+    """The vault-standard net classes generated against a fab PROFILE (default OSH
+    Park 4-layer). The taxonomy + colors + patterns are constant; the clearance /
+    track / via floors follow the profile so the same standard is valid on either
+    OSH Park service. Every class clearance is clamped up to the profile minimum,
+    signal classes take the profile's signal via/track, power/plane classes keep a
+    heavy 0.6/0.3 via and their wide track."""
+    prof = NETCLASS_PROFILES.get(profile, NETCLASS_PROFILES[DEFAULT_NETCLASS_PROFILE])
+    mc, mt = prof["min_clearance"], prof["min_track"]
     manager = NetClassManager()
-
-    # Vault standard — net classes per the Obsidian "Net Class Colors & Styles"
-    # table (OSH Park 4-layer values): args are
-    # (name, color, line_style, wire_thickness, bus_thickness, clearance,
-    #  track_width, via_diameter, via_drill). Power/GND/SW/TGT use 0.6/0.3 vias;
-    # signal classes use the OSH Park floor 0.4572/0.254. All mm.
-    netclasses = [
-        NetClass("GND", "#5E8AC7", "solid", 0.2032, 0.3048, 0.127, 0.25, 0.6, 0.3,
-                 patterns=["*GND", "*VSSA_TGT", "*CHASSIS"]),
-        NetClass("PWR_IN", "#B03A2E", "solid", 0.3048, 0.3048, 0.20, 0.60, 0.6, 0.3,
-                 patterns=["*V_SYS", "*USB_VBUS*", "*CELL_IN*"]),
-        NetClass("PWR_5V", "#E07B39", "solid", 0.254, 0.3048, 0.127, 0.50, 0.6, 0.3,
-                 patterns=["*+5V"]),
-        NetClass("PWR_3V3", "#C99A2E", "solid", 0.254, 0.3048, 0.127, 0.40, 0.6, 0.3,
-                 patterns=["*+3V3", "*+3V3_STATUS"]),
-        NetClass("PWR_1V8", "#A6B84F", "solid", 0.254, 0.3048, 0.127, 0.40, 0.6, 0.3,
-                 patterns=["*+1V8"]),
-        NetClass("TGT_PWR", "#C56FAE", "solid", 0.254, 0.3048, 0.127, 0.50, 0.6, 0.3,
-                 patterns=["*VTARGET*", "*VDDA_TGT", "*VREF_TGT", "*VBAT_TGT"]),
-        NetClass("SW_NODE", "#E8B339", "solid", 0.254, 0.3048, 0.20, 0.50, 0.6, 0.3,
-                 patterns=["*SW_5V", "*SW_3V3", "*SW_1V8", "*BST_*"]),
-        NetClass("SENSE", "#3FA7B5", "solid", 0.1524, 0.3048, 0.127, 0.15, 0.4572, 0.254,
-                 patterns=["*FB_*", "*_SENSE"]),
-        NetClass("CTRL", "#6FA8DC", "solid", 0.1524, 0.3048, 0.127, 0.15, 0.4572, 0.254,
-                 patterns=["*EN_*", "*_SEL", "*_RST"]),
-        NetClass("STATUS", "#93C47D", "solid", 0.1524, 0.3048, 0.127, 0.15, 0.4572, 0.254,
-                 patterns=["*PG_*", "*_RDY"]),
-        NetClass("FAULT", "#C0392B", "dashed", 0.1524, 0.3048, 0.127, 0.15, 0.4572, 0.254,
-                 patterns=["*FAULT*", "*KILL*", "*ALERT*", "*OCP*", "*EFUSE_FLT*"]),
-        NetClass("USB", "#D26FA0", "solid", 0.2032, 0.3048, 0.127, 0.20, 0.4572, 0.254,
-                 diff_pair_width=0.20, diff_pair_gap=0.15,
-                 patterns=["*USB_D*"]),
-        NetClass("SWD", "#7D6FB2", "solid", 0.1524, 0.3048, 0.127, 0.15, 0.4572, 0.254,
-                 patterns=["*SWDIO*", "*SWCLK*", "*SWO*"]),
-        NetClass("SPI_SW", "#2E9E93", "solid", 0.1524, 0.3048, 0.127, 0.15, 0.4572, 0.254,
-                 patterns=["*CARD_SW_*"]),
-        NetClass("I2C_PWR", "#4E9E4E", "solid", 0.1524, 0.3048, 0.127, 0.15, 0.4572, 0.254,
-                 patterns=["*I2C_PWR_*"]),
-        NetClass("LANE", "#A96FC2", "solid", 0.1524, 0.3048, 0.127, 0.15, 0.4572, 0.254,
-                 patterns=["*CARD_LANE_*"]),
-        NetClass("ID", "#9C7A3C", "solid", 0.1524, 0.3048, 0.127, 0.15, 0.4572, 0.254,
-                 patterns=["*CARD_PRESENT*", "*CARD_ID*", "*PKG_ID*"]),
-        NetClass("SERVICE", "#6E8FB0", "solid", 0.1524, 0.3048, 0.127, 0.15, 0.4572, 0.254,
-                 patterns=["*SERVICE_*", "*UART_*", "*MCO*"]),
-    ]
-
-    for priority, nc in enumerate(netclasses):
+    for priority, (name, color, style, wire, bus, base_clr, base_trk, kind,
+                   patterns, dpw, dpg) in enumerate(_VAULT_NETCLASSES):
+        clearance = max(base_clr, mc)
+        if kind == "signal":
+            track = max(prof["sig_track"], mt)
+            via, drill = prof["sig_via"], prof["sig_drill"]
+        else:                                        # power / plane
+            track = max(base_trk, mt)
+            via, drill = prof["pwr_via"], prof["pwr_drill"]
+        nc = NetClass(name, color, style, wire, bus, clearance, track, via, drill,
+                      diff_pair_width=dpw or 0.0, diff_pair_gap=dpg or 0.0, patterns=patterns)
         nc.priority = priority
         manager.add_netclass(nc)
-
     return manager
 
 

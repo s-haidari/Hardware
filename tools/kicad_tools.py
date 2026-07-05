@@ -50,6 +50,7 @@ import nd_kicad_checks as kchecks
 import nd_project_health as phealth
 import nd_fab_presets as fabp
 import nd_object_conform as conform
+import nd_netclass_manager as ncm
 from nd_netclass_manager import (
     NetClass, NetClassManager, create_vault_standard_template,
     load_vault_standard, save_vault_standard,
@@ -719,13 +720,14 @@ class KiCadToolsWidget(QWidget):
 
         chk = {}
         for key, label in (("settings", "Apply design rules + stackup to project settings"),
+                           ("netclasses", "Sync matching net-class profile (OSH Park tier)"),
                            ("silk", "Conform component/board SILK text"),
                            ("fab", "Conform FAB-layer text"),
                            ("copper", "Conform COPPER text"),
                            ("sch_text", "Conform schematic text"),
                            ("labels", "Conform net labels")):
             cb = QCheckBox(label)
-            cb.setChecked(key in ("settings", "silk", "fab", "labels"))
+            cb.setChecked(key in ("settings", "netclasses", "silk", "fab", "labels"))
             chk[key] = cb
             v.addWidget(cb)
 
@@ -796,6 +798,20 @@ class KiCadToolsWidget(QWidget):
                 elif o["settings"] and dry_run:
                     self.log(f"  {pro.stem}: would apply {preset.name} rules + "
                              f"{preset.layers}-layer stackup to {len(boards)} board(s)")
+                # net-class profile matching the OSH Park tier
+                if o.get("netclasses"):
+                    if dry_run:
+                        m = ncm.create_vault_standard_template(preset.name)
+                        self.log(f"  {pro.stem}: would sync {len(m.list_netclasses())} net "
+                                 f"classes ({preset.name} profile)")
+                    else:
+                        try:
+                            m = ncm.create_vault_standard_template(preset.name)
+                            m.sync_to_projects([pro], backup=True)
+                            self.log(f"  {pro.stem}: synced {len(m.list_netclasses())} net "
+                                     f"classes ({preset.name} profile)")
+                        except Exception as e:      # noqa: BLE001
+                            self.log(f"  {pro.stem}: net-class sync ERROR: {e}")
                 # conform existing text/labels
                 if pcb_targets or sch_targets:
                     files = ([top] if top else []) + list(boards)
