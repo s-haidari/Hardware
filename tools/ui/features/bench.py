@@ -672,6 +672,69 @@ def _outputs_panel(ctx, state: BenchState) -> QWidget:
     return root
 
 
+# ── All Pins panel (every position across all parts in the package) ───────────
+def _five_v_short(p) -> str:
+    fv = p.get("five_v")
+    if fv is None:
+        return "Not Applicable"
+    if fv.get("tolerant"):
+        return "Yes"
+    if any((fv.get("by_family") or {}).values()):
+        return "Part-Dependent"
+    return "No"
+
+
+def _pin_row(p) -> list:
+    """One flat row of a position's data, shared by the table and the CSV export."""
+    dest = p["assignment"].get("destination") or p["assignment"].get("net") or ""
+    cat = pins._CAT_WORD.get(sauth._NET_CATEGORY.get(dest, "lane"), "Card Lane")
+    return [str(p["position"]), pins._names(p["pin_names"]), pins._names(p["role_set"]),
+            cat, pins._SWITCH_LABEL.get(p["switch_class"], p["switch_class"]),
+            pins.expandNet(dest), _five_v_short(p)]
+
+
+_PIN_COLS = ["Pin", "Pin Names", "Roles", "Category", "Switch Class", "Destination", "5 V Tolerant"]
+
+
+def _allpins_panel(ctx, state: BenchState) -> QWidget:
+    root = QWidget()
+    lay = QVBoxLayout(root); lay.setContentsMargins(24, 16, 24, 24); lay.setSpacing(12)
+    if state.package is None:
+        lay.addWidget(W.body("No package loaded.", dim=True)); return root
+    pkg = state.package
+    positions = state.authority()["positions"]
+
+    bar = QHBoxLayout(); bar.setSpacing(8)
+    bar.addWidget(W.eyebrow(f"All Pins   {pkg}   {len(positions)} Positions")); bar.addStretch(1)
+    b_csv = W.btn("Export All Pins...", "primary", "Write every pin and its data to a CSV file")
+    bar.addWidget(b_csv); lay.addLayout(bar)
+    lay.addWidget(W.body(
+        "Every socket position across all supported STM32 parts in this package, with its "
+        "functions, category, switch class and delivered net.", dim=True))
+
+    rows = [_pin_row(p) for p in positions]
+    lay.addWidget(W.data_table(_PIN_COLS, rows, stretch_col=(1, 2, 5), mono_cols={0, 5}), 1)
+
+    def export():
+        base = str(Path(ctx.cfg.get("RepoRoot") or "."))
+        fn, _ = QFileDialog.getSaveFileName(root, "Export All Pins", str(Path(base) / f"pins_{pkg}.csv"),
+                                            "CSV Files (*.csv)")
+        if not fn:
+            return
+        import csv, io
+        buf = io.StringIO(); writer = csv.writer(buf); writer.writerow(_PIN_COLS)
+        for p in positions:
+            writer.writerow(_pin_row(p))
+        try:
+            Path(fn).write_text(buf.getvalue(), encoding="utf-8", newline="")
+            ctx.services.log(f"Wrote {Path(fn).name}.")
+        except Exception as e:  # noqa: BLE001
+            ctx.services.log(f"Export failed: {e}")
+
+    b_csv.clicked.connect(export)
+    return root
+
+
 # ── Profiles panel (real authority: one baseline fabric + minority divergences) ─
 def _flow_tokens(items, make=None, per_row: int = 8) -> QWidget:
     """Wrap tokens across rows so a long list never runs off the panel. `make`
@@ -846,6 +909,7 @@ class BenchFeature(F.Feature):
         panels = [
             ("Overview", lambda c: W.scroll_body(_authority_panel(c, state))),
             ("Profiles", lambda c: W.scroll_body(_profiles_panel(c, state))),
+            ("All Pins", lambda c: _allpins_panel(c, state)),
             ("MCU Pinout Viewer", lambda c: W.scroll_body(_resolver_panel(c, state))),
             ("Exports", lambda c: W.scroll_body(_outputs_panel(c, state))),
         ]
