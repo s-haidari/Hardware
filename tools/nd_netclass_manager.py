@@ -518,11 +518,13 @@ NETCLASS_PROFILES = {
     "OSH Park 4-layer": {"sig_clearance": 0.127, "sig_track": 0.15,
                          "sig_via": 0.4572, "sig_drill": 0.254,
                          "pwr_via": 0.6, "pwr_drill": 0.3,
-                         "min_clearance": 0.127, "min_track": 0.127},
+                         "min_clearance": 0.127, "min_track": 0.127,
+                         "min_via": 0.4572, "min_drill": 0.254, "min_annular": 0.1016},
     "OSH Park 2-layer": {"sig_clearance": 0.1524, "sig_track": 0.1524,
                          "sig_via": 0.508, "sig_drill": 0.254,
                          "pwr_via": 0.6, "pwr_drill": 0.3,
-                         "min_clearance": 0.1524, "min_track": 0.1524},
+                         "min_clearance": 0.1524, "min_track": 0.1524,
+                         "min_via": 0.508, "min_drill": 0.254, "min_annular": 0.127},
 }
 DEFAULT_NETCLASS_PROFILE = "OSH Park 4-layer"
 
@@ -575,6 +577,50 @@ _VAULT_NETCLASSES = [
 def netclass_profiles() -> list:
     """The available fab profiles (names) for the vault standard."""
     return list(NETCLASS_PROFILES)
+
+
+def validate_netclasses(manager, profile: str = DEFAULT_NETCLASS_PROFILE) -> list:
+    """Check every net class carries proper, fab-legal values for a profile. Returns
+    a list of {netclass, issue} — empty means every class is sound. Checks: clearance
+    / track / via / drill at or above the fab floor, drill smaller than via, annular
+    ring >= the fab minimum, positive wire/bus stroke, a valid hex color, at least one
+    membership pattern, and unique priorities."""
+    import re as _re
+    prof = NETCLASS_PROFILES.get(profile, NETCLASS_PROFILES[DEFAULT_NETCLASS_PROFILE])
+    findings = []
+    prios = {}
+    for name in manager.list_netclasses():
+        nc = manager.get_netclass(name)
+
+        def bad(issue, _n=name):
+            findings.append({"netclass": _n, "issue": issue})
+
+        if nc.clearance < prof["min_clearance"] - 1e-9:
+            bad(f"clearance {nc.clearance} < fab min {prof['min_clearance']}")
+        if nc.track_width < prof["min_track"] - 1e-9:
+            bad(f"track {nc.track_width} < fab min {prof['min_track']}")
+        if nc.via_diameter < prof["min_via"] - 1e-9:
+            bad(f"via {nc.via_diameter} < fab min {prof['min_via']}")
+        if nc.via_drill < prof["min_drill"] - 1e-9:
+            bad(f"via drill {nc.via_drill} < fab min {prof['min_drill']}")
+        if nc.via_drill >= nc.via_diameter:
+            bad(f"via drill {nc.via_drill} >= via {nc.via_diameter}")
+        elif (nc.via_diameter - nc.via_drill) / 2 < prof["min_annular"] - 1e-9:
+            bad(f"annular ring {(nc.via_diameter - nc.via_drill) / 2:.4f} < fab min "
+                f"{prof['min_annular']}")
+        if nc.wire_thickness <= 0 or nc.bus_thickness <= 0:
+            bad("non-positive wire/bus stroke")
+        if not _re.fullmatch(r"#[0-9A-Fa-f]{6}", nc.color or ""):
+            bad(f"invalid color {nc.color!r}")
+        if name != "Default" and not (nc.patterns or []):
+            bad("no membership pattern")
+        if nc.diff_pair_width and not nc.diff_pair_gap:
+            bad("diff-pair width set but no gap")
+        prios.setdefault(nc.priority, []).append(name)
+    for prio, names in prios.items():
+        if len(names) > 1:
+            findings.append({"netclass": ", ".join(names), "issue": f"duplicate priority {prio}"})
+    return findings
 
 
 def create_vault_standard_template(profile: str = DEFAULT_NETCLASS_PROFILE) -> NetClassManager:

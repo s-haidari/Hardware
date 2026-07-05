@@ -594,11 +594,15 @@ def set_symbol_property(symbol_text: str, key: str, value: str) -> str:
     pat = re.compile(r'(\(property\s+"' + re.escape(key) + r'"\s+")((?:[^"\\]|\\.)*)(")')
     if pat.search(symbol_text):
         return pat.sub(lambda m: m.group(1) + val + m.group(3), symbol_text, count=1)
-    anchor = re.search(r'\(property\s+"Value"\s+"(?:[^"\\]|\\.)*"[^\n]*\)', symbol_text)
+    # Insert a new property BEFORE the first existing one — property order is free in
+    # KiCad, and this needs no paren-matching (anchoring after a property's end is
+    # fragile on compact single-line symbols where the regex over-runs the block).
+    anchor = re.search(r'\(property\s+"', symbol_text)
     if not anchor:
         return symbol_text
-    ins = f'\n    (property "{key}" "{val}" (at 0 0 0) (effects (font (size 1.27 1.27)) hide))'
-    return symbol_text[:anchor.end()] + ins + symbol_text[anchor.end():]
+    ins = (f'(property "{key}" "{val}" (at 0 0 0) (effects (font (size 1.27 1.27)) hide))'
+           "\n    ")
+    return symbol_text[:anchor.start()] + ins + symbol_text[anchor.start():]
 
 
 # Identity field -> the symbol property that carries it (for enrich write-back).
@@ -1208,6 +1212,104 @@ def library_health_report(cfg: Dict[str, str], overrides: Optional[dict] = None)
             "missing_model": _names(miss_mdl, 10_000),
             "no_manufacturer": _names(no_mfr, 10_000),
             "markdown": "\n".join(L) + "\n"}
+
+
+def suggest_footprint_for_symbol(sym_name: str, current_fp_basename: str,
+                                 props: Dict[str, str], fp_stems) -> tuple:
+    """Best footprint stem for a symbol that has none (or a dangling one), by
+    name → identity → fuzzy match. Returns (stem, reason) or (None, None)."""
+    import difflib
+    stems = list(fp_stems)
+    low = {s.lower(): s for s in stems}
+    for cand in (current_fp_basename, sym_name):     # exact name match
+        if cand and cand.lower() in low:
+            return low[cand.lower()], "name"
+    mpn = (strict_mpn(props) or props.get("Value", "") or "").strip().lower()
+    for key in (mpn, sym_name.lower()):              # identity substring, unique
+        if key:
+            hits = [s for s in stems if key in s.lower() or s.lower() in key]
+            if len(hits) == 1:
+                return hits[0], "identity"
+    # token-substring: a footprint token (>=4 chars, e.g. ADG714, LQFP100) that also
+    # appears in the symbol's id — catches ADG714BRUZ-REEL -> RU_24_ADG714.
+    ident = f"{sym_name} {mpn}".upper()
+    tok_hits = [s for s in stems
+                if any(t in ident for t in re.findall(r"[A-Z0-9]{4,}", s.upper()))]
+    if len(set(tok_hits)) == 1:
+        return tok_hits[0], "token"
+    close = difflib.get_close_matches(sym_name.lower(), [s.lower() for s in stems],
+                                      n=1, cutoff=0.72)   # fuzzy on the reliable symbol name
+    if close:
+        return low[close[0]], "fuzzy"
+    return None, None
+
+
+def auto_assign_library(cfg: Dict[str, str], dry_run: bool = True, log: UILog = None) -> dict:
+    """Auto-associate footprints AND 3D models across the shared library, no KiCad.
+
+    For every symbol with no resolvable footprint (missing or dangling), pick the
+    best-matching footprint by identity then name; for every footprint with no
+    resolvable 3D model, pick the best-matching .step/.wrl by name. dry_run=True
+    (default) returns the proposed assignments without writing; dry_run=False writes
+    them — symbol Footprint -> MyFootprints:<stem>, footprint (model) ->
+    ${MY3DMODELS}/<file> — under _LIB_LOCK with a .trash snapshot first. Returns
+    {footprints:[{symbol, assign, reason}], models:[{footprint, assign, reason}],
+    written}."""
+    sym_path = Path(cfg.get("SymbolLib", ""))
+    fp_dir = Path(cfg.get("FootprintLib", ""))
+    mdl_dir = Path(cfg.get("ModelLib", ""))
+    fp_texts = {p.stem: (p, read_text(p)) for p in fp_dir.glob("*.kicad_mod")} if fp_dir.exists() else {}
+    fp_stems = set(fp_texts)
+    model_paths = [p for p in mdl_dir.glob("*")
+                   if p.suffix.lower() in (".step", ".stp", ".wrl")] if mdl_dir.exists() else []
+    model_names = {p.name for p in model_paths}
+
+    fp_assigns, mdl_assigns = [], []
+    with _LIB_LOCK:
+        # symbols -> footprint
+        sym_text = read_text(sym_path) if sym_path.exists() else ""
+        sym_edits = []
+        for b in extract_symbol_blocks(sym_text):
+            name = extract_symbol_name(b)
+            cur = symbol_footprint_ref(b) or ""      # "Nickname:Stem" or ""
+            cur_stem = cur.split(":")[-1] if cur else ""
+            if cur_stem and cur_stem in fp_stems:
+                continue                             # already resolves
+            stem, reason = suggest_footprint_for_symbol(
+                name, cur_stem, extract_symbol_properties(b), fp_stems)
+            if stem:
+                fp_assigns.append({"symbol": name, "assign": stem, "reason": reason})
+                sym_edits.append((b, set_symbol_property(b, "Footprint", f"{FP_NICKNAME}:{stem}")))
+
+        # footprints -> 3D model
+        fp_writes = []
+        for stem, (path, text) in fp_texts.items():
+            ref = footprint_model_ref(text)
+            if ref and Path(ref).name in model_names:
+                continue                             # already has a resolvable model
+            guess = match_model_for_footprint(stem, [Path(m.name) for m in model_paths])
+            if guess:
+                mdl_assigns.append({"footprint": stem, "assign": guess.name, "reason": "name"})
+                fp_writes.append((path, ensure_footprint_model(text, guess.name)))
+
+        written = False
+        if not dry_run and (sym_edits or fp_writes):
+            if sym_edits:
+                new = sym_text
+                for old, nb in sym_edits:
+                    new = new.replace(old, nb, 1)
+                _snapshot_then_write(sym_path, new, log or _NullLog())
+            for path, new_text in fp_writes:
+                try:
+                    bak = path.with_suffix(path.suffix + ".autobak")
+                    shutil.copy2(path, bak)
+                    write_text(path, new_text)
+                except Exception as e:               # noqa: BLE001
+                    (log or _NullLog()).write(f"model assign failed for {path.name}: {e}")
+            written = True
+
+    return {"footprints": fp_assigns, "models": mdl_assigns, "written": written,
+            "footprint_count": len(fp_assigns), "model_count": len(mdl_assigns)}
 
 
 def repair_library(cfg: Dict[str, str], log: UILog) -> Dict[str, int]:

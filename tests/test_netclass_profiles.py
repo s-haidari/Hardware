@@ -61,6 +61,21 @@ class NetClassProfileTests(unittest.TestCase):
         self.assertEqual(_classify(m, "TDI_PARENT"), "SWD")
         self.assertEqual(_classify(m, "NTRST_PARENT"), "SWD")
 
+    def test_all_netclasses_have_proper_values(self):
+        for prof in ncm.netclass_profiles():
+            m = ncm.create_vault_standard_template(prof)
+            self.assertEqual(ncm.validate_netclasses(m, prof), [],
+                             f"{prof} has improper net-class values")
+
+    def test_validator_catches_bad_values(self):
+        m = ncm.create_vault_standard_template("OSH Park 2-layer")
+        m.get_netclass("LANE").clearance = 0.05          # below 2-layer 6 mil floor
+        m.get_netclass("SWD").via_drill = 0.9            # drill >= via
+        issues = ncm.validate_netclasses(m, "OSH Park 2-layer")
+        names = {i["netclass"] for i in issues}
+        self.assertIn("LANE", names)
+        self.assertIn("SWD", names)
+
     def test_profile_round_trips_through_save_load(self):
         m = ncm.create_vault_standard_template("OSH Park 2-layer")
         with tempfile.TemporaryDirectory() as td:

@@ -115,6 +115,50 @@ class EnrichTests(unittest.TestCase):
             self.assertTrue((pathlib.Path(td) / ".trash").exists())     # snapshot taken
 
 
+class AutoAssignTests(unittest.TestCase):
+    """Auto-associate footprints + 3D models across the library (no KiCad), by
+    name / identity / token match, dry-run then snapshot-backed apply."""
+
+    def _lib(self, td):
+        tp = pathlib.Path(td)
+        (tp / "Sym.kicad_sym").write_text(
+            '(kicad_symbol_lib\n'
+            '  (symbol "ADG714BRUZ-REEL"\n    (property "Reference" "U" (at 0 0 0))\n'
+            '    (property "Value" "ADG714BRUZ-REEL" (at 0 0 0))\n'
+            '    (property "Footprint" "MyFootprints:GONE" (at 0 0 0)))\n'   # dangling
+            '  (symbol "STM32F407"\n    (property "Reference" "U" (at 0 0 0))\n'
+            '    (property "Value" "STM32F407VGT6" (at 0 0 0)))\n)\n', encoding="utf-8")  # no fp
+        (tp / "RU_24_ADG714.kicad_mod").write_text('(footprint "RU_24_ADG714" (pad "1" smd))', encoding="utf-8")
+        (tp / "STM32F407.kicad_mod").write_text('(footprint "STM32F407" (pad "1" smd))', encoding="utf-8")
+        (tp / "STM32F407.step").write_text("solid", encoding="utf-8")
+        return {"SymbolLib": str(tp / "Sym.kicad_sym"), "FootprintLib": str(tp), "ModelLib": str(tp)}
+
+    def test_dry_run_proposes_without_writing(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            cfg = self._lib(td)
+            before = pathlib.Path(cfg["SymbolLib"]).read_text(encoding="utf-8")
+            r = LM.auto_assign_library(cfg, dry_run=True)
+            self.assertFalse(r["written"])
+            self.assertEqual(pathlib.Path(cfg["SymbolLib"]).read_text(encoding="utf-8"), before)
+            fps = {a["symbol"]: a["assign"] for a in r["footprints"]}
+            self.assertEqual(fps["ADG714BRUZ-REEL"], "RU_24_ADG714")   # token match
+            self.assertEqual(fps["STM32F407"], "STM32F407")            # name match
+            self.assertEqual(r["models"][0]["assign"], "STM32F407.step")
+
+    def test_apply_writes_footprint_and_model(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            cfg = self._lib(td)
+            r = LM.auto_assign_library(cfg, dry_run=False)
+            self.assertTrue(r["written"])
+            txt = pathlib.Path(cfg["SymbolLib"]).read_text(encoding="utf-8")
+            blk = {LM.extract_symbol_name(b): b for b in LM.extract_symbol_blocks(txt)}
+            self.assertEqual(LM.symbol_footprint_ref(blk["STM32F407"]), "STM32F407")
+            self.assertEqual(LM.symbol_footprint_ref(blk["ADG714BRUZ-REEL"]), "RU_24_ADG714")
+            self.assertIn("(model", (pathlib.Path(td) / "STM32F407.kicad_mod").read_text(encoding="utf-8"))
+
+
 class HealthReportTests(unittest.TestCase):
     def test_library_health_report(self):
         cfg = LM.load_config()
