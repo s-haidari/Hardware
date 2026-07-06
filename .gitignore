@@ -50,6 +50,7 @@ docs/_build/
 Thumbs.db
 .vscode/
 .idea/
+CLAUDE.md
 
 # --- Binaries produced locally (do not version) ---
 *.dll
@@ -61,6 +62,7 @@ Thumbs.db
 *.zip
 *.tgz
 *.gz
+
 
 # NOTE: CAD assets (*.step, *.stp) are intentionally NOT ignored.
 # We'll track them via Git LFS (below), not ignore them.
