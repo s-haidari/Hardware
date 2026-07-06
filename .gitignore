@@ -48,6 +48,7 @@ docs/_build/
 # --- OS / Editor noise ---
 .DS_Store
 Thumbs.db
+CLAUDE.md
 .vscode/
 .idea/
 
