@@ -10,8 +10,8 @@ from typing import Callable, Optional
 
 import LibraryManager as LM
 import fp_render as R
-from PyQt5.QtCore import Qt, QRectF
-from PyQt5.QtGui import QPainter, QColor
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QPainter, QColor, QPixmap, QIcon
 from PyQt5.QtWidgets import QWidget, QFrame, QVBoxLayout, QLabel, QListWidget, QListWidgetItem, QLineEdit
 
 from .. import theme as T
@@ -51,7 +51,7 @@ def model_path_for(cfg: dict, row: dict) -> Optional[Path]:
     return p if p.exists() else None
 
 
-def resolve_model_render(path: Optional[Path]):
+def resolve_model_render(path: Optional[Path]) -> tuple[str, object]:
     """Decide how to show a 3D model, best available first:
       ("mesh", (verts, faces)) — interactive mesh loaded
       ("image", QImage)        — static thumbnail only
@@ -208,7 +208,12 @@ class PartDetail(QWidget):
         W.register_restyle(lambda: self._mpn.setStyleSheet(
             f"color:{T.t('txt1')};background:transparent;"))
         self._meta = W.body("", dim=True); self._meta.setWordWrap(True)
-        lay.addWidget(self._mpn); lay.addWidget(self._meta)
+        self._ds = QLabel("")
+        self._ds.setOpenExternalLinks(True)
+        self._ds.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        W.register_restyle(lambda: self._ds.setStyleSheet(
+            f"color:{T.t('txt2')};background:transparent;"))
+        lay.addWidget(self._mpn); lay.addWidget(self._meta); lay.addWidget(self._ds)
         self._sym = PreviewCard("Symbol")
         self._fp = PreviewCard("Footprint")
         self._mdl = PreviewCard("3D Model")
@@ -224,7 +229,7 @@ class PartDetail(QWidget):
     def show(self, row: Optional[dict]):
         if not row:
             self._current = None
-            self._mpn.setText(""); self._meta.setText("")
+            self._mpn.setText(""); self._meta.setText(""); self._ds.setText("")
             for c in (self._sym, self._fp, self._mdl):
                 c.set_empty("Select A Part")
             return
@@ -232,6 +237,12 @@ class PartDetail(QWidget):
         self._mpn.setText(str(row.get("mpn") or row.get("name") or ""))
         bits = [b for b in (row.get("manufacturer"), row.get("description")) if b]
         self._meta.setText(" · ".join(str(b) for b in bits))
+        url = row.get("datasheet") or ""
+        if url:
+            self._ds.setText(
+                f'<a href="{url}" style="color:{T.t("txt2")};text-decoration:none;">Datasheet →</a>')
+        else:
+            self._ds.setText("")
         self._render_symbol(row)
         self._render_footprint(row)
         self._render_model(row)
@@ -302,12 +313,27 @@ class PartDetail(QWidget):
 
 
 def _asset_dot_color(row: dict) -> str:
-    """Semantic asset-state color: err=dangling, warn=missing model, else ok."""
+    """Semantic asset-state color token: err=dangling, warn=missing model or footprint,
+    else txt1 (neutral — complete rows carry no extra color, only the text baseline)."""
     if row.get("dangling"):
         return T.t("err")
     if not row.get("has_model") or not row.get("has_footprint"):
         return T.t("warn")
-    return T.t("ok")
+    return T.t("txt1")
+
+
+def _dot_icon(color: str) -> QIcon:
+    """Build a 16px QIcon with an antialiased 6px filled circle in *color*."""
+    px = QPixmap(16, 16)
+    px.fill(Qt.transparent)
+    p = QPainter(px)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor(color))
+    # Center a 6px-diameter circle vertically and horizontally
+    p.drawEllipse(5, 5, 6, 6)
+    p.end()
+    return QIcon(px)
 
 
 class PartsList(QWidget):
@@ -345,14 +371,20 @@ class PartsList(QWidget):
             f"QListWidget::item{{color:{T.t('txt1')};padding:7px 8px;border-radius:6px;}}"
             f"QListWidget::item:hover{{background:{T.t('card_hover')};}}"
             f"QListWidget::item:selected{{background:{T.t('inset')};color:{T.t('txt1')};}}")
+        # Re-color dot icons so a dark/light toggle recolors them immediately
+        for i in range(self._list.count()):
+            it = self._list.item(i)
+            row = it.data(Qt.UserRole)
+            if row is not None:
+                it.setIcon(_dot_icon(_asset_dot_color(row)))
 
     def _build_items(self, rows):
         self._list.clear()
         self._visible = []
         for row in rows:
             label = str(row.get("mpn") or row.get("name") or "")
-            it = QListWidgetItem("  " + label)
-            it.setForeground(QColor(_asset_dot_color(row)))  # dot proxy via a leading swatch
+            it = QListWidgetItem(label)
+            it.setIcon(_dot_icon(_asset_dot_color(row)))
             it.setData(Qt.UserRole, row)
             it.setFont(T.mono_font(10))
             self._list.addItem(it)
@@ -370,9 +402,6 @@ class PartsList(QWidget):
 
     def visible_count(self) -> int:
         return self._list.count()
-
-    def select_index(self, i: int):
-        self._list.setCurrentRow(i)
 
     def _on_row(self, i: int):
         if i < 0 or i >= len(self._visible):

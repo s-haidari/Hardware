@@ -456,6 +456,9 @@ def _netclass_panel(ctx, state) -> QWidget:
 
     status = QVBoxLayout(); lay.addLayout(status); lay.addStretch(1)
 
+    # Track the currently selected profile so validate() checks the right floor
+    cur_prof = [profiles[0] if profiles else ncm.DEFAULT_NETCLASS_PROFILE]
+
     def apply_edits():
         for name, spins in rows_map.items():
             nc = mgr.net_classes[name]
@@ -466,7 +469,7 @@ def _netclass_panel(ctx, state) -> QWidget:
 
     def validate():
         clear_layout(status); apply_edits()
-        issues = ncm.validate_netclasses(mgr)
+        issues = ncm.validate_netclasses(mgr, cur_prof[0])
         if not issues:
             status.addWidget(W.tag("All Classes Meet The Fab Minimums", "ok"))
         else:
@@ -493,6 +496,7 @@ def _netclass_panel(ctx, state) -> QWidget:
     b_sync.clicked.connect(sync)
 
     def _apply_profile(prof):        # _pick passes the profile-name TEXT, not an index
+        cur_prof[0] = prof           # update before validate() so it checks the right floor
         mgr2 = ncm.create_vault_standard_template(prof)
         for name, spins in rows_map.items():
             nc = mgr2.net_classes.get(name)

@@ -20,18 +20,6 @@ from .library_preview import PartsList, PartDetail
 import LibraryManager as LM
 
 
-def _asset_flags(has_sym, has_fp, has_mdl) -> QWidget:
-    """Which assets a part has, spelled out. Present in full ink, missing dimmed."""
-    w = QWidget(); w.setMinimumWidth(210)
-    h = QHBoxLayout(w); h.setContentsMargins(0, 0, 0, 0); h.setSpacing(14)
-    for label, on in (("Symbol", has_sym), ("Footprint", has_fp), ("3D Model", has_mdl)):
-        lab = QLabel(label); lab.setFont(T.ui_font(9))
-        W.register_restyle(lambda lab=lab, on=on: lab.setStyleSheet(
-            f"color:{T.t('txt1') if on else T.t('txt3')};background:transparent;"))
-        h.addWidget(lab)
-    h.addStretch(1)
-    return w
-
 
 def _parts_panel(ctx, _state) -> QWidget:
     root = QWidget()
@@ -187,6 +175,13 @@ def _sourcing_panel(ctx, _state) -> QWidget:
             n = len(res.get("changes", [])) if res else 0
             if not n:
                 ctx.services.log("Enrich: nothing to fill."); return
+            from PyQt5.QtWidgets import QMessageBox
+            ans = QMessageBox.question(
+                root, "Apply Enrichment",
+                f"{n} blank field(s) can be filled from Mouser. Apply?",
+                QMessageBox.Yes | QMessageBox.No)
+            if ans != QMessageBox.Yes:
+                return
             ctx.services.log(f"Enrich: {n} fields fillable. Applying...")
             run_populate(ctx, lambda: _enrich_from_mpn(ctx, lookup, apply=True),
                          lambda r, ok: ctx.services.log(

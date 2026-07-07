@@ -238,3 +238,61 @@ def test_netclass_profile_selector_rebuilds(monkeypatch):
     assert getattr(panel, "_profile_seg", None) is not None
     # switching profiles must not raise
     panel._profile_seg._pick(0)
+
+
+# ── FIX 1: _asset_dot_color returns correct color tokens ────────────────────
+
+def test_asset_dot_color_complete_is_txt1():
+    from ui.features.library_preview import _asset_dot_color
+    from ui import theme as T
+    row = {"has_footprint": True, "has_model": True, "dangling": False}
+    assert _asset_dot_color(row) == T.t("txt1")
+
+
+def test_asset_dot_color_missing_model_is_warn():
+    from ui.features.library_preview import _asset_dot_color
+    from ui import theme as T
+    row = {"has_footprint": True, "has_model": False, "dangling": False}
+    assert _asset_dot_color(row) == T.t("warn")
+
+
+def test_asset_dot_color_dangling_is_err():
+    from ui.features.library_preview import _asset_dot_color
+    from ui import theme as T
+    row = {"has_footprint": True, "has_model": True, "dangling": True}
+    assert _asset_dot_color(row) == T.t("err")
+
+
+def test_partslist_item_has_non_null_icon():
+    from ui.features.library_preview import PartsList
+    rows = [
+        {"name": "R_0402", "mpn": "R_0402", "manufacturer": "Yageo",
+         "has_footprint": True, "has_model": True, "dangling": False},
+    ]
+    lst = PartsList(rows, on_select=lambda r: None)
+    item = lst._list.item(0)
+    assert item is not None
+    assert not item.icon().isNull(), "PartsList item must have a non-null dot icon"
+
+
+# ── FIX 4: datasheet link in PartDetail ─────────────────────────────────────
+
+def test_partdetail_datasheet_link_shown_and_cleared(tmp_path):
+    from ui.features import library_preview as P
+    cfg = _cfg(tmp_path)
+    ctx = _fake_ctx(cfg)
+    det = P.PartDetail(ctx)
+
+    row_with_ds = {"name": "R_0402", "mpn": "R_0402", "datasheet": "https://example.com/ds.pdf",
+                   "manufacturer": None, "description": None,
+                   "footprint": None, "symbols": [], "model": None}
+    det.show(row_with_ds)
+    assert "https://example.com/ds.pdf" in det._ds.text(), "Datasheet URL must appear in label"
+    assert "Datasheet" in det._ds.text()
+
+    row_no_ds = dict(row_with_ds); row_no_ds["datasheet"] = None
+    det.show(row_no_ds)
+    assert det._ds.text() == "", "Label must be empty when no datasheet"
+
+    det.show(None)   # clear must not raise
+    assert det._ds.text() == ""
