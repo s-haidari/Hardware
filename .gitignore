@@ -48,7 +48,6 @@ docs/_build/
 # --- OS / Editor noise ---
 .DS_Store
 Thumbs.db
-CLAUDE.md
 .vscode/
 .idea/
 
@@ -87,6 +86,9 @@ tools/data/
 
 # --- Machine-local config + secrets (Mouser API key etc.) — never commit ---
 tools/config.json
+
+# --- Claude Code session / chat exports dropped in the tree — never commit ---
+*local-command*.txt
 
 # --- SP3-A render-gate output (regenerate with tools/ui/render_gate.py) ---
 build/
