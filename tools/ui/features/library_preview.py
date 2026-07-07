@@ -76,6 +76,14 @@ def resolve_model_render(path: Optional[Path]):
     return ("none", None)
 
 
+def apply_model_override(cfg: dict, footprint_stem: str, model_filename: str) -> None:
+    """Persist a manual footprint->model association in the group-override side
+    map (pure JSON; no library mutation). resolve_model_render re-reads afterward."""
+    ov = LM.load_group_overrides(cfg)
+    ov.setdefault("model", {})[footprint_stem] = model_filename
+    LM.save_group_overrides(cfg, ov)
+
+
 class MeshView(QWidget):
     """Interactive 3D model view. kind='mesh' -> orbit/zoom via paint_mesh;
     kind='image' -> a static thumbnail painted to fit. No borders (the parent
@@ -206,6 +214,11 @@ class PartDetail(QWidget):
         self._mdl = PreviewCard("3D Model")
         for c in (self._sym, self._fp, self._mdl):
             lay.addWidget(c)
+        self._relink_btn = W.btn("Re-link Model...", "ghost",
+                                 "Manually associate this footprint with a 3D model",
+                                 self._open_relink)
+        lay.addWidget(self._relink_btn)
+        self._current = None
         lay.addStretch(1)
 
     def show(self, row: Optional[dict]):
@@ -214,6 +227,7 @@ class PartDetail(QWidget):
             for c in (self._sym, self._fp, self._mdl):
                 c.set_empty("Select A Part")
             return
+        self._current = row
         self._mpn.setText(str(row.get("mpn") or row.get("name") or ""))
         bits = [b for b in (row.get("manufacturer"), row.get("description")) if b]
         self._meta.setText(" · ".join(str(b) for b in bits))
@@ -265,6 +279,24 @@ class PartDetail(QWidget):
                         f"{summ['triangles']} Triangles · "
                         f"{sz[0]} × {sz[1]} × {sz[2]} mm")
         run_populate(self._ctx, job, done)
+
+    def _open_relink(self):
+        from PyQt5.QtWidgets import QInputDialog
+        row = self._current
+        if not row or not row.get("footprint"):
+            self._ctx.services.log("Re-link needs a part with a footprint."); return
+        mdl_dir = Path(self._ctx.cfg.get("ModelLib", ""))
+        names = sorted(p.name for p in mdl_dir.glob("*")
+                       if p.suffix.lower() in (".step", ".stp", ".wrl")) if mdl_dir.exists() else []
+        if not names:
+            self._ctx.services.log("No 3D models available to link."); return
+        name, ok = QInputDialog.getItem(self, "Re-link Model",
+                                        "Model File:", names, 0, False)
+        if ok and name:
+            apply_model_override(self._ctx.cfg, row["footprint"], name)
+            row = dict(row); row["model"] = name
+            self._ctx.services.log(f"Linked {row['footprint']} -> {name}.")
+            self.show(row)
 
 
 def _asset_dot_color(row: dict) -> str:

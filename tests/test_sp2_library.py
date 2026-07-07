@@ -216,3 +216,12 @@ def test_scan_corrupt_empty_is_clean(tmp_path, monkeypatch):
     monkeypatch.setattr(LM, "find_corrupt_kicad_files", lambda root: [])
     L._scan_corrupt(ctx)
     assert any("no corrupt files" in m for m in ctx.services.logs)
+
+
+def test_apply_model_override_persists(tmp_path):
+    from ui.features import library_preview as P
+    cfg = _cfg(tmp_path); cfg["Libs"] = str(tmp_path)
+    P.apply_model_override(cfg, "R_0402", "SOT-23.step")
+    import LibraryManager as LM
+    ov = LM.load_group_overrides(cfg)
+    assert ov.get("model", {}).get("R_0402") == "SOT-23.step"
