@@ -240,6 +240,13 @@ def run():
     app.setStyle("Fusion")
     T.load_fonts(app)
     import LibraryManager as LM
+    # SP1: a frozen exe has no repo tree — resolve (and on first run, choose+seed)
+    # the writable library location before anything reads config or paths.
+    if getattr(sys, "frozen", False):
+        loc = LM.ensure_library_location()
+        if loc is None:
+            return 0   # user quit the first-run chooser
+        LM.apply_library_location(loc)
     cfg = LM.load_config()
     win = NetdeckShell(cfg)
     win.show()

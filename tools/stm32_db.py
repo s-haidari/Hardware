@@ -412,6 +412,22 @@ def list_packages(conn: sqlite3.Connection) -> list:
         "SELECT DISTINCT package_name FROM mcu ORDER BY package_name")]
 
 
+def package_count(db_path: Path = None) -> "int | None":
+    """How many packages the database holds, or None if there is no readable DB
+    (e.g. dev before a build). Used by the Settings 'Data' line (SP1)."""
+    p = Path(db_path) if db_path is not None else default_db_path()
+    if not p.exists():
+        return None
+    try:
+        conn = connect(p)
+        try:
+            return len(list_packages(conn))
+        finally:
+            conn.close()
+    except Exception:
+        return None
+
+
 def classifier_rev(conn: sqlite3.Connection) -> int:
     """The classifier revision that built this DB (0 = pre-stamp database)."""
     try:

@@ -105,6 +105,24 @@ def test_seed_force_reseeds(tmp_path):
     assert L.seed_library(dest, seed_root=seed, seed_version="1", force=True) is True
 
 
+# --- ensure_library_location (non-modal paths) -----------------------------
+def test_ensure_library_location_dev_no_prompt(monkeypatch):
+    monkeypatch.setattr(L.sys, "frozen", False, raising=False)
+    assert L.ensure_library_location() == L.detect_repo_root()
+
+
+def test_ensure_library_location_frozen_pointer_no_prompt(monkeypatch, tmp_path):
+    loc = tmp_path / "lib"
+    loc.mkdir()
+    monkeypatch.setenv("KICADMGR_POINTER", str(tmp_path / "workspace.json"))
+    L.write_pointer(loc)
+    monkeypatch.setattr(L.sys, "frozen", True, raising=False)
+    # A valid pointer must short-circuit before any modal is constructed.
+    monkeypatch.setattr(L, "_prompt_choose_location",
+                        lambda parent=None: (_ for _ in ()).throw(AssertionError("prompted")))
+    assert L.ensure_library_location() == loc
+
+
 # --- apply_library_location (rebind seam) ----------------------------------
 def test_apply_library_location_rebinds_globals(tmp_path):
     orig_root, orig_cfg = L.REPO_ROOT, L.CONFIG_PATH

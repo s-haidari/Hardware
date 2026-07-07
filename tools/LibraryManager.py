@@ -191,6 +191,52 @@ def seed_library(dest: Path, seed_root: Path = None,
     return True
 
 
+def _prompt_choose_location(parent=None) -> Optional[Path]:
+    """First-run modal: Open Existing / Create New (seeded). Returns the chosen
+    location, or None if the user quit. UI-only; the pure logic is in seed_library
+    / write_pointer, which are unit-tested."""
+    from PyQt5.QtWidgets import QMessageBox, QFileDialog
+    box = QMessageBox(parent)
+    box.setWindowTitle("Choose Library Location")
+    box.setText("Where should KiCad Library Manager keep your library?")
+    box.setInformativeText(
+        "Open an existing library folder (e.g. a git clone), or create a new one "
+        "seeded from the bundled snapshot. You can change this later in Settings.")
+    open_btn = box.addButton("Open Existing…", QMessageBox.AcceptRole)
+    new_btn = box.addButton("Create New…", QMessageBox.AcceptRole)
+    box.addButton("Quit", QMessageBox.RejectRole)
+    box.exec_()
+    clicked = box.clickedButton()
+    if clicked is open_btn:
+        d = QFileDialog.getExistingDirectory(parent, "Open existing library folder")
+        return Path(d) if d else None
+    if clicked is new_btn:
+        d = QFileDialog.getExistingDirectory(parent, "Choose a folder for a new library")
+        if not d:
+            return None
+        dest = Path(d)
+        seed_library(dest)   # copy bundled seed + write a fresh config.json
+        return dest
+    return None
+
+
+def ensure_library_location(parent=None) -> Optional[Path]:
+    """The writable library location, prompting on first run when frozen.
+
+    Dev: the repo root (no prompt). Frozen: the pointer's location if valid, else
+    the first-run modal — on success the choice is recorded in the pointer. Returns
+    None only if the user quit the first-run modal (startup should then exit).
+    """
+    loc = library_location()
+    if loc is not None:
+        return loc
+    chosen = _prompt_choose_location(parent)
+    if chosen is None or not _can_write_dir(chosen):
+        return None
+    write_pointer(chosen)
+    return chosen
+
+
 # Theme tokens, fonts, and Lucide icons live in the shared design system
 # (tools/ui_theme.py) so every tab draws from one palette and no tab has to
 # import another for its icons.
