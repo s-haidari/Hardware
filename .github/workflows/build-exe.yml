@@ -1,41 +1,84 @@
-name: Build EXE
-
-# Build the standalone Windows .exe and attach it to a GitHub Release.
-# Trigger by pushing a version tag, e.g.:   git tag v1.1.0 && git push origin v1.1.0
-# Or run manually from the Actions tab (produces a downloadable artifact).
+name: Windows Release EXE
 
 on:
   push:
-    tags: ["v*"]
+    tags:
+      - "v*"
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Optional release tag/name, for example v1.0.0. Leave blank to only upload an artifact."
+        required: false
+        type: string
 
 permissions:
   contents: write
 
+env:
+  APP_NAME: KiCad Manager
+  PYTHON_VERSION: "3.11"
+
 jobs:
-  build:
+  build-windows:
+    name: Build KiCad Manager for Windows
     runs-on: windows-latest
+
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
+      - name: Check out repository
+        uses: actions/checkout@v4
         with:
-          python-version: "3.11"
+          lfs: true   # SP1: pull the real 3D models so the seed bundles files, not LFS stubs
 
-      - name: Install dependencies
-        run: pip install PyQt5 watchdog pyinstaller cascadio trimesh numpy pillow
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
 
-      - name: Build exe
-        run: pyinstaller --onefile --windowed --name KiCadManager --icon tools/app_icon.ico --add-data "tools/app_icon.ico;." --add-data "tools/icon_sun.png;." --add-data "tools/icon_moon.png;." --add-data "tools/check_dark.png;." --add-data "tools/check_light.png;." --add-data "tools/caret_down.png;." --add-data "tools/caret_up.png;." --add-data "tools/fonts;fonts" --add-data "tools/lucide;lucide" --add-data "tools/cubemx_db;cubemx_db" --hidden-import PyQt5.QtSvg --hidden-import watchdog.observers --hidden-import watchdog.events --hidden-import kicad_tools --hidden-import nd_wizard --hidden-import nd_netclass_manager --hidden-import nd_project_settings_manager --hidden-import fp_render --hidden-import stm32_pins_tab --hidden-import stm32_db --hidden-import stm32_authority --hidden-import cascadio --collect-all trimesh --collect-all numpy --paths tools tools/LibraryManager.py
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install pyinstaller cascadio trimesh numpy pillow
 
-      - name: Upload build artifact
+      - name: Run tests
+        run: python -m pytest tests -q
+
+      - name: Build STM32 database (prebuilt, bundled read-only)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python tools/stm32_db.py --build --source "tools/cubemx_db/mcu" --out "tools/data/stm32.sqlite"
+          if (-not (Test-Path "tools/data/stm32.sqlite")) {
+            throw "STM32 database was not built"
+          }
+
+      - name: Build KiCad Manager.exe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python -m PyInstaller --noconfirm --clean "tools/KiCadLibraryManager.spec"
+
+      - name: Verify executable exists
+        shell: pwsh
+        run: |
+          $exe = "dist/${{ env.APP_NAME }}.exe"
+          if (-not (Test-Path $exe)) {
+            throw "Expected executable was not created: $exe"
+          }
+          Get-Item $exe | Select-Object FullName, Length
+
+      - name: Upload Windows executable artifact
         uses: actions/upload-artifact@v4
         with:
-          name: KiCadManager-exe
-          path: dist/KiCadManager.exe
+          name: KiCad Manager Windows EXE
+          path: "dist/KiCad Manager.exe"
+          if-no-files-found: error
 
-      - name: Attach to release
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.version != '')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/KiCadManager.exe
+          tag_name: ${{ inputs.version || github.ref_name }}
+          name: KiCad Manager ${{ inputs.version || github.ref_name }}
+          files: "dist/KiCad Manager.exe"
