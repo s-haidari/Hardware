@@ -282,10 +282,11 @@ class Verdict(QFrame):
         return w
 
     def _style(self):
-        if self._plain:
-            bg = T.t("card")
-        else:
-            bg = T.t(f"{self._kind}_bg")
+        # Neutral surface always: a status band never tints its background with a
+        # category hue (design-rules §1.6/§5). Status is carried by the chip dots,
+        # so the tint was pure decoration. `kind`/`plain` are kept for call-site
+        # compatibility but no longer color the surface. Matches the Library band.
+        bg = T.t("card")
         self.setObjectName("ndverdict")
         self.setStyleSheet(f"QFrame#ndverdict{{background:{bg};border:1px solid {T.t('stroke')};border-radius:8px;}}")
         self._title.setStyleSheet(f"color:{T.t('txt1')};background:transparent;")
