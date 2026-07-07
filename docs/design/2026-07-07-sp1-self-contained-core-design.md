@@ -1,6 +1,7 @@
 # SP1 — Self-Contained Core: Design
 
-**Status:** approved design, awaiting spec review · **Date:** 2026-07-07
+**Status:** implemented (2026-07-07) — one open item: paste the real Mouser key into
+`tools/app_secrets.py` before a release build · **Date:** 2026-07-07
 **App:** KiCad Library Manager (PyQt5 desktop, `git/Hardware`)
 **Repo (canonical):** `~/git/Hardware` (WSL-native), branch `ui-clean-slate`
 
