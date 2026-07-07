@@ -28,7 +28,7 @@ WINDOW_TITLE = "NETDECK Firmware Extraction Bench"
 _ICON = {
     "ham": '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 4h12M2 8h12M2 12h12"/></svg>',
     "bench": '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="3.5" y="3.5" width="9" height="9" rx="1"/><path d="M6 1.5v2M10 1.5v2M6 12.5v2M10 12.5v2M1.5 6h2M1.5 10h2M12.5 6h2M12.5 10h2"/></svg>',
-    "library": '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2.5 4h11M2.5 8h11M2.5 12h11"/></svg>',
+    "library": '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="2.5" y="4" width="2.4" height="9" rx="0.5"/><rect x="5.6" y="2.8" width="2.4" height="10.2" rx="0.5"/><rect x="8.7" y="5" width="2.4" height="8" rx="0.5"/><path d="M1.6 13.2h12.8"/></svg>',
     "projects": '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M2 4.5H6.5L8 6.5H14V12.5H2Z"/></svg>',
     "settings": '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><circle cx="8" cy="8" r="2"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3 3l1.4 1.4M11.6 11.6 13 13M13 3l-1.4 1.4M4.4 11.6 3 13"/></svg>',
     "theme": '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M13.5 9A5.5 5.5 0 0 1 7 2.5 5.5 5.5 0 1 0 13.5 9Z"/></svg>',
@@ -205,6 +205,11 @@ class NetdeckShell(QMainWindow):
     def apply_theme(self, dark: bool):
         self._dark = dark
         T.set_theme(dark)
+        try:                                 # keep component previews on the app surface
+            import fp_render as R
+            R.set_render_theme(dark, T.t("inset"))
+        except Exception:  # noqa: BLE001
+            pass
         self._apply_palette()               # so unstyled surfaces (scroll viewports) match
         self.setStyleSheet(T.qss(dark))
         W.restyle_all()

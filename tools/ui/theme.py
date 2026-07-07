@@ -175,9 +175,12 @@ QLabel {{ background: transparent; }}
 QPushButton {{ background: {c['ctl']}; border: 1px solid {c['stroke']}; border-radius: 4px;
     color: {c['txt1']}; padding: 6px 12px; }}
 QPushButton:hover {{ background: {c['ctl_hover']}; }}
-QPushButton#primary {{ background: {c['accent']}; color: {c['on_accent']}; border: none; font-weight: 600; }}
-QPushButton#primary:hover {{ background: {c['accent']}; }}
-QPushButton#ghost {{ background: transparent; border: none; }}
+/* border same colour as the fill: without an explicit border a Fusion QSS button can
+   skip painting its background box, leaving white on_accent text on a light page. */
+QPushButton#primary {{ background: {c['accent']}; color: {c['on_accent']};
+    border: 1px solid {c['accent']}; font-weight: 600; }}
+QPushButton#primary:hover {{ background: {c['accent']}; border-color: {c['accent']}; }}
+QPushButton#ghost {{ background: transparent; border: 1px solid {c['stroke']}; }}
 QPushButton#ghost:hover {{ background: {c['subtle_hover']}; }}
 QPushButton#subtab {{ background: transparent; border: none; border-radius: 0;
     color: {c['txt2']}; padding: 6px 14px; }}
@@ -190,6 +193,10 @@ QPushButton#seg[selected="true"] {{ background: {c['card']}; color: {c['txt1']};
 QPushButton#tokbtn {{ background: {c['tok']}; border: none; border-radius: 4px;
     color: {c['txt1']}; padding: 3px 9px; font-family: {MONO_STACK}; font-size: 12px; }}
 QPushButton#tokbtn:hover {{ background: {c['ctl_hover']}; }}
+/* A disabled button (incl. primary) must stay legibly muted in BOTH themes — Qt's
+   default faded compositing turned disabled #primary into near-invisible text. */
+QPushButton:disabled, QPushButton#primary:disabled, QPushButton#ghost:disabled {{
+    background: {c['ctl']}; color: {c['txt3']}; border: 1px solid {c['stroke']}; font-weight: 400; }}
 
 QLineEdit, QPlainTextEdit, QTextEdit {{ background: {c['ctl']}; border: 1px solid {c['stroke']};
     border-radius: 4px; color: {c['txt1']}; padding: 5px 10px; selection-background-color: {c['accent']}; }}

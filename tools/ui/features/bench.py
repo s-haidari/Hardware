@@ -611,9 +611,9 @@ def _outputs_panel(ctx, state: BenchState) -> QWidget:
 
     bar = QHBoxLayout(); bar.setSpacing(8)
     bar.addWidget(W.eyebrow(f"Exports   {pkg}")); bar.addStretch(1)
-    b_bom = W.btn("Save Card Bill Of Materials...", "ghost", "Write the card bill of materials as a CSV file")
-    b_net = W.btn("Save KiCad Netlist...", "ghost", "Write the socket netlist in KiCad format")
-    b_bundle = W.btn("Write Authority Bundle...", "primary",
+    b_bom = W.btn("Save Card Bill Of Materials", "ghost", "Write the card bill of materials as a CSV file")
+    b_net = W.btn("Save KiCad Netlist", "ghost", "Write the socket netlist in KiCad format")
+    b_bundle = W.btn("Write Authority Bundle", "primary",
                      "Write the full bundle (YAML, JSON, TSV, CSV, socket symbol) to a folder")
     bar.addWidget(b_bom); bar.addWidget(b_net); bar.addWidget(b_bundle)
     lay.addLayout(bar)
@@ -721,7 +721,7 @@ def _allpins_panel(ctx, state: BenchState) -> QWidget:
 
     bar = QHBoxLayout(); bar.setSpacing(8)
     bar.addWidget(W.eyebrow(f"All Pins   {pkg}   {len(positions)} Positions")); bar.addStretch(1)
-    b_csv = W.btn("Export All Pins...", "primary", "Write every pin and its data to a CSV file")
+    b_csv = W.btn("Export All Pins", "primary", "Write every pin and its data to a CSV file")
     bar.addWidget(b_csv); lay.addLayout(bar)
     lay.addWidget(W.body(
         "Every socket position across all supported STM32 parts in this package, with its "

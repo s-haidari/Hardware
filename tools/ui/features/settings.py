@@ -86,7 +86,7 @@ def _settings_panel(ctx, _s) -> QWidget:
     loc_col = QVBoxLayout(); loc_col.setSpacing(8)
     loc_col.addWidget(W.token(str(loc), dim=True))
     actions = QHBoxLayout(); actions.setSpacing(8)
-    actions.addWidget(W.btn("Change…", tip="Open an existing library or seed a new one",
+    actions.addWidget(W.btn("Change", tip="Open an existing library or seed a new one",
                             on_click=lambda: _change_location(root)))
     actions.addWidget(W.btn("Open Folder", tip="Reveal the library folder",
                             on_click=_open_folder))

@@ -18,17 +18,47 @@ from typing import List, Optional, Tuple
 from PyQt5.QtGui import QImage, QPainter, QColor, QPen, QBrush, QPolygonF, QFont
 from PyQt5.QtCore import QPointF, QRectF, Qt
 
-# Layer colours on the dark viewport background
-# Grayscale palette (color is reserved for pin/net data elsewhere; the component
-# previews are monochrome). Light -> dark ramp keeps the layer hierarchy readable:
-# silk (lightest, drawn on top) > copper pads > courtyard > fab.
+# Layer colours — monochrome (hue is reserved for pin/net data elsewhere). The ramp
+# keeps the layer hierarchy readable: silk (most prominent, drawn on top) > copper pads
+# > courtyard > fab. It is THEME-AWARE: light-on-dark for the dark UI theme, dark-on-light
+# for the light theme, so a footprint/symbol/3D preview blends into the app surface instead
+# of reading as a pasted PNG. set_render_theme() swaps the ramp + the background at runtime;
+# headless callers (the one-file catalog) keep the dark default below.
+_RAMP_DARK = dict(copper="#bcbcbc", silk="#dedede", crtyd="#7c7c7c", fab="#585858",
+                  other="#8c8c8c", symbody="#c6c6c6", sympin="#a2a2a2", mesh=(198, 204, 212))
+_RAMP_LIGHT = dict(copper="#454545", silk="#1b1b1b", crtyd="#8f8f8f", fab="#b0b0b0",
+                   other="#6f6f6f", symbody="#2a2a2a", sympin="#555555", mesh=(96, 102, 110))
+
 BG = QColor("#16171a")
-COL_COPPER = QColor("#bcbcbc")     # pads — the prominent element
-COL_HOLE = QColor("#16171a")       # through-hole void = background
-COL_SILK = QColor("#dedede")       # silk (lightest, drawn last / on top)
-COL_CRTYD = QColor("#7c7c7c")
-COL_FAB = QColor("#585858")
-COL_OTHER = QColor("#8c8c8c")
+COL_COPPER = QColor(_RAMP_DARK["copper"])   # pads — the prominent element
+COL_HOLE = QColor("#16171a")                # through-hole void = background
+COL_SILK = QColor(_RAMP_DARK["silk"])       # silk (lightest, drawn last / on top)
+COL_CRTYD = QColor(_RAMP_DARK["crtyd"])
+COL_FAB = QColor(_RAMP_DARK["fab"])
+COL_OTHER = QColor(_RAMP_DARK["other"])
+COL_SYMBODY = QColor(_RAMP_DARK["symbody"])   # symbol body graphics
+COL_SYMPIN = QColor(_RAMP_DARK["sympin"])     # symbol pins
+MESH_BASE = _RAMP_DARK["mesh"]                # 3D mesh base RGB (before per-face shading)
+
+
+def set_render_theme(dark: bool, bg: Optional[str] = None) -> None:
+    """Swap the preview colour ramp (and background) to match the active UI theme so
+    footprint / symbol / 3D previews read as part of the app, not a pasted image. `bg` is
+    the exact surface hex the preview card uses (so the square's edges disappear); when
+    omitted a per-theme default is used. Clears the image cache so a stale opposite-theme
+    render is never returned. `bg` must be a solid hex (the theme 'inset' token is)."""
+    global BG, COL_HOLE, COL_COPPER, COL_SILK, COL_CRTYD, COL_FAB, COL_OTHER
+    global COL_SYMBODY, COL_SYMPIN, MESH_BASE
+    ramp = _RAMP_DARK if dark else _RAMP_LIGHT
+    bg_hex = bg if (bg and bg.startswith("#")) else ("#16171a" if dark else "#eeeeee")
+    BG = QColor(bg_hex)
+    COL_HOLE = QColor(bg_hex)
+    COL_COPPER = QColor(ramp["copper"]); COL_SILK = QColor(ramp["silk"])
+    COL_CRTYD = QColor(ramp["crtyd"]); COL_FAB = QColor(ramp["fab"])
+    COL_OTHER = QColor(ramp["other"])
+    COL_SYMBODY = QColor(ramp["symbody"]); COL_SYMPIN = QColor(ramp["sympin"])
+    MESH_BASE = ramp["mesh"]
+    _IMG_CACHE.clear()
 
 
 def _tokenize(s: str):
@@ -466,10 +496,6 @@ def footprint_summary(path: Path) -> Optional[dict]:
 # graphics + pins, the way the schematic editor shows it. Y is up in symbols,
 # so it is flipped for display.
 # ---------------------------------------------------------------------------
-COL_SYMBODY = QColor("#c6c6c6")    # grayscale — body graphics
-COL_SYMPIN = QColor("#a2a2a2")     # grayscale — pins
-
-
 def render_symbol_image(block_text: str, px: int = 280) -> Optional[QImage]:
     key = ("sym", hash(block_text), px)
     hit = _img_cache_get(key)
@@ -867,7 +893,7 @@ def paint_mesh(painter, w: int, h: int, verts, faces,
     def to2d(pt):
         return QPointF((pt[0] - ctr[0]) * s + cxpx, (pt[1] - ctr[1]) * s + cypx)
 
-    base = (198, 204, 212)
+    base = MESH_BASE
     for i in order:
         sh = shade[i]
         col = QColor(int(base[0] * sh), int(base[1] * sh), int(base[2] * sh))

@@ -202,7 +202,7 @@ def _prompt_choose_location(parent=None) -> Optional[Path]:
     box.setInformativeText(
         "Open an existing library folder (e.g. a git clone), or create a new one "
         "seeded from the bundled snapshot. You can change this later in Settings.")
-    open_btn = box.addButton("Open Existing…", QMessageBox.AcceptRole)
+    open_btn = box.addButton("Open Existing", QMessageBox.AcceptRole)
     new_btn = box.addButton("Create New…", QMessageBox.AcceptRole)
     box.addButton("Quit", QMessageBox.RejectRole)
     box.exec_()

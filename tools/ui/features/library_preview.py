@@ -219,12 +219,19 @@ class PartDetail(QWidget):
         self._mdl = PreviewCard("3D Model")
         for c in (self._sym, self._fp, self._mdl):
             lay.addWidget(c)
-        self._relink_btn = W.btn("Re-link Model...", "ghost",
+        self._relink_btn = W.btn("Relink Model", "ghost",
                                  "Manually associate this footprint with a 3D model",
                                  self._open_relink)
         lay.addWidget(self._relink_btn)
         self._current = None
         lay.addStretch(1)
+        # re-render the previews on a theme toggle so their (baked-in) background and
+        # layer ramp track the new surface instead of staying an opposite-theme PNG
+        W.register_restyle(self._retheme_previews)
+
+    def _retheme_previews(self):
+        if getattr(self, "_current", None):
+            self.show(self._current)
 
     def show(self, row: Optional[dict]):
         if not row:

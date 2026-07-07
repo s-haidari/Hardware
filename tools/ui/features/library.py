@@ -232,7 +232,7 @@ def _import_panel(ctx, _state) -> QWidget:
                      lambda r, ok: ctx.services.log("Import finished." if ok else "Import failed, see status."),
                      busy=f"Importing {Path(fn).name}...")
 
-    pick = W.btn("Choose ZIP...", "primary", "Extract, move, merge, auto-link, enrich, then commit", import_zip)
+    pick = W.btn("Choose ZIP", "primary", "Extract, move, merge, auto-link, enrich, then commit", import_zip)
     row = QHBoxLayout(); row.addStretch(1); row.addWidget(pick); row.addStretch(1)
     drop.body.addLayout(row)
     lay.addWidget(drop)
