@@ -11,8 +11,8 @@ from typing import Optional
 import LibraryManager as LM
 import fp_render as R
 from PyQt5.QtCore import Qt, QRectF
-from PyQt5.QtGui import QPainter
-from PyQt5.QtWidgets import QWidget, QFrame, QVBoxLayout, QLabel
+from PyQt5.QtGui import QPainter, QColor
+from PyQt5.QtWidgets import QWidget, QFrame, QVBoxLayout, QLabel, QListWidget, QListWidgetItem, QLineEdit, QHBoxLayout
 
 from .. import theme as T
 from ..util import run_populate, clear_layout
@@ -265,3 +265,83 @@ class PartDetail(QWidget):
                         f"{summ['triangles']} Triangles · "
                         f"{sz[0]} × {sz[1]} × {sz[2]} mm")
         run_populate(self._ctx, job, done)
+
+
+def _asset_dot_color(row: dict) -> str:
+    """Semantic asset-state color: err=dangling, warn=missing model, else ok."""
+    if row.get("dangling"):
+        return T.t("err")
+    if not row.get("has_model") or not row.get("has_footprint"):
+        return T.t("warn")
+    return T.t("ok")
+
+
+class PartsList(QWidget):
+    """Selectable master list of grouped parts + a client-side search filter.
+    One 6px asset-state dot per row (the only color); selection uses the native
+    row wash. No borders."""
+
+    def __init__(self, rows, on_select, parent=None):
+        super().__init__(parent)
+        self._rows = list(rows)
+        self._on_select = on_select
+        lay = QVBoxLayout(self); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(8)
+
+        self._search = QLineEdit(); self._search.setPlaceholderText("Search Parts...")
+        self._search.setFont(T.ui_font(10))
+        self._search.textChanged.connect(self.filter)
+        W.register_restyle(lambda: self._search.setStyleSheet(
+            f"QLineEdit{{background:{T.t('inset')};border:none;border-radius:6px;"
+            f"padding:6px 10px;color:{T.t('txt1')};}}"))
+        lay.addWidget(self._search)
+
+        self._list = QListWidget()
+        self._list.setFrameShape(QFrame.NoFrame)
+        self._list.currentRowChanged.connect(self._on_row)
+        W.register_restyle(self._restyle_list)
+        lay.addWidget(self._list, 1)
+
+        self._build_items(self._rows)
+        if self._list.count():
+            self._list.setCurrentRow(0)
+
+    def _restyle_list(self):
+        self._list.setStyleSheet(
+            f"QListWidget{{background:transparent;border:none;}}"
+            f"QListWidget::item{{color:{T.t('txt1')};padding:7px 8px;border-radius:6px;}}"
+            f"QListWidget::item:hover{{background:{T.t('card_hover')};}}"
+            f"QListWidget::item:selected{{background:{T.t('inset')};color:{T.t('txt1')};}}")
+
+    def _build_items(self, rows):
+        self._list.clear()
+        self._visible = []
+        for row in rows:
+            label = str(row.get("mpn") or row.get("name") or "")
+            it = QListWidgetItem("  " + label)
+            it.setForeground(QColor(_asset_dot_color(row)))  # dot proxy via a leading swatch
+            it.setData(Qt.UserRole, row)
+            it.setFont(T.mono_font(10))
+            self._list.addItem(it)
+            self._visible.append(row)
+
+    def filter(self, query: str):
+        q = (query or "").strip().lower()
+        rows = [r for r in self._rows
+                if q in str(r.get("mpn") or "").lower()
+                or q in str(r.get("name") or "").lower()
+                or q in str(r.get("manufacturer") or "").lower()] if q else self._rows
+        self._build_items(rows)
+        if self._list.count():
+            self._list.setCurrentRow(0)
+
+    def visible_count(self) -> int:
+        return self._list.count()
+
+    def select_index(self, i: int):
+        self._list.setCurrentRow(i)
+
+    def _on_row(self, i: int):
+        if i < 0 or i >= len(self._visible):
+            return
+        if self._on_select:
+            self._on_select(self._visible[i])

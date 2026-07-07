@@ -147,3 +147,21 @@ def test_partdetail_show_populates_and_clears(tmp_path):
     det.grab()                       # renders without raising
     det.show(None)                   # clearing is safe
     det.grab()
+
+
+def test_partslist_filter_and_select():
+    from ui.features.library_preview import PartsList
+    rows = [
+        {"name": "R_0402", "mpn": "R_0402", "manufacturer": "Yageo",
+         "has_footprint": True, "has_model": True, "dangling": False},
+        {"name": "2N7002", "mpn": "2N7002", "manufacturer": "onsemi",
+         "has_footprint": True, "has_model": False, "dangling": False},
+    ]
+    picked = []
+    lst = PartsList(rows, on_select=picked.append)
+    assert picked and picked[-1]["mpn"] == "R_0402"      # first row auto-selected
+    assert lst.visible_count() == 2
+    lst.filter("2n7")
+    assert lst.visible_count() == 1
+    lst.filter("")
+    assert lst.visible_count() == 2
