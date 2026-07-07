@@ -24,7 +24,23 @@ from pathlib import Path
 from datetime import datetime
 
 # ---------- Configuration ----------
-LOG_DIR = Path(__file__).parent / "logs"  # tools/logs/
+def _log_dir() -> Path:
+    """Where rename preview/apply logs go. Under a frozen --onefile exe __file__
+    points into the throwaway PyInstaller bundle, so redirect writes to the user's
+    chosen library location; in dev this is tools/logs as before (SP1)."""
+    if getattr(sys, "frozen", False):
+        try:
+            import LibraryManager as _LM
+            loc = _LM.library_location()
+            if loc:
+                return Path(loc) / "logs"
+        except Exception:
+            pass
+        return Path(sys.executable).resolve().parent / "logs"
+    return Path(__file__).parent / "logs"
+
+
+LOG_DIR = _log_dir()  # tools/logs/ in dev; re-resolved per run when frozen
 
 # Standard KiCad component designators (ordered by priority: multi-char first)
 STANDARD_DESIGNATORS = [
@@ -1499,7 +1515,8 @@ def main():
 
     # Save preview logs
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    
+
+    LOG_DIR = _log_dir()  # re-resolve at run time so a frozen exe writes to the library location
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     
     preview_log = LOG_DIR / f"{timestamp}_preview.json"

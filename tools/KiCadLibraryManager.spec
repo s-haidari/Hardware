@@ -1,26 +1,60 @@
 # -*- mode: python ; coding: utf-8 -*-
+#
+# SP1: single source of truth for the frozen build (was stale/ignored — the CI
+# workflow now runs `pyinstaller tools/KiCadLibraryManager.spec`).
+#
+# Bundles, beyond the UI assets:
+#   * data/stm32.sqlite  -> data/            (prebuilt in CI; read-only at runtime)
+#   * libs/              -> seed/libs/       (seed copied to the user's location)
+#   * catalog_assets/    -> seed/catalog_assets/ (if present)
+#   * app_secrets.py     (baked Mouser key; hidden import)
+# The 19 MB cubemx_db XML is intentionally NOT bundled — it is only needed to
+# BUILD the DB, which now happens pre-freeze in CI.
 import os
 
-here = os.path.abspath(SPECPATH)
+here = os.path.abspath(SPECPATH)           # the tools/ directory
+repo_root = os.path.dirname(here)          # the repo root (holds libs/, catalog_assets/)
 
 
-def _tree(rel):
-    src = os.path.join(here, rel)
-    if not os.path.isdir(src):
+def _files(src_dir, dest_prefix):
+    """(abs_file, dest_dir) for every file in src_dir, one level deep."""
+    if not os.path.isdir(src_dir):
         return []
-    return [(os.path.join(src, f), rel) for f in os.listdir(src)
-            if os.path.isfile(os.path.join(src, f))]
+    return [(os.path.join(src_dir, f), dest_prefix)
+            for f in os.listdir(src_dir)
+            if os.path.isfile(os.path.join(src_dir, f))]
 
 
-# Assets resolved at runtime via resource_path(...).
+def _tree(src_dir, dest_prefix):
+    """(abs_file, dest_dir) for every file under src_dir, preserving structure."""
+    out = []
+    if not os.path.isdir(src_dir):
+        return out
+    for root, _dirs, files in os.walk(src_dir):
+        rel = os.path.relpath(root, src_dir)
+        dest = dest_prefix if rel == '.' else os.path.join(dest_prefix, rel)
+        for f in files:
+            out.append((os.path.join(root, f), dest))
+    return out
+
+
+# UI assets resolved at runtime via resource_path(...) / _fonts_dir().
 datas = []
 for asset in ('app_icon.ico', 'app_icon.png', 'caret_down.png', 'caret_up.png',
               'check_dark.png', 'check_light.png', 'icon_sun.png', 'icon_moon.png'):
     p = os.path.join(here, asset)
     if os.path.exists(p):
         datas.append((p, '.'))
-datas += _tree('lucide')   # Lucide SVG icons  -> lucide/*.svg
-datas += _tree('fonts')    # bundled Inter TTFs -> fonts/*.ttf
+datas += _files(os.path.join(here, 'lucide'), 'lucide')   # Lucide SVG icons
+datas += _files(os.path.join(here, 'fonts'), 'fonts')     # bundled Inter TTFs
+
+# SP1 read-only bundle: prebuilt STM32 DB (CI writes tools/data/stm32.sqlite).
+datas += _files(os.path.join(here, 'data'), 'data')
+
+# SP1 seed: the parts library + catalog assets, copied to the user location on
+# first run. Bundled under seed/ so bundle_path('seed/...') finds them.
+datas += _tree(os.path.join(repo_root, 'libs'), os.path.join('seed', 'libs'))
+datas += _tree(os.path.join(repo_root, 'catalog_assets'), os.path.join('seed', 'catalog_assets'))
 
 a = Analysis(
     [os.path.join(here, 'LibraryManager.py')],
@@ -29,12 +63,23 @@ a = Analysis(
     datas=datas,
     hiddenimports=[
         'PyQt5.QtSvg',               # Lucide SVG rendering
+        'app_secrets',               # baked Mouser key (SP1)
+        'ui.shell',
+        'ui.features',
+        'ui.features.bench',
+        'ui.features.library',
+        'ui.features.projects',
+        'ui.features.settings',
         'fp_render',                 # lazily imported for previews / catalog
         'kicad_tools',               # KiCad Tools tab (lazily imported)
         'nd_wizard',
         'nd_netclass_manager',
         'nd_project_settings_manager',
         'merge_symbols',
+        'stm32_pins_tab',
+        'stm32_db',
+        'stm32_authority',
+        'cascadio',                  # native OpenCASCADE STEP loader (3D)
     ],
     hookspath=[],
     hooksconfig={},
@@ -43,6 +88,15 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
+
+# The 3D stack ships its native libs/data via collect-all (kept from the CLI build).
+for pkg in ('trimesh', 'numpy', 'cascadio'):
+    from PyInstaller.utils.hooks import collect_all
+    _bins, _datas, _hidden = collect_all(pkg)
+    a.binaries += _bins
+    a.datas += _datas
+    a.hiddenimports += _hidden
+
 pyz = PYZ(a.pure)
 
 exe = EXE(
@@ -51,7 +105,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='KiCadLibraryManager',
+    name='KiCad Manager',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

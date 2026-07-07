@@ -50,7 +50,6 @@ docs/_build/
 Thumbs.db
 .vscode/
 .idea/
-CLAUDE.md
 
 # --- Binaries produced locally (do not version) ---
 *.dll
@@ -62,7 +61,6 @@ CLAUDE.md
 *.zip
 *.tgz
 *.gz
-
 
 # NOTE: CAD assets (*.step, *.stp) are intentionally NOT ignored.
 # We'll track them via Git LFS (below), not ignore them.
@@ -88,3 +86,9 @@ tools/data/
 
 # --- Machine-local config + secrets (Mouser API key etc.) — never commit ---
 tools/config.json
+
+# --- Claude Code session / chat exports dropped in the tree — never commit ---
+*local-command*.txt
+
+# --- SP3-A render-gate output (regenerate with tools/ui/render_gate.py) ---
+build/
