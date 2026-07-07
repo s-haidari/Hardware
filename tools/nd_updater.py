@@ -73,11 +73,29 @@ def is_newer(latest: str, current: str) -> bool:
 
 
 def pick_asset(release: dict, name: str = _ASSET) -> Tuple[Optional[str], Optional[str], int]:
-    """From a GitHub release JSON, return (browser_download_url, api_asset_url, size)
-    for the asset named `name`, or (None, None, 0) if absent."""
-    for a in (release.get("assets") or []):
+    """From a GitHub release JSON, return (browser_download_url, api_asset_url, size) for
+    the release exe, or (None, None, 0) if absent.
+
+    GitHub rewrites spaces in uploaded asset filenames to dots — 'KiCad Manager.exe' is
+    stored on the release as 'KiCad.Manager.exe' — so match tolerantly: exact name first,
+    then a space/dot-insensitive match, then (unambiguously) the sole .exe asset."""
+    assets = release.get("assets") or []
+
+    def _row(a):
+        return a.get("browser_download_url"), a.get("url"), int(a.get("size") or 0)
+
+    def _norm(s):
+        return (s or "").replace(" ", ".").lower()
+
+    for a in assets:                                    # exact
         if a.get("name") == name:
-            return a.get("browser_download_url"), a.get("url"), int(a.get("size") or 0)
+            return _row(a)
+    for a in assets:                                    # spaces <-> dots tolerant
+        if _norm(a.get("name")) == _norm(name):
+            return _row(a)
+    exes = [a for a in assets if str(a.get("name") or "").lower().endswith(".exe")]
+    if len(exes) == 1:                                  # the only exe — unambiguous
+        return _row(exes[0])
     return None, None, 0
 
 

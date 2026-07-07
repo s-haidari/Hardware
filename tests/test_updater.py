@@ -48,7 +48,27 @@ def test_pick_asset():
     assert dl == "http://x/km.exe"
     assert api == "http://api/assets/9"
     assert size == 4242
-    assert U.pick_asset(_release(name="mismatch.exe")) == (None, None, 0)
+
+
+def test_pick_asset_github_dots_for_spaces():
+    # GitHub stores 'KiCad Manager.exe' as 'KiCad.Manager.exe' — must still match.
+    rel = _release(name="KiCad.Manager.exe")
+    dl, api, size = U.pick_asset(rel, name="KiCad Manager.exe")
+    assert dl == "http://x/km.exe" and api == "http://api/assets/9"
+
+
+def test_pick_asset_falls_back_to_sole_exe():
+    rel = {"tag_name": "v2", "assets": [
+        {"name": "notes.txt", "browser_download_url": "u1", "url": "a1", "size": 1},
+        {"name": "Totally-Renamed.exe", "browser_download_url": "u2", "url": "a2", "size": 9},
+    ]}
+    assert U.pick_asset(rel, name="KiCad Manager.exe") == ("u2", "a2", 9)
+
+
+def test_pick_asset_none_when_no_exe():
+    rel = {"tag_name": "v2", "assets": [
+        {"name": "notes.txt", "browser_download_url": "u", "url": "a", "size": 1}]}
+    assert U.pick_asset(rel, name="KiCad Manager.exe") == (None, None, 0)
 
 
 def test_evaluate_release_newer():
