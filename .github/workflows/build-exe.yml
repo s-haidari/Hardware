@@ -65,6 +65,22 @@ jobs:
         env:
           INPUT_VERSION: ${{ inputs.version }}
 
+      - name: Bake updater token (private-repo release access)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ([string]::IsNullOrEmpty($env:UPDATER_TOKEN)) {
+            Write-Host "No UPDATER_TOKEN secret set — auto-update will need a GITHUB_TOKEN env var at runtime."
+          } else {
+            # GitHub masks the secret in logs; -replace runs per line (Get-Content yields an array).
+            $path = "tools/app_secrets.py"
+            $tok = $env:UPDATER_TOKEN
+            (Get-Content $path) -replace '^GITHUB_TOKEN_DEFAULT = .*$', "GITHUB_TOKEN_DEFAULT = `"$tok`"" | Set-Content $path
+            Write-Host "Baked GITHUB_TOKEN_DEFAULT into app_secrets.py"
+          }
+        env:
+          UPDATER_TOKEN: ${{ secrets.UPDATER_TOKEN }}
+
       - name: Build KiCad Manager.exe
         shell: pwsh
         run: |
