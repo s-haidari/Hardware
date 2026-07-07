@@ -12,9 +12,11 @@ import LibraryManager as LM
 import fp_render as R
 from PyQt5.QtCore import Qt, QRectF
 from PyQt5.QtGui import QPainter
-from PyQt5.QtWidgets import QWidget
+from PyQt5.QtWidgets import QWidget, QFrame, QVBoxLayout, QLabel
 
 from .. import theme as T
+from ..util import run_populate, clear_layout
+from .. import widgets as W
 
 
 def symbol_block_for(cfg: dict, name: str) -> Optional[str]:
@@ -135,3 +137,127 @@ class MeshView(QWidget):
             e.accept()
         else:
             e.ignore()
+
+
+class PreviewCard(QFrame):
+    """One elevation step (inset surface, 8px radius, no border): a quiet eyebrow,
+    a render surface, and an optional dim caption. Empty state is a dim sentence."""
+
+    def __init__(self, title: str, parent=None):
+        super().__init__(parent)
+        self.setObjectName("ndinset")
+        W.register_restyle(lambda: self.setStyleSheet(
+            f"QFrame#ndinset{{background:{T.t('inset')};border:none;border-radius:8px;}}"))
+        self._lay = QVBoxLayout(self)
+        self._lay.setContentsMargins(14, 12, 14, 14); self._lay.setSpacing(8)
+        self._lay.addWidget(W.eyebrow(title))
+        self._surface = QVBoxLayout(); self._lay.addLayout(self._surface)
+        self._cap = QLabel(""); self._cap.setFont(T.ui_font(9))
+        W.register_restyle(lambda: self._cap.setStyleSheet(
+            f"color:{T.t('txt3')};background:transparent;"))
+        self._lay.addWidget(self._cap)
+
+    def _clear_surface(self):
+        clear_layout(self._surface)
+
+    def set_image(self, img):
+        self._clear_surface()
+        if img is None or img.isNull():
+            self.set_empty("Not Available")
+            return
+        lab = QLabel(); lab.setAlignment(Qt.AlignCenter)
+        from PyQt5.QtGui import QPixmap
+        lab.setPixmap(QPixmap.fromImage(img).scaledToWidth(280, Qt.SmoothTransformation))
+        self._surface.addWidget(lab)
+
+    def set_widget(self, w: QWidget):
+        self._clear_surface(); self._surface.addWidget(w)
+
+    def set_caption(self, text: str):
+        self._cap.setText(text or "")
+        self._cap.setVisible(bool(text))
+
+    def set_empty(self, sentence: str):
+        self._clear_surface()
+        lab = W.body(sentence, dim=True); lab.setAlignment(Qt.AlignCenter)
+        self._surface.addWidget(lab)
+        self.set_caption("")
+
+
+class PartDetail(QWidget):
+    """The right pane: identity header + three stacked preview cards. show(row)
+    swaps content; each preview renders off the GUI thread via run_populate."""
+
+    def __init__(self, ctx, parent=None):
+        super().__init__(parent)
+        self._ctx = ctx
+        lay = QVBoxLayout(self); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(14)
+        self._mpn = QLabel(""); self._mpn.setFont(T.ui_font(13, semibold=True))
+        W.register_restyle(lambda: self._mpn.setStyleSheet(
+            f"color:{T.t('txt1')};background:transparent;"))
+        self._meta = W.body("", dim=True); self._meta.setWordWrap(True)
+        lay.addWidget(self._mpn); lay.addWidget(self._meta)
+        self._sym = PreviewCard("Symbol")
+        self._fp = PreviewCard("Footprint")
+        self._mdl = PreviewCard("3D Model")
+        for c in (self._sym, self._fp, self._mdl):
+            lay.addWidget(c)
+        lay.addStretch(1)
+
+    def show(self, row: Optional[dict]):
+        if not row:
+            self._mpn.setText(""); self._meta.setText("")
+            for c in (self._sym, self._fp, self._mdl):
+                c.set_empty("Select A Part")
+            return
+        self._mpn.setText(str(row.get("mpn") or row.get("name") or ""))
+        bits = [b for b in (row.get("manufacturer"), row.get("description")) if b]
+        self._meta.setText(" · ".join(str(b) for b in bits))
+        self._render_symbol(row)
+        self._render_footprint(row)
+        self._render_model(row)
+
+    def _render_symbol(self, row):
+        block = symbol_block_for(self._ctx.cfg, (row.get("symbols") or [None])[0])
+        if not block:
+            self._sym.set_empty("No Symbol"); return
+        run_populate(self._ctx, lambda: R.render_symbol_image(block),
+                     lambda img, ok: self._sym.set_image(img))
+
+    def _render_footprint(self, row):
+        path = footprint_path_for(self._ctx.cfg, row)
+        if not path:
+            self._fp.set_empty("No Footprint"); return
+
+        def job():
+            return R.render_footprint_image(path), R.footprint_summary(path)
+
+        def done(res, ok):
+            img, summ = res if res else (None, None)
+            self._fp.set_image(img)
+            if summ:
+                self._fp.set_caption(
+                    f"{summ['pads']} Pads · {summ['width_mm']} × "
+                    f"{summ['height_mm']} mm")
+        run_populate(self._ctx, job, done)
+
+    def _render_model(self, row):
+        path = model_path_for(self._ctx.cfg, row)
+        if not path:
+            self._mdl.set_empty("No 3D Model"); return
+
+        def job():
+            return resolve_model_render(path), R.step_summary(path)
+
+        def done(res, ok):
+            (kind, payload), summ = res if res else (("none", None), None)
+            if kind == "none":
+                self._mdl.set_empty("3D Preview Unavailable"); return
+            self._mdl.set_widget(MeshView(kind, payload))
+            if summ:
+                sz = summ.get("size_mm") or []
+                if len(sz) == 3:
+                    self._mdl.set_caption(
+                        f"{summ['triangles']} Triangles · "
+                        f"{sz[0]} × {sz[1]} × {sz[2]} mm")
+        run_populate(self._ctx, job, done)

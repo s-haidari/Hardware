@@ -83,3 +83,32 @@ def test_meshview_constructs_for_each_kind():
     sv = MeshView("image", img)
     assert sv.interactive is False
     sv.grab()
+
+
+def _fake_ctx(cfg):
+    """A Context-like object with synchronous run_async (renders inline in tests)."""
+    class _Svc:
+        def __init__(self): self.logs = []
+        def log(self, m): self.logs.append(str(m))
+        def run_async(self, fn, ok=None, done_cb=None):
+            fn()
+            if done_cb:
+                done_cb(True)
+    from types import SimpleNamespace
+    return SimpleNamespace(cfg=cfg, services=_Svc())
+
+
+def test_partdetail_show_populates_and_clears(tmp_path):
+    from ui.features import library_preview as P
+    cfg = _cfg(tmp_path)
+    ctx = _fake_ctx(cfg)
+    det = P.PartDetail(ctx)
+    # a real grouped-style row
+    row = {"name": "R_0402", "mpn": "R_0402", "manufacturer": "Yageo",
+           "description": "Chip Resistor", "datasheet": None,
+           "footprint": "R_0402", "symbols": ["R_0402"], "model": None,
+           "has_symbol": True, "has_footprint": True, "has_model": False}
+    det.show(row)
+    det.grab()                       # renders without raising
+    det.show(None)                   # clearing is safe
+    det.grab()
