@@ -56,11 +56,25 @@ datas += _files(os.path.join(here, 'data'), 'data')
 datas += _tree(os.path.join(repo_root, 'libs'), os.path.join('seed', 'libs'))
 datas += _tree(os.path.join(repo_root, 'catalog_assets'), os.path.join('seed', 'catalog_assets'))
 
+# The 3D stack ships its native libs/data via collect_all. collect_all returns
+# (src, dest) 2-tuples in the Analysis-INPUT format, so they must be fed through
+# Analysis (which normalizes them into 3-tuple TOC entries). Appending them to
+# a.binaries / a.datas AFTER Analysis mixes raw 2-tuples into an already
+# normalized TOC and breaks EXE()'s normalize_toc under PyInstaller 6.x
+# (ValueError: not enough values to unpack (expected 3, got 2)).
+from PyInstaller.utils.hooks import collect_all
+_extra_bins, _extra_datas, _extra_hidden = [], [], []
+for pkg in ('trimesh', 'numpy', 'cascadio'):
+    _b, _d, _h = collect_all(pkg)
+    _extra_bins += _b
+    _extra_datas += _d
+    _extra_hidden += _h
+
 a = Analysis(
     [os.path.join(here, 'LibraryManager.py')],
     pathex=[here],
-    binaries=[],
-    datas=datas,
+    binaries=_extra_bins,
+    datas=datas + _extra_datas,
     hiddenimports=[
         'PyQt5.QtSvg',               # Lucide SVG rendering
         'app_secrets',               # baked Mouser key (SP1)
@@ -80,7 +94,7 @@ a = Analysis(
         'stm32_db',
         'stm32_authority',
         'cascadio',                  # native OpenCASCADE STEP loader (3D)
-    ],
+    ] + _extra_hidden,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -88,14 +102,6 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
-
-# The 3D stack ships its native libs/data via collect-all (kept from the CLI build).
-for pkg in ('trimesh', 'numpy', 'cascadio'):
-    from PyInstaller.utils.hooks import collect_all
-    _bins, _datas, _hidden = collect_all(pkg)
-    a.binaries += _bins
-    a.datas += _datas
-    a.hiddenimports += _hidden
 
 pyz = PYZ(a.pure)
 
