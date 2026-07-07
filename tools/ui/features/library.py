@@ -77,7 +77,7 @@ def _export_catalog(ctx):
     log = LogSink(ctx.services)
     run_populate(ctx, lambda: LM.export_catalog(ctx.cfg, log),
                  lambda p, ok: ctx.services.log(
-                     f"Catalog written to {p}" if p else "Catalog export failed."),
+                     f"Catalog written to {p}" if ok else "Catalog export failed."),
                  busy="Exporting catalog...")
 
 
