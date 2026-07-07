@@ -177,6 +177,10 @@ class PreviewCard(QFrame):
         self._cap.setText(text or "")
         self._cap.setVisible(bool(text))
 
+    def caption_text(self) -> str:
+        """Read-only accessor for the current caption label text."""
+        return self._cap.text()
+
     def set_empty(self, sentence: str):
         self._clear_surface()
         lab = W.body(sentence, dim=True); lab.setAlignment(Qt.AlignCenter)
@@ -222,7 +226,7 @@ class PartDetail(QWidget):
         if not block:
             self._sym.set_empty("No Symbol"); return
         run_populate(self._ctx, lambda: R.render_symbol_image(block),
-                     lambda img, ok: self._sym.set_image(img))
+                     lambda img, ok: self._sym.set_image(img if ok else None))
 
     def _render_footprint(self, row):
         path = footprint_path_for(self._ctx.cfg, row)

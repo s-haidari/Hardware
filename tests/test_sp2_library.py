@@ -98,6 +98,41 @@ def _fake_ctx(cfg):
     return SimpleNamespace(cfg=cfg, services=_Svc())
 
 
+def test_partdetail_renders_real_previews(tmp_path, monkeypatch):
+    """Done-callback happy path: monkeypatched renders return real images so the
+    footprint caption is populated, confirming the populate(result, ok) path fires."""
+    from ui.features import library_preview as P
+    import fp_render
+    from PyQt5.QtGui import QImage
+
+    cfg = _cfg(tmp_path)
+    ctx = _fake_ctx(cfg)
+
+    good_img = QImage(8, 8, QImage.Format_ARGB32)
+    good_img.fill(0xFF0000FF)  # opaque blue — definitely not null
+
+    monkeypatch.setattr(fp_render, "render_symbol_image",
+                        lambda block: good_img)
+    monkeypatch.setattr(fp_render, "render_footprint_image",
+                        lambda path: good_img)
+    monkeypatch.setattr(fp_render, "footprint_summary",
+                        lambda path: {"pads": 2, "width_mm": 1.0, "height_mm": 0.5})
+
+    det = P.PartDetail(ctx)
+    row = {
+        "name": "R_0402", "mpn": "R_0402",
+        "manufacturer": "Yageo", "description": "Chip Resistor",
+        "symbols": ["R_0402"], "footprint": "R_0402", "model": None,
+    }
+    det.show(row)
+
+    # The footprint done-callback happy path should have populated the caption
+    cap = det._fp.caption_text()
+    assert cap != "", f"Expected a non-empty footprint caption, got: {cap!r}"
+    assert "2" in cap and "1.0" in cap, f"Caption should contain pad/size info: {cap!r}"
+    det.grab()  # must not raise
+
+
 def test_partdetail_show_populates_and_clears(tmp_path):
     from ui.features import library_preview as P
     cfg = _cfg(tmp_path)
