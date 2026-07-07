@@ -204,4 +204,15 @@ def test_scan_corrupt_reports(tmp_path, monkeypatch):
     monkeypatch.setattr(LM, "find_corrupt_kicad_files",
                         lambda root: [(str(tmp_path / "bad.kicad_sym"), "unbalanced parens")])
     L._scan_corrupt(ctx)
-    assert any("bad.kicad_sym" in m or "1" in m for m in ctx.services.logs)
+    assert any("1 file" in m for m in ctx.services.logs)          # count reported
+    assert any("bad.kicad_sym" in m and "unbalanced" in m for m in ctx.services.logs)  # per-file line
+
+
+def test_scan_corrupt_empty_is_clean(tmp_path, monkeypatch):
+    from ui.features import library as L
+    import LibraryManager as LM
+    cfg = _cfg(tmp_path); cfg["RepoRoot"] = str(tmp_path)
+    ctx = _fake_ctx(cfg)
+    monkeypatch.setattr(LM, "find_corrupt_kicad_files", lambda root: [])
+    L._scan_corrupt(ctx)
+    assert any("no corrupt files" in m for m in ctx.services.logs)

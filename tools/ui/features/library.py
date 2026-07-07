@@ -204,6 +204,8 @@ def _scan_corrupt(ctx):
     root = ctx.cfg.get("RepoRoot") or ctx.cfg.get("Libs") or "."
 
     def done(rows, ok):
+        if not ok:
+            ctx.services.log("Corruption scan failed, see status."); return
         n = len(rows or [])
         if not n:
             ctx.services.log("Corruption scan: no corrupt files found."); return
