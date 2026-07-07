@@ -181,7 +181,6 @@ def test_parts_panel_builds_master_detail(tmp_path):
 
 def test_enrich_dry_run_then_apply(tmp_path, monkeypatch):
     from ui.features import library as L
-    from types import SimpleNamespace
     cfg = _cfg(tmp_path)
     ctx = _fake_ctx(cfg)
     calls = []

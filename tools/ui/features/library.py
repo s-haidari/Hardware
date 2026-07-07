@@ -143,6 +143,7 @@ def _sourcing_panel(ctx, _state) -> QWidget:
     if lookup is None:
         result.addWidget(W.body("No Mouser API key configured. Add one in Settings to enable live sourcing.", dim=True))
         btn_refresh.setEnabled(False)
+        enrich_btn.setEnabled(False)
         return root
 
     def refresh():
