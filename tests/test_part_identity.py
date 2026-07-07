@@ -5,6 +5,7 @@ import os
 import sys
 import pathlib
 import unittest
+from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "tools"))
@@ -110,14 +111,24 @@ class ProviderChainTests(unittest.TestCase):
                          "DigiKey")
 
     def test_providers_from_config(self):
-        self.assertIsNone(LM.providers_from_config({}))                    # no keys
-        self.assertIsNotNone(LM.providers_from_config({"MouserApiKey": "k"}))  # Mouser only
+        # SP1 decision #3: key comes from env or the baked default, never config.json.
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MOUSER_API_KEY", None)
+            with mock.patch.object(LM.app_secrets, "MOUSER_API_KEY_DEFAULT", ""):
+                self.assertIsNone(LM.providers_from_config({}))                         # no key anywhere
+                self.assertIsNone(LM.providers_from_config({"MouserApiKey": "k"}))      # config key ignored
+            with mock.patch.object(LM.app_secrets, "MOUSER_API_KEY_DEFAULT", "baked"):
+                self.assertIsNotNone(LM.providers_from_config({}))                      # baked key -> live
 
     def test_search_parts_needs_a_key(self):
-        r = LM.search_parts("anything", {})
-        self.assertIn("Mouser", r["error"])
-        self.assertEqual(r["results"], [])
-        self.assertEqual(LM.search_parts("", {"MouserApiKey": "k"})["error"], "empty query")
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MOUSER_API_KEY", None)
+            with mock.patch.object(LM.app_secrets, "MOUSER_API_KEY_DEFAULT", ""):
+                r = LM.search_parts("anything", {})
+                self.assertIn("Mouser", r["error"])
+                self.assertEqual(r["results"], [])
+            with mock.patch.object(LM.app_secrets, "MOUSER_API_KEY_DEFAULT", "baked"):
+                self.assertEqual(LM.search_parts("", {})["error"], "empty query")
 
     def test_sourcing_flags_not_on_mouser(self):
         import tempfile
@@ -375,8 +386,14 @@ class ConsolidatedBomTests(unittest.TestCase):
             self.assertIn("Total,Parent,Card", b["csv"])
 
     def test_mouser_lookup_from_config_needs_a_key(self):
-        self.assertIsNone(LM.mouser_lookup_from_config({}))
-        self.assertIsNotNone(LM.mouser_lookup_from_config({"MouserApiKey": "abc"}))
+        # SP1 decision #3: env or baked default only; config.json key is ignored.
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MOUSER_API_KEY", None)
+            with mock.patch.object(LM.app_secrets, "MOUSER_API_KEY_DEFAULT", ""):
+                self.assertIsNone(LM.mouser_lookup_from_config({}))
+                self.assertIsNone(LM.mouser_lookup_from_config({"MouserApiKey": "abc"}))
+            with mock.patch.object(LM.app_secrets, "MOUSER_API_KEY_DEFAULT", "baked"):
+                self.assertIsNotNone(LM.mouser_lookup_from_config({}))
 
 
 if __name__ == "__main__":

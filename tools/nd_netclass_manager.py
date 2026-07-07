@@ -652,16 +652,32 @@ def create_vault_standard_template(profile: str = DEFAULT_NETCLASS_PROFILE) -> N
 # The editable vault standard is saved here; when absent, the built-in default
 # above is used. "Save as Vault Standard" writes this file so the canonical
 # standard can be changed without editing code.
-VAULT_STANDARD_PATH = Path(__file__).resolve().parent / "vault_standard.json"
+def _vault_standard_path() -> Path:
+    """Where the editable vault standard is read/written. Under a frozen --onefile
+    exe __file__ points into the throwaway PyInstaller bundle, so "Save as Vault
+    Standard" must write to the user's library location; dev keeps it next to the
+    module (SP1)."""
+    import sys
+    if getattr(sys, "frozen", False):
+        try:
+            import LibraryManager as _LM
+            loc = _LM.library_location()
+            if loc:
+                return Path(loc) / "vault_standard.json"
+        except Exception:
+            pass
+        return Path(sys.executable).resolve().parent / "vault_standard.json"
+    return Path(__file__).resolve().parent / "vault_standard.json"
 
 
 def load_vault_standard() -> NetClassManager:
     """The vault-standard net classes: the saved editable standard if present,
     otherwise the built-in default template."""
-    if VAULT_STANDARD_PATH.exists():
+    path = _vault_standard_path()
+    if path.exists():
         try:
             m = NetClassManager()
-            m.import_template(VAULT_STANDARD_PATH)
+            m.import_template(path)
             if m.list_netclasses():
                 return m
         except Exception:
@@ -671,8 +687,9 @@ def load_vault_standard() -> NetClassManager:
 
 def save_vault_standard(manager: NetClassManager) -> Path:
     """Persist `manager` as the canonical vault standard."""
-    manager.export_template(VAULT_STANDARD_PATH)
-    return VAULT_STANDARD_PATH
+    path = _vault_standard_path()
+    manager.export_template(path)
+    return path
 
 
 # ═══════════════════════════════════════════════════════════════════

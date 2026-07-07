@@ -44,13 +44,18 @@ def default_cubemx_source() -> Path | None:
 
 
 def default_db_path() -> Path:
-    """Where the built sqlite DB lives (override with STM32_DB). Writable even
-    when frozen (next to the .exe, not the read-only bundle)."""
+    """Where the sqlite DB lives (override with STM32_DB).
+
+    SP1: when frozen the DB is prebuilt in CI and read from the read-only bundle
+    (sys._MEIPASS/data), not built next to the exe. In dev it is the repo's
+    tools/data/stm32.sqlite as before.
+    """
     env = os.environ.get("STM32_DB")
     if env:
         return Path(env)
     if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent / "data" / "stm32.sqlite"
+        base = Path(getattr(sys, "_MEIPASS", "")) or Path(sys.executable).resolve().parent
+        return base / "data" / "stm32.sqlite"
     return _TOOLS / "data" / "stm32.sqlite"
 
 
@@ -391,7 +396,12 @@ def build_database(source_dir: Path, db_path: Path, *,
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path)
+    # SP1: the frozen DB ships prebuilt in a read-only bundle, so open it read-only
+    # (a writable open would try to create a -wal/-journal beside a read-only file).
+    if getattr(sys, "frozen", False):
+        conn = sqlite3.connect(f"file:{Path(db_path).as_posix()}?mode=ro", uri=True)
+    else:
+        conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -673,3 +683,34 @@ def package_report(conn: sqlite3.Connection, package: str) -> PackageSwitchRepor
         for pin in sorted(hist)
     ]
     return PackageSwitchReport(package=package, decisions=decisions)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CLI — dev/CI entry: build the DB from the CubeMX XML before packaging (SP1)
+#   python -m stm32_db --build [--source DIR] [--out FILE]
+# ─────────────────────────────────────────────────────────────────────────────
+def _cli(argv=None) -> int:
+    import argparse
+    ap = argparse.ArgumentParser(prog="stm32_db", description="STM32 package database tool")
+    ap.add_argument("--build", action="store_true", help="build the sqlite DB from CubeMX XML")
+    ap.add_argument("--source", help="CubeMX MCU XML dir (default: auto-detected)")
+    ap.add_argument("--out", help="output sqlite path (default: default_db_path())")
+    args = ap.parse_args(argv)
+
+    if not args.build:
+        ap.print_help()
+        return 2
+
+    source = Path(args.source) if args.source else default_cubemx_source()
+    if not source or not Path(source).is_dir():
+        print("ERROR: no CubeMX source dir (pass --source or set STM32_CUBEMX)", file=sys.stderr)
+        return 1
+    out = Path(args.out) if args.out else default_db_path()
+    print(f"Building STM32 DB\n  source: {source}\n  out:    {out}")
+    res = build_database(source, out)
+    print(f"Done: {res.mcus} MCUs, {len(res.packages)} packages -> {out}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_cli())

@@ -126,13 +126,23 @@ def mono_font(size: float = 9.5, semibold: bool = False) -> QFont:
     return f
 
 
+def _fonts_dir():
+    """The bundled fonts directory. Under a frozen --onefile exe __file__ points
+    into the throwaway _MEIPASS bundle, so resolve fonts from _MEIPASS directly;
+    in dev it is tools/fonts (parent.parent of this ui/ module)."""
+    import sys
+    from pathlib import Path
+    if getattr(sys, "frozen", False):
+        return Path(getattr(sys, "_MEIPASS", "")) / "fonts"
+    return Path(__file__).resolve().parent.parent / "fonts"
+
+
 def load_fonts(app) -> None:
     """Register bundled TTFs (if any) and set the base app font to the UI face."""
     try:
         import glob
-        from pathlib import Path
         from PyQt5.QtGui import QFontDatabase
-        for ttf in glob.glob(str(Path(__file__).resolve().parent.parent / "fonts" / "*.ttf")):
+        for ttf in glob.glob(str(_fonts_dir() / "*.ttf")):
             QFontDatabase.addApplicationFont(ttf)
     except Exception:  # noqa: BLE001
         pass

@@ -76,6 +76,19 @@ def run_hidden(cmd, **kwargs):
 # -----------------------------
 # Configuration (edit defaults)
 # -----------------------------
+import app_secrets  # baked-in Mouser key (SP1); committed + bundled, never gitignored
+
+
+def resolve_mouser_key(cfg: Dict[str, str] = None) -> str:
+    """The Mouser API key to use (SP1 decision #3).
+
+    Resolution: MOUSER_API_KEY env var (silent dev override) -> baked default in
+    app_secrets.MOUSER_API_KEY_DEFAULT. The old config.json 'MouserApiKey' is no
+    longer consulted; `cfg` is accepted only for call-site compatibility.
+    """
+    return os.environ.get("MOUSER_API_KEY") or app_secrets.MOUSER_API_KEY_DEFAULT
+
+
 def detect_repo_root() -> Path:
     """Where the library lives.
 
@@ -89,6 +102,93 @@ def detect_repo_root() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent.parent
+
+
+# ---------------------------------------------------------------------------
+# SP1 — self-contained core: bundle vs. writable-location resolution
+#
+# Two intents replace the scattered __file__ / sys.executable logic:
+#   * bundle_path()      — read-only bundled assets (DB, seed, fonts, key).
+#   * library_location() — the writable dir the user chose (config, libs, ...).
+# In dev (not frozen) both collapse to the repo tree, so development and the
+# test suite are unaffected: none of the pointer/seed machinery runs from source.
+# ---------------------------------------------------------------------------
+
+SEED_VERSION = "1"  # bump to force a re-seed of user locations on next launch
+
+
+def bundle_path(rel: str) -> Path:
+    """A read-only bundled asset: sys._MEIPASS when frozen, the repo tree in dev."""
+    base = (Path(getattr(sys, "_MEIPASS", "")) if getattr(sys, "frozen", False)
+            else detect_repo_root())
+    return base / rel
+
+
+def pointer_path() -> Path:
+    """The fixed, tiny pointer file recording the user's chosen library location.
+
+    Frozen default: %APPDATA%/KiCadLibraryManager/workspace.json (POSIX fallback
+    ~/.config). Overridable via KICADMGR_POINTER (used by tests and power users).
+    """
+    override = os.environ.get("KICADMGR_POINTER")
+    if override:
+        return Path(override)
+    base = os.environ.get("APPDATA") or str(Path.home() / ".config")
+    return Path(base) / "KiCadLibraryManager" / "workspace.json"
+
+
+def read_pointer() -> Optional[Path]:
+    """The chosen library location, or None if unset or no longer a writable dir."""
+    try:
+        data = json.loads(pointer_path().read_text(encoding="utf-8"))
+        loc = Path(data["library_location"])
+    except Exception:
+        return None
+    return loc if (loc.is_dir() and _can_write_dir(loc)) else None
+
+
+def write_pointer(location: Path) -> None:
+    """Record the chosen library location in the pointer file."""
+    p = pointer_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"library_location": str(location)}), encoding="utf-8")
+
+
+def library_location() -> Optional[Path]:
+    """The writable working dir.
+
+    Dev (not frozen): the repo root, exactly as before. Frozen: the pointer's
+    location if it exists and is writable, else None — the signal for startup to
+    run the first-run 'Choose Library Location' flow (see ensure_library_location).
+    """
+    if not getattr(sys, "frozen", False):
+        return detect_repo_root()
+    return read_pointer()
+
+
+def seed_library(dest: Path, seed_root: Path = None,
+                 seed_version: str = SEED_VERSION, force: bool = False) -> bool:
+    """Copy the bundled seed library into a fresh, user-chosen location.
+
+    Idempotent and marked: a .seed_version file records the seeded snapshot, so a
+    re-seed only happens on force or a SEED_VERSION bump. Returns True if seeding
+    ran, False if the location was already at this seed version.
+    """
+    dest = Path(dest)
+    marker = dest / ".seed_version"
+    if not force and marker.exists() and marker.read_text(encoding="utf-8").strip() == seed_version:
+        return False
+    seed_root = Path(seed_root) if seed_root is not None else bundle_path("seed")
+    dest.mkdir(parents=True, exist_ok=True)
+    for name in ("libs", "catalog_assets"):
+        src = seed_root / name
+        if src.is_dir():
+            shutil.copytree(src, dest / name, dirs_exist_ok=True)
+    cfg_path = dest / "config.json"
+    if force or not cfg_path.exists():
+        cfg_path.write_text(json.dumps({"RepoRoot": str(dest)}, indent=2), encoding="utf-8")
+    marker.write_text(seed_version, encoding="utf-8")
+    return True
 
 
 # Theme tokens, fonts, and Lucide icons live in the shared design system
@@ -147,6 +247,21 @@ APP_VERSION = "1.2.0"
 REPO_ROOT = detect_repo_root()
 DEFAULTS: Dict[str, str] = derive_paths(REPO_ROOT)
 CONFIG_PATH = REPO_ROOT / "tools" / "config.json"
+
+
+def apply_library_location(loc: Path) -> None:
+    """Rebind the module path globals to a resolved library location (frozen).
+
+    Startup calls this once the first-run flow (or the pointer) has produced a
+    writable location, so load_config/save and derive_paths all operate on it.
+    Frozen config.json lives at the location root; dev keeps tools/config.json.
+    In dev this is unnecessary (the globals already point at the repo root).
+    """
+    global REPO_ROOT, DEFAULTS, CONFIG_PATH
+    loc = Path(loc)
+    REPO_ROOT = loc
+    DEFAULTS = derive_paths(loc)
+    CONFIG_PATH = loc / "config.json"
 
 
 # -----------------------------
@@ -830,8 +945,7 @@ def search_parts(query: str, cfg: Dict[str, str] = None, limit: int = 10) -> dic
     normalized results (manufacturer, datasheet, stock, price, lifecycle, Mouser P/N,
     url). No import needed — for looking a part up before you use it. Returns
     {query, results, error}."""
-    import os
-    key = (cfg or {}).get("MouserApiKey") or os.environ.get("MOUSER_API_KEY")
+    key = resolve_mouser_key(cfg)
     if not key:
         return {"query": query, "results": [], "error": "no Mouser API key configured"}
     if not (query or "").strip():
@@ -1232,10 +1346,8 @@ def _natural_ref(ref: str):
 
 def mouser_lookup_from_config(cfg: Dict[str, str] = None):
     """A Mouser lookup callable if a key is configured, else None. Reads the key from
-    cfg['MouserApiKey'] or the MOUSER_API_KEY environment variable, so the key lives in
-    the machine-local config (never committed) or the environment."""
-    import os
-    key = (cfg or {}).get("MouserApiKey") or os.environ.get("MOUSER_API_KEY")
+    the MOUSER_API_KEY environment variable or the baked-in app default (SP1)."""
+    key = resolve_mouser_key(cfg)
     return make_mouser_lookup(key) if key else None
 
 
@@ -1263,9 +1375,7 @@ def providers_from_config(cfg: Dict[str, str] = None):
     (DigiKey / LCSC / etc.) and is flagged as such in the sourcing report + BOM. Returns
     a source-tagged lookup(mpn), or None if no key is configured. Add more providers by
     registering a verified adapter with make_provider_chain."""
-    import os
-    cfg = cfg or {}
-    mk = cfg.get("MouserApiKey") or os.environ.get("MOUSER_API_KEY")
+    mk = resolve_mouser_key(cfg)
     return make_provider_chain([("Mouser", make_mouser_lookup(mk))]) if mk else None
 
 
