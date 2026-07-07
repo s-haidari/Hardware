@@ -11,4 +11,4 @@ The MOUSER_API_KEY environment variable overrides this silently (dev override).
 
 # Free, rate-limited Mouser Search API key. Empty = no baked key (sourcing then
 # relies solely on the MOUSER_API_KEY env var). Fill for self-contained builds.
-MOUSER_API_KEY_DEFAULT = ""
+MOUSER_API_KEY_DEFAULT = "494cc3c4-3e7f-4438-a711-8fc07fa4bc76"
