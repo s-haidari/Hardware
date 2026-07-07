@@ -52,7 +52,20 @@ def _surfaces(win):
     return out
 
 
-def render_all(out_dir, themes=("dark", "light"), only=None):
+def _settle(app, seconds=1.5, step=0.05):
+    """Pump the Qt event loop so threaded run_async workers finish and their
+    queued done-callbacks repaint the panel before we grab it. Panels that load
+    data off the GUI thread otherwise get captured mid-'Loading...'."""
+    import time
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        app.processEvents()
+        app.sendPostedEvents()
+        time.sleep(step)
+    app.processEvents()
+
+
+def render_all(out_dir, themes=("dark", "light"), only=None, settle=1.5):
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -78,7 +91,7 @@ def render_all(out_dir, themes=("dark", "light"), only=None):
             if ws is not None:
                 ws._select(k)
             W.restyle_all()
-            app.processEvents()
+            _settle(app, settle)
             stem = fid if name is None else f"{fid}.{_slug(name)}"
             path = out_dir / f"{stem}.{theme}.png"
             win.grab().save(str(path))
@@ -93,9 +106,11 @@ def main(argv=None):
     ap.add_argument("--surface", default=None,
                     help="feature id: bench / library / projects / settings")
     ap.add_argument("--theme", default="both", choices=("dark", "light", "both"))
+    ap.add_argument("--settle", type=float, default=1.5,
+                    help="seconds to pump the event loop per surface so async loads finish")
     args = ap.parse_args(argv)
     themes = ("dark", "light") if args.theme == "both" else (args.theme,)
-    saved = render_all(args.out, themes=themes, only=args.surface)
+    saved = render_all(args.out, themes=themes, only=args.surface, settle=args.settle)
     print(f"Wrote {len(saved)} images to {args.out}")
     return 0
 

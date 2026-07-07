@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
 def test_render_gate_writes_dark_and_light_for_every_surface(tmp_path):
     from ui import render_gate
-    saved = render_gate.render_all(tmp_path, themes=("dark", "light"))
+    saved = render_gate.render_all(tmp_path, themes=("dark", "light"), settle=0)
     assert saved, "no surfaces rendered"
     for p in saved:
         assert p.exists() and p.stat().st_size > 1000, f"empty render: {p}"
