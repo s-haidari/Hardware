@@ -477,16 +477,22 @@ class Workspace(QWidget):
 def scroll_body(widget: QWidget) -> QWidget:
     """Wrap a panel body in a vertical scroll area with the standard page padding."""
     from PyQt5.QtWidgets import QScrollArea
-    holder = QWidget()
+    holder = QWidget(); holder.setObjectName("scrollHolder")
     lay = QVBoxLayout(holder)
     lay.setContentsMargins(24, 16, 24, 24)
     lay.setSpacing(14)
     lay.addWidget(widget)
     lay.addStretch(1)
-    area = QScrollArea()
+    area = QScrollArea(); area.setObjectName("scrollArea")
     area.setWidgetResizable(True)
     area.setFrameShape(QFrame.NoFrame)
     area.setWidget(holder)
+    # The scroll chrome must not inject the palette base — keep it transparent so the
+    # themed page background shows through (content paints its own cards). Without this
+    # the viewport renders a light pane in dark mode. Scoped by object name so child
+    # surfaces keep their own fills.
+    area.setStyleSheet("#scrollArea, #scrollHolder { background: transparent; }")
+    area.viewport().setStyleSheet("background: transparent;")
     return area
 
 
