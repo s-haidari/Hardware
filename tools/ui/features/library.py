@@ -20,7 +20,6 @@ from .library_preview import PartsList, PartDetail
 import LibraryManager as LM
 
 
-
 def _parts_panel(ctx, _state) -> QWidget:
     root = QWidget()
     lay = QVBoxLayout(root); lay.setContentsMargins(24, 16, 24, 24); lay.setSpacing(14)
