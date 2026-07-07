@@ -69,3 +69,17 @@ def test_resolve_model_render_prefers_mesh_then_image(tmp_path, monkeypatch):
     # nothing -> ("none", None)
     monkeypatch.setattr(R, "render_step_image", lambda _p, px=420: None)
     assert P.resolve_model_render(p) == ("none", None)
+
+
+def test_meshview_constructs_for_each_kind():
+    from ui.features.library_preview import MeshView
+    from PyQt5.QtGui import QImage
+
+    mv = MeshView("mesh", ([[0, 0, 0], [1, 0, 0], [0, 1, 0]], [[0, 1, 2]]))
+    assert mv.interactive is True
+    mv.grab()  # paints without raising
+
+    img = QImage(8, 8, QImage.Format_ARGB32); img.fill(0)
+    sv = MeshView("image", img)
+    assert sv.interactive is False
+    sv.grab()
