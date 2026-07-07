@@ -65,6 +65,13 @@ def _settle(app, seconds=1.5, step=0.05):
     app.processEvents()
 
 
+# Panels that start empty until an interaction; seed them so their rich (auditable)
+# state renders. Keyed by surface stem; the callback receives the panel's Workspace.
+_SEED = {
+    "bench.mcu-pinout-viewer": lambda ws: ws._ctx.bus.emit("bench.resolve", "STM32F407VGT6"),
+}
+
+
 def render_all(out_dir, themes=("dark", "light"), only=None, settle=1.5):
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -90,9 +97,15 @@ def render_all(out_dir, themes=("dark", "light"), only=None, settle=1.5):
             win._select(page_idx)
             if ws is not None:
                 ws._select(k)
+            stem = fid if name is None else f"{fid}.{_slug(name)}"
+            seed = _SEED.get(stem)
+            if seed is not None and ws is not None:
+                try:
+                    seed(ws)
+                except Exception:  # noqa: BLE001 - a seed is best-effort, never fatal
+                    pass
             W.restyle_all()
             _settle(app, settle)
-            stem = fid if name is None else f"{fid}.{_slug(name)}"
             path = out_dir / f"{stem}.{theme}.png"
             win.grab().save(str(path))
             saved.append(path)
