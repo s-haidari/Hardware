@@ -223,6 +223,7 @@ class PartDetail(QWidget):
 
     def show(self, row: Optional[dict]):
         if not row:
+            self._current = None
             self._mpn.setText(""); self._meta.setText("")
             for c in (self._sym, self._fp, self._mdl):
                 c.set_empty("Select A Part")
@@ -285,9 +286,10 @@ class PartDetail(QWidget):
         row = self._current
         if not row or not row.get("footprint"):
             self._ctx.services.log("Re-link needs a part with a footprint."); return
-        mdl_dir = Path(self._ctx.cfg.get("ModelLib", ""))
+        mdl_cfg = self._ctx.cfg.get("ModelLib")
+        mdl_dir = Path(mdl_cfg) if mdl_cfg else None
         names = sorted(p.name for p in mdl_dir.glob("*")
-                       if p.suffix.lower() in (".step", ".stp", ".wrl")) if mdl_dir.exists() else []
+                       if p.suffix.lower() in (".step", ".stp", ".wrl")) if mdl_dir and mdl_dir.exists() else []
         if not names:
             self._ctx.services.log("No 3D models available to link."); return
         name, ok = QInputDialog.getItem(self, "Re-link Model",

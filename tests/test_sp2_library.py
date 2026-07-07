@@ -144,8 +144,10 @@ def test_partdetail_show_populates_and_clears(tmp_path):
            "footprint": "R_0402", "symbols": ["R_0402"], "model": None,
            "has_symbol": True, "has_footprint": True, "has_model": False}
     det.show(row)
+    assert det._current == row        # current row tracked for Re-link
     det.grab()                       # renders without raising
     det.show(None)                   # clearing is safe
+    assert det._current is None       # cleared so Re-link can't act on a stale row
     det.grab()
 
 
