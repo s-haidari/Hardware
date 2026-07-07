@@ -22,8 +22,13 @@ def _kicad_version_key(path: str) -> tuple:
     Returns ``(version_tuple, is_64bit)`` so that, on a version tie, the
     64-bit install (not under "Program Files (x86)") wins. Paths whose
     version segment has no digits sort lowest via an empty version tuple.
+
+    KiCad install paths are Windows paths; parse them separator-agnostically so
+    the backslash version segment is found even when this runs on POSIX (where
+    ``pathlib`` would treat the whole ``C:\\...\\bin`` string as one component).
     """
-    version_dir = Path(path).parent.name
+    segs = [s for s in re.split(r"[\\/]+", str(path).strip()) if s]
+    version_dir = segs[-2] if len(segs) >= 2 else (segs[-1] if segs else "")
     nums = re.findall(r"\d+", version_dir)
     version = tuple(int(n) for n in nums)
     is_64bit = 0 if "(x86)" in str(path) else 1
