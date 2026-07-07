@@ -86,6 +86,17 @@ class NavItem(QPushButton):
         self.setToolTip(self._label if collapsed else "")
 
 
+# ── update signals (marshal background results back to the GUI thread) ────────
+class _UpdateSignals(QObject):
+    found = pyqtSignal(object)     # an update descriptor dict
+    none = pyqtSignal(str)         # a "you're up to date" message (manual checks only)
+
+
+class _DownloadSignals(QObject):
+    progress = pyqtSignal(int, int)   # (bytes_done, bytes_total)
+    done = pyqtSignal(bool)           # success
+
+
 class NetdeckShell(QMainWindow):
     def __init__(self, cfg: dict):
         super().__init__()
@@ -120,6 +131,12 @@ class NetdeckShell(QMainWindow):
         self._build_pages()
         self.apply_theme(True)
         self._select(0)
+
+        # updates: a Settings button (or launch) asks; results marshal back to the GUI
+        self._upd = _UpdateSignals()
+        self._upd.found.connect(self._on_update_available)
+        self._upd.none.connect(lambda msg: self._info("Up To Date", msg))
+        self.ctx.bus.on("app.check_updates", lambda *_a: self.check_for_updates(manual=True))
 
     # -- nav --
     def _build_nav(self) -> QWidget:
@@ -236,6 +253,106 @@ class NetdeckShell(QMainWindow):
     def _toggle_theme(self):
         self.apply_theme(not self._dark)
 
+    # -- updates --
+    def check_for_updates(self, manual: bool = False):
+        """Look for a newer release in the background. Auto-checks only run on a frozen
+        build (a source checkout never nags); a manual check runs anywhere so the flow
+        is testable. Best-effort — network failures are silent unless `manual`."""
+        if not manual and not getattr(sys, "frozen", False):
+            return
+
+        def worker():
+            upd = None
+            try:
+                import nd_updater as U
+                upd = U.check_for_update(allow_dev=manual)
+            except Exception:  # noqa: BLE001
+                upd = None
+            if upd:
+                self._upd.found.emit(upd)
+            elif manual:
+                try:
+                    import nd_updater as U
+                    self._upd.none.emit(f"You're on the latest version ({U.current_version()}).")
+                except Exception:  # noqa: BLE001
+                    self._upd.none.emit("Could not check for updates right now.")
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_update_available(self, update: dict):
+        from PyQt5.QtWidgets import QMessageBox
+        import nd_updater as U
+        box = QMessageBox(self)
+        box.setWindowTitle("Update Available")
+        box.setIcon(QMessageBox.Information)
+        box.setText(f"KiCad Manager {update.get('version')} is available "
+                    f"(you have {U.current_version()}).")
+        notes = (update.get("notes") or "").strip()
+        if notes:
+            box.setInformativeText(notes[:500] + ("…" if len(notes) > 500 else ""))
+        box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        box.button(QMessageBox.Yes).setText("Update Now")
+        box.button(QMessageBox.No).setText("Later")
+        box.setDefaultButton(QMessageBox.Yes)
+        if box.exec_() == QMessageBox.Yes:
+            self._download_and_apply(update)
+
+    def _download_and_apply(self, update: dict):
+        from PyQt5.QtWidgets import QProgressDialog, QMessageBox
+        import nd_updater as U
+        target = U.exe_path()
+        if target is None:                       # dev build: nothing to swap
+            self._info("Update", "Updates apply to the installed Windows app only; "
+                                 "in a dev build there is no exe to replace.")
+            return
+        dest = U.staged_path(target)
+        dlg = QProgressDialog("Downloading update…", "Cancel", 0, 100, self)
+        dlg.setWindowTitle("Updating"); dlg.setWindowModality(Qt.WindowModal)
+        dlg.setAutoClose(False); dlg.setAutoReset(False); dlg.setMinimumDuration(0)
+        cancelled = {"v": False}
+        dlg.canceled.connect(lambda: cancelled.__setitem__("v", True))
+        sig = _DownloadSignals()
+        sig.progress.connect(lambda d, t: dlg.setValue(int(d * 100 / t)) if t else None)
+
+        def finish(ok: bool):
+            dlg.close()
+            if not ok:
+                try:
+                    dest.unlink()
+                except Exception:  # noqa: BLE001
+                    pass
+                if not cancelled["v"]:
+                    self._warn("Update Failed", "Could not download the update. "
+                                                "Please try again later.")
+                return
+            if U.apply_update_windows(dest, target):
+                QApplication.instance().quit()   # the detached helper swaps + relaunches
+            else:
+                self._info("Update Downloaded",
+                           f"Saved to:\n{dest}\n\nClose the app and replace the exe with "
+                           f"this file, then relaunch.")
+        sig.done.connect(finish)
+
+        def worker():
+            ok = True
+            try:
+                def prog(d, t):
+                    if cancelled["v"]:
+                        raise RuntimeError("cancelled")
+                    sig.progress.emit(d, t)
+                U.download(update, dest, progress=prog)
+            except Exception:  # noqa: BLE001
+                ok = False
+            sig.done.emit(ok and not cancelled["v"])
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _info(self, title: str, msg: str):
+        from PyQt5.QtWidgets import QMessageBox
+        QMessageBox.information(self, title, msg)
+
+    def _warn(self, title: str, msg: str):
+        from PyQt5.QtWidgets import QMessageBox
+        QMessageBox.warning(self, title, msg)
+
     def _log(self, msg: str):
         self.statusBar().showMessage(str(msg), 6000)
 
@@ -255,4 +372,5 @@ def run():
     cfg = LM.load_config()
     win = NetdeckShell(cfg)
     win.show()
+    win.check_for_updates()          # frozen builds only; silent if none / offline
     return app.exec_()

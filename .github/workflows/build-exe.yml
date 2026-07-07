@@ -53,6 +53,18 @@ jobs:
             throw "STM32 database was not built"
           }
 
+      - name: Stamp build version (so the exe knows which release it is)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $ver = if ($env:INPUT_VERSION) { $env:INPUT_VERSION } elseif ($env:GITHUB_REF -like 'refs/tags/*') { $env:GITHUB_REF_NAME } else { "dev" }
+          Write-Host "Stamping app_build.VERSION = $ver"
+          $path = "tools/app_build.py"
+          (Get-Content $path) -replace '^VERSION = .*$', "VERSION = `"$ver`"" | Set-Content $path
+          Get-Content $path | Select-String '^VERSION ='
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+
       - name: Build KiCad Manager.exe
         shell: pwsh
         run: |

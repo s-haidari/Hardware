@@ -78,6 +78,8 @@ a = Analysis(
     hiddenimports=[
         'PyQt5.QtSvg',               # Lucide SVG rendering
         'app_secrets',               # baked Mouser key (SP1)
+        'app_build',                 # CI-stamped version/repo (updater)
+        'nd_updater',                # in-app GitHub-release auto-updater
         'ui.shell',
         'ui.features',
         'ui.features.bench',

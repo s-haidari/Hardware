@@ -119,6 +119,13 @@ def _settings_panel(ctx, _s) -> QWidget:
     status = "Sourcing ready — built-in Mouser key." if live else "Sourcing unavailable — no key in this build."
     lay.addWidget(_setting_row("Mouser", status, W.body("")))
 
+    # --- Application version + updates ---
+    lay.addWidget(W.eyebrow("Application"))
+    lay.addWidget(_setting_row(
+        "Version", f"KiCad Manager {LM.APP_VERSION}",
+        W.btn("Check for Updates", "default", "Check GitHub for a newer release",
+              on_click=lambda: ctx.bus.emit("app.check_updates"))))
+
     lay.addStretch(1)
     return root
 
