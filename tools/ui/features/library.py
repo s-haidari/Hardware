@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFileDialog
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFileDialog, QLineEdit
 
 from .. import theme as T
 from .. import widgets as W
@@ -81,6 +81,37 @@ def _export_catalog(ctx):
                  busy="Exporting catalog...")
 
 
+def _enrich_from_mpn(ctx, lookup, apply: bool = False) -> dict:
+    """Dry-run enrich (fill blank symbol fields from the distributor lookup),
+    or apply=True to write. Synchronous core; UI callers wrap it in run_populate."""
+    return LM.enrich_library(ctx.cfg, lookup, dry_run=not apply)
+
+
+def _search_mouser(ctx, query: str, result_layout):
+    query = (query or "").strip()
+    if not query:
+        return
+    clear_layout(result_layout)
+    result_layout.addWidget(W.body("Searching Mouser...", dim=True))
+
+    def done(rep, ok):
+        clear_layout(result_layout)
+        hits = (rep or {}).get("results", []) if isinstance(rep, dict) else []
+        if not hits:
+            result_layout.addWidget(W.body("No matches found.", dim=True)); return
+        trows = []
+        for r in hits:
+            trows.append([W.body(str(r.get("mpn", "")), mono=True),
+                          W.body(str(r.get("manufacturer") or ""), dim=True),
+                          str(r.get("stock", "")),
+                          W.body(str(r.get("description") or ""), dim=True)])
+        result_layout.addWidget(W.data_table(
+            ["Part Number", "Manufacturer", "Stock", "Description"], trows, stretch_col=(0, 3)), 1)
+
+    run_populate(ctx, lambda: LM.search_parts(query, ctx.cfg), done,
+                 busy=f"Searching Mouser for {query}...")
+
+
 def _sourcing_panel(ctx, _state) -> QWidget:
     root = QWidget()
     lay = QVBoxLayout(root); lay.setContentsMargins(24, 16, 24, 24); lay.setSpacing(14)
@@ -88,11 +119,25 @@ def _sourcing_panel(ctx, _state) -> QWidget:
     summary = QHBoxLayout(); summary.setSpacing(8)
     bar.addLayout(summary); bar.addStretch(1)
     btn_refresh = W.btn("Refresh From Mouser", "primary", "Query stock, pricing and lifecycle for every part")
-    bar.addWidget(W.btn("Enrich From Part Number", "ghost",
-                        "Fill blank symbol properties from Mouser (dry run first)"))
+    enrich_btn = W.btn("Enrich From Part Number", "ghost",
+                       "Fill blank symbol properties from Mouser (dry run first)")
+    bar.addWidget(enrich_btn)
     bar.addWidget(btn_refresh)
     lay.addLayout(bar)
-    result = QVBoxLayout(); lay.addLayout(result, 1)
+
+    search_row = QHBoxLayout(); search_row.setSpacing(8)
+    q = QLineEdit(); q.setPlaceholderText("Search Mouser by Part Number or Keyword...")
+    q.setFont(T.ui_font(10))
+    W.register_restyle(lambda: q.setStyleSheet(
+        f"QLineEdit{{background:{T.t('inset')};border:none;border-radius:6px;"
+        f"padding:6px 10px;color:{T.t('txt1')};}}"))
+    result = QVBoxLayout()
+    go = W.btn("Search Mouser", "default", "Look up parts online",
+               lambda: _search_mouser(ctx, q.text(), result))
+    q.returnPressed.connect(lambda: _search_mouser(ctx, q.text(), result))
+    search_row.addWidget(q, 1); search_row.addWidget(go)
+    lay.addLayout(search_row)
+    lay.addLayout(result, 1)
 
     lookup = LM.providers_from_config(ctx.cfg)
     if lookup is None:
@@ -135,6 +180,22 @@ def _sourcing_panel(ctx, _state) -> QWidget:
                      busy="Refreshing sourcing report from Mouser...")
 
     btn_refresh.clicked.connect(refresh)
+
+    def do_enrich():
+        def dry(res, ok):
+            n = len(res.get("changes", [])) if res else 0
+            if not n:
+                ctx.services.log("Enrich: nothing to fill."); return
+            ctx.services.log(f"Enrich: {n} fields fillable. Applying...")
+            run_populate(ctx, lambda: _enrich_from_mpn(ctx, lookup, apply=True),
+                         lambda r, ok: ctx.services.log(
+                             f"Enrich: wrote {len(r.get('changes', []))} fields."
+                             if r else "Enrich failed."),
+                         busy="Applying enrichment...")
+        run_populate(ctx, lambda: _enrich_from_mpn(ctx, lookup, apply=False), dry,
+                     busy="Scanning for fillable fields...")
+
+    enrich_btn.clicked.connect(do_enrich)
     return root
 
 

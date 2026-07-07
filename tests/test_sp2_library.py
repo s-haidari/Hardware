@@ -177,3 +177,21 @@ def test_parts_panel_builds_master_detail(tmp_path):
     assert hasattr(panel, "parts_list") and hasattr(panel, "detail")
     assert panel.parts_list.visible_count() >= 1
     panel.grab()
+
+
+def test_enrich_dry_run_then_apply(tmp_path, monkeypatch):
+    from ui.features import library as L
+    from types import SimpleNamespace
+    cfg = _cfg(tmp_path)
+    ctx = _fake_ctx(cfg)
+    calls = []
+    import LibraryManager as LM
+    monkeypatch.setattr(LM, "enrich_library",
+                        lambda c, lookup, dry_run=True, **k: (
+                            calls.append(dry_run) or
+                            {"changes": [{"symbol": "R_0402"}], "written": not dry_run,
+                             "symbols": 1, "looked_up": 1}))
+    applied = L._enrich_from_mpn(ctx, lookup=lambda m: None, apply=False)
+    assert calls == [True] and applied["changes"]
+    L._enrich_from_mpn(ctx, lookup=lambda m: None, apply=True)
+    assert calls == [True, False]     # apply re-runs with dry_run=False
