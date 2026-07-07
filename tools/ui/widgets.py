@@ -191,6 +191,10 @@ class Segmented(QWidget):
         self.setStyleSheet(f"QWidget{{background:{T.t('ctl')};border:1px solid {T.t('stroke')};"
                            f"border-radius:4px;}}")
 
+    def on_change(self, fn):
+        """Set (or replace) the callback invoked with the selected option's text."""
+        self._on_change = fn
+
     def _pick(self, k: int):
         for i, b in enumerate(self._buttons):
             b.setProperty("selected", i == k)

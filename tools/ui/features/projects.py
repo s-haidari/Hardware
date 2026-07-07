@@ -375,8 +375,9 @@ def _netclass_panel(ctx, state) -> QWidget:
     profiles = ncm.netclass_profiles()
     bar = QHBoxLayout(); bar.setSpacing(8)
     bar.addWidget(W.eyebrow("Profile"))
-    if profiles:
-        bar.addWidget(W.Segmented(profiles, tip="Net-class profile"))
+    seg = W.Segmented(profiles, tip="Net-class profile") if profiles else None
+    if seg is not None:
+        bar.addWidget(seg)
     bar.addStretch(1)
     b_val = W.btn("Validate", "ghost", "Check every class against the OSH Park and KiCad minimums")
     b_sync = W.btn("Sync To Projects", "primary", "Write these net classes into the discovered projects")
@@ -490,6 +491,21 @@ def _netclass_panel(ctx, state) -> QWidget:
 
     b_val.clicked.connect(validate)
     b_sync.clicked.connect(sync)
+
+    def _apply_profile(prof):        # _pick passes the profile-name TEXT, not an index
+        mgr2 = ncm.create_vault_standard_template(prof)
+        for name, spins in rows_map.items():
+            nc = mgr2.net_classes.get(name)
+            if not nc:
+                continue
+            for f, _label in _NC_FIELDS:
+                spins[f].setValue(getattr(nc, f, 0.0))
+            spins["priority"].setValue(getattr(nc, "priority", 0))
+        validate()                   # re-validate against the newly shown values
+
+    if seg is not None:
+        seg.on_change(_apply_profile)
+    root._profile_seg = seg
     return root
 
 

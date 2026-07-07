@@ -227,3 +227,14 @@ def test_apply_model_override_persists(tmp_path):
     import LibraryManager as LM
     ov = LM.load_group_overrides(cfg)
     assert ov.get("model", {}).get("R_0402") == "SOT-23.step"
+
+
+def test_netclass_profile_selector_rebuilds(monkeypatch):
+    from ui.features import projects as PJ
+    from types import SimpleNamespace
+    ctx = SimpleNamespace(cfg={}, services=SimpleNamespace(log=lambda *a: None))
+    panel = PJ._netclass_panel(ctx, None)
+    # the profile Segmented must carry an on_change callback now (not None)
+    assert getattr(panel, "_profile_seg", None) is not None
+    # switching profiles must not raise
+    panel._profile_seg._pick(0)
