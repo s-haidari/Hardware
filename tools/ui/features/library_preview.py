@@ -6,13 +6,13 @@ Kept separate from library.py so the feature file stays orchestration-only.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import LibraryManager as LM
 import fp_render as R
 from PyQt5.QtCore import Qt, QRectF
 from PyQt5.QtGui import QPainter, QColor
-from PyQt5.QtWidgets import QWidget, QFrame, QVBoxLayout, QLabel, QListWidget, QListWidgetItem, QLineEdit, QHBoxLayout
+from PyQt5.QtWidgets import QWidget, QFrame, QVBoxLayout, QLabel, QListWidget, QListWidgetItem, QLineEdit
 
 from .. import theme as T
 from ..util import run_populate, clear_layout
@@ -281,7 +281,7 @@ class PartsList(QWidget):
     One 6px asset-state dot per row (the only color); selection uses the native
     row wash. No borders."""
 
-    def __init__(self, rows, on_select, parent=None):
+    def __init__(self, rows, on_select: Callable[[dict], None], parent=None):
         super().__init__(parent)
         self._rows = list(rows)
         self._on_select = on_select

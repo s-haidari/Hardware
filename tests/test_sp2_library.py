@@ -163,5 +163,7 @@ def test_partslist_filter_and_select():
     assert lst.visible_count() == 2
     lst.filter("2n7")
     assert lst.visible_count() == 1
+    assert picked[-1]["mpn"] == "2N7002"
     lst.filter("")
     assert lst.visible_count() == 2
+    assert picked[-1]["mpn"] == "R_0402"
