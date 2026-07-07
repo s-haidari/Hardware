@@ -87,3 +87,6 @@ tools/data/
 
 # --- Machine-local config + secrets (Mouser API key etc.) — never commit ---
 tools/config.json
+
+# --- SP3-A render-gate output (regenerate with tools/ui/render_gate.py) ---
+build/
