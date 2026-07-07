@@ -224,12 +224,19 @@ class PartDetail(QWidget):
                                  self._open_relink)
         lay.addWidget(self._relink_btn)
         self._current = None
+        self._preview_theme = T.is_dark()   # the theme the previews were last drawn under
         lay.addStretch(1)
-        # re-render the previews on a theme toggle so their (baked-in) background and
-        # layer ramp track the new surface instead of staying an opposite-theme PNG
+        # Re-render previews only on a REAL theme flip so the baked-in background/ramp
+        # tracks the new surface. Guarded against firing on every restyle_all() —
+        # render_gate calls restyle_all() once per surface, which would otherwise spawn
+        # an async-render thread storm (fd exhaustion on Windows CI).
         W.register_restyle(self._retheme_previews)
 
     def _retheme_previews(self):
+        dark = T.is_dark()
+        if dark == getattr(self, "_preview_theme", dark):
+            return
+        self._preview_theme = dark
         if getattr(self, "_current", None):
             self.show(self._current)
 
