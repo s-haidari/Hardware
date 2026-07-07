@@ -22,3 +22,10 @@ def test_render_gate_writes_dark_and_light_for_every_surface(tmp_path):
     stems = {p.name.split(".")[0] for p in saved}
     for fid in ("bench", "library", "projects", "settings"):
         assert fid in stems, f"missing surface for {fid}"
+    # Sub-panels must each render, not only the default page (regression guard:
+    # a Workspace page root would otherwise collapse to one image per feature).
+    panel_stems = {p.name.rsplit(".", 2)[0] for p in saved}
+    for st in ("bench.overview", "bench.profiles", "bench.all-pins",
+               "bench.mcu-pinout-viewer", "bench.exports",
+               "projects.health", "projects.net-classes"):
+        assert st in panel_stems, f"missing sub-panel render: {st}"

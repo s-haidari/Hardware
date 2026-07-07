@@ -38,7 +38,11 @@ def _surfaces(win):
         win._select(i)                               # lazily build the page
         feat = win._page_specs[i][0]
         page = win._stack.widget(i)
+        # A feature's build() returns the Workspace AS the page root; findChildren
+        # returns descendants only, so include the page itself when it is one.
         workspaces = page.findChildren(W.Workspace)
+        if isinstance(page, W.Workspace):
+            workspaces = [page, *workspaces]
         if not workspaces:
             out.append((feat.id, None, i, None, None))
             continue
