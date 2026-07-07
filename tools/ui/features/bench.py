@@ -67,34 +67,20 @@ def _resolved_cat(pn: dict) -> str:
 
 
 
-def _node(kind, headline, sub=None, extra=None, headline_color=None) -> QFrame:
-    """A uniform box in the build map. The pin / terminal / contact is the headline
-    (prioritised); the component refdes/part sits under it, with any extra below.
-    Every node is the same size so the whole map stacks evenly."""
-    card = QFrame(); card.setObjectName("connode"); card.setFixedSize(172, 122)
-    v = QVBoxLayout(card); v.setContentsMargins(10, 8, 10, 8); v.setSpacing(3)
-    v.addStretch(1)
-    kl = W.eyebrow(kind); kl.setAlignment(Qt.AlignHCenter); v.addWidget(kl)
-    hl = QLabel(str(headline)); hl.setFont(T.mono_font(13, semibold=True))
-    hl.setAlignment(Qt.AlignHCenter); hl.setWordWrap(True); v.addWidget(hl)
-    subl = exl = None
-    if sub:
-        subl = QLabel(str(sub)); subl.setFont(T.mono_font(9)); subl.setAlignment(Qt.AlignHCenter); subl.setWordWrap(True)
-        v.addWidget(subl)
-    if extra:
-        exl = QLabel(str(extra)); exl.setFont(T.ui_font(8.5)); exl.setAlignment(Qt.AlignHCenter); exl.setWordWrap(True)
-        v.addWidget(exl)
-    v.addStretch(1)
+def _dot(cat: str, px: int = 6) -> QLabel:
+    """A 6px category dot — the sanctioned way to carry a hue on a flow row (§4)."""
+    d = QLabel(); d.setFixedSize(px, px)
+    W.register_restyle(lambda: d.setStyleSheet(
+        f"background:{T.category(cat)};border-radius:{px // 2}px;"))
+    return d
 
-    def style():
-        hl.setStyleSheet(f"color:{headline_color or T.t('txt1')};background:transparent;")
-        if subl is not None:
-            subl.setStyleSheet(f"color:{T.t('txt2')};background:transparent;")
-        if exl is not None:
-            exl.setStyleSheet(f"color:{T.t('txt3')};background:transparent;")
-        card.setStyleSheet(f"QFrame#connode{{background:{T.t('inset')};border:1px solid {T.t('stroke')};border-radius:8px;}}")
-    W.register_restyle(style)
-    return card
+
+def _fl(text, size=9.5, color="txt2", mono=True, semibold=False) -> QLabel:
+    """One quiet segment of a signal-path flow row: plain text, no box (§4)."""
+    lab = QLabel(str(text))
+    lab.setFont((T.mono_font if mono else T.ui_font)(size, semibold=semibold))
+    W.register_restyle(lambda: lab.setStyleSheet(f"color:{T.t(color)};background:transparent;"))
+    return lab
 
 
 def _arrow() -> QLabel:
@@ -129,34 +115,63 @@ def _term_short(t):
     return name, num
 
 
+def _hop(*labels) -> QWidget:
+    """One stop on the signal path: a value with an optional quiet descriptor under
+    it, no box. `labels` are already-built QLabels stacked tight."""
+    w = QWidget(); v = QVBoxLayout(w); v.setContentsMargins(0, 0, 0, 0); v.setSpacing(1)
+    for lab in labels:
+        if lab is not None:
+            v.addWidget(lab)
+    return w
+
+
 def _connection_flow(chain, cfg=None) -> QWidget:
-    box = QWidget(); col = QVBoxLayout(box); col.setContentsMargins(0, 0, 0, 0); col.setSpacing(12)
+    """The build map as flow ROWS inside one neutral container (§4 signal path):
+    origin pin at left, then each hop as plain text joined by `→`, the delivered
+    net emphasised with a 6px category dot — no per-node cards, no boxed labels."""
+    box = QFrame(); box.setObjectName("sigpath")
+    col = QVBoxLayout(box); col.setContentsMargins(14, 14, 14, 14); col.setSpacing(14)
     pos = chain["pos"]; pin_name = chain["name"] or f"Pin {pos}"
     for r in chain.get("rows", []):
-        line = QHBoxLayout(); line.setSpacing(6); line.setAlignment(Qt.AlignLeft)
-        line.addWidget(_node("MCU Pin", f"Pin {pos}", pin_name)); line.addWidget(_arrow())
-        line.addWidget(_node("ZIF Socket", f"Pin {pos}", chain.get("socket", "Socket"))); line.addWidget(_arrow())
+        line = QHBoxLayout(); line.setSpacing(10); line.setAlignment(Qt.AlignLeft)
+        # origin pin — the row's focal identifier
+        line.addWidget(_hop(_fl(f"Pin {pos}", 11, "txt1", semibold=True), _fl(pin_name, 8.5, "txt3")))
+        line.addWidget(_arrow())
+        line.addWidget(_hop(_fl(chain.get("socket", "Socket"), 10, "txt2"), _fl("zif socket", 8.5, "txt3", mono=False)))
+        line.addWidget(_arrow())
         if r["kind"] == "switch":
             sn, snum = _term_short(r["s_term"]); dn, dnum = _term_short(r["d_term"])
-            line.addWidget(_node("Switch Cell", f"{sn} → {dn}", r["cell"],
-                                 f"Channel {r['channel']} Pins {snum}, {dnum}"))
+            line.addWidget(_hop(_fl(f"{sn} → {dn}", 10, "txt1"),
+                                _fl(f"cell {r['cell']} · ch {r['channel']} · pins {snum},{dnum}", 8.5, "txt3", mono=False)))
             line.addWidget(_arrow())
         elif r.get("series"):
-            line.addWidget(_node("Series R", "33 Ω", str(r["series"]).split(" ")[0])); line.addWidget(_arrow())
+            line.addWidget(_hop(_fl("33 Ω", 10, "txt1"), _fl(str(r["series"]).split(" ")[0], 8.5, "txt3", mono=False)))
+            line.addWidget(_arrow())
         via = r.get("drain_via", "")
         if "Ground Plane" in via:
-            line.addWidget(_node("Ground", "Plane", "Stitching vias"))
+            line.addWidget(_hop(_fl("Ground plane", 10, "txt2", mono=False), _fl("stitching vias", 8.5, "txt3", mono=False)))
         else:
             contact = via.split("·")[-1].strip() if "·" in via else via
-            line.addWidget(_node("Connector", contact, chain.get("connector", "Connector")))
+            line.addWidget(_hop(_fl(contact or "Connector", 10, "txt2"),
+                                _fl(chain.get("connector", "connector"), 8.5, "txt3", mono=False)))
         line.addWidget(_arrow())
+        # delivered net — the payload: 6px category dot + coloured mono net + net class
         net = r.get("drain_net", ""); dcat = r.get("drain_cat", "lane")
-        line.addWidget(_node("Delivers", net, f"{_netclass(net, dcat)} Net Class",
-                             headline_color=T.category(_CAT_FROM_NET.get(dcat, "lane"))))
+        cat = _CAT_FROM_NET.get(dcat, "lane")
+        net_lab = _fl(net, 11, "txt1", semibold=True)      # payload, coloured below
+        W.register_restyle(lambda nl=net_lab, c=cat: nl.setStyleSheet(
+            f"color:{T.category(c)};background:transparent;"))
+        deliver = QHBoxLayout(); deliver.setSpacing(6); deliver.setContentsMargins(0, 0, 0, 0)
+        deliver.addWidget(_dot(cat)); deliver.addWidget(net_lab)
+        dwrap = QWidget(); dwrap.setLayout(deliver)
+        line.addWidget(_hop(dwrap, _fl(f"{_netclass(net, dcat)} net class", 8.5, "txt3", mono=False)))
         line.addStretch(1)
         wrap = QWidget(); wrap.setLayout(line); col.addWidget(wrap)
     if chain.get("one_hot"):
-        col.addWidget(W.eyebrow("One-Hot: exactly one switched path closes per socketed part"))
+        note = _fl("One-hot: exactly one switched path closes per socketed part.", 8.5, "txt3", mono=False)
+        col.addWidget(note)
+    W.register_restyle(lambda: box.setStyleSheet(
+        f"QFrame#sigpath{{background:{T.t('inset')};border-radius:8px;}}"))
     return box
 
 
