@@ -200,6 +200,20 @@ def _sourcing_panel(ctx, _state) -> QWidget:
     return root
 
 
+def _scan_corrupt(ctx):
+    root = ctx.cfg.get("RepoRoot") or ctx.cfg.get("Libs") or "."
+
+    def done(rows, ok):
+        n = len(rows or [])
+        if not n:
+            ctx.services.log("Corruption scan: no corrupt files found."); return
+        ctx.services.log(f"Corruption scan: {n} file(s) flagged.")
+        for path, why in rows:
+            ctx.services.log(f"  {Path(path).name}: {why}")
+    run_populate(ctx, lambda: LM.find_corrupt_kicad_files(root), done,
+                 busy="Scanning for corrupt KiCad files...")
+
+
 def _import_panel(ctx, _state) -> QWidget:
     root = QWidget()
     lay = QVBoxLayout(root); lay.setContentsMargins(24, 16, 24, 24); lay.setSpacing(14)
@@ -241,6 +255,9 @@ def _import_panel(ctx, _state) -> QWidget:
              lambda: LM.auto_assign_library(ctx.cfg, dry_run=False, log=log), "Auto-assigning...")):
         b = W.btn(label, "default", tip, lambda fn=fn, busy=busy: action(fn, busy))
         maint.body.addWidget(b)
+    maint.body.addWidget(W.btn("Scan For Corrupt Files", "default",
+                               "Check every KiCad file for corruption",
+                               lambda: _scan_corrupt(ctx)))
     lay.addWidget(maint)
     lay.addStretch(1)
     return root

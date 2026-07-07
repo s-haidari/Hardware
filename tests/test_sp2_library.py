@@ -194,3 +194,14 @@ def test_enrich_dry_run_then_apply(tmp_path, monkeypatch):
     assert calls == [True] and applied["changes"]
     L._enrich_from_mpn(ctx, lookup=lambda m: None, apply=True)
     assert calls == [True, False]     # apply re-runs with dry_run=False
+
+
+def test_scan_corrupt_reports(tmp_path, monkeypatch):
+    from ui.features import library as L
+    import LibraryManager as LM
+    cfg = _cfg(tmp_path); cfg["RepoRoot"] = str(tmp_path)
+    ctx = _fake_ctx(cfg)
+    monkeypatch.setattr(LM, "find_corrupt_kicad_files",
+                        lambda root: [(str(tmp_path / "bad.kicad_sym"), "unbalanced parens")])
+    L._scan_corrupt(ctx)
+    assert any("bad.kicad_sym" in m or "1" in m for m in ctx.services.logs)
