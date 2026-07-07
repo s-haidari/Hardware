@@ -21,7 +21,7 @@ _TOOLS = Path(__file__).resolve().parents[1]        # .../tools
 if str(_TOOLS) not in sys.path:
     sys.path.insert(0, str(_TOOLS))
 
-from PyQt5.QtWidgets import QApplication            # noqa: E402
+from PyQt5.QtWidgets import QApplication, QScrollArea  # noqa: E402
 
 from ui import theme as T                            # noqa: E402
 from ui import widgets as W                          # noqa: E402
@@ -29,6 +29,18 @@ from ui import widgets as W                          # noqa: E402
 
 def _slug(s: str) -> str:
     return "".join(c.lower() if c.isalnum() else "-" for c in s).strip("-")
+
+
+def _content_height(ws):
+    """Natural full height of the current panel's content, so the window can grow
+    to show below-the-fold content (a scroll_body otherwise clips the audit)."""
+    if ws is None:
+        return 0
+    w = ws._stack.currentWidget()
+    inner = w.widget() if isinstance(w, QScrollArea) else w
+    if inner is None:
+        return 0
+    return max(inner.sizeHint().height(), inner.height())
 
 
 def _surfaces(win):
@@ -106,6 +118,11 @@ def render_all(out_dir, themes=("dark", "light"), only=None, settle=1.5):
                     pass
             W.restyle_all()
             _settle(app, settle)
+            # Grow the window to fit the panel's full content (chrome + below-fold),
+            # capped, so a scroll_body doesn't clip the audit; then restore.
+            grow = min(_content_height(ws) + 150, 3200)
+            win.resize(1440, max(960, grow))
+            _settle(app, min(settle, 0.4))
             path = out_dir / f"{stem}.{theme}.png"
             win.grab().save(str(path))
             saved.append(path)
