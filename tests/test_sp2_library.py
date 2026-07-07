@@ -167,3 +167,13 @@ def test_partslist_filter_and_select():
     lst.filter("")
     assert lst.visible_count() == 2
     assert picked[-1]["mpn"] == "R_0402"
+
+
+def test_parts_panel_builds_master_detail(tmp_path):
+    from ui.features import library as L
+    cfg = _cfg(tmp_path)
+    ctx = _fake_ctx(cfg)
+    panel = L._parts_panel(ctx, None)
+    assert hasattr(panel, "parts_list") and hasattr(panel, "detail")
+    assert panel.parts_list.visible_count() >= 1
+    panel.grab()

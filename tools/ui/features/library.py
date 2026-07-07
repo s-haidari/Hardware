@@ -15,6 +15,7 @@ from .. import theme as T
 from .. import widgets as W
 from ..util import LogSink, run_populate, clear_layout
 from .. import feature as F
+from .library_preview import PartsList, PartDetail
 
 import LibraryManager as LM
 
@@ -48,17 +49,36 @@ def _parts_panel(ctx, _state) -> QWidget:
     chips = [("Complete", str(counts.get("complete", 0)), "ok"),
              ("Missing Model", str(counts.get("missing_model", 0)), "warn"),
              ("Dangling", str(counts.get("dangling", 0)), "err")]
-    lay.addWidget(W.Verdict("Library Health", f"{counts.get('parts', len(rows))} Parts Scanned",
+    lay.addWidget(W.Verdict("Library Health",
+                            f"{counts.get('parts', len(rows))} Parts Scanned",
                             "ok", chips, plain=True))
 
-    trows = []
-    for g in rows[:2000]:
-        trows.append([str(g.get("mpn") or g.get("name") or ""),
-                      str(g.get("manufacturer") or ""),
-                      _asset_flags(g.get("has_symbol"), g.get("has_footprint"), g.get("has_model"))])
-    lay.addWidget(W.data_table(["Part Number", "Manufacturer", "Assets"], trows,
-                               stretch_col=(0, 1), mono_cols={0}, dim_cols={1}), 1)
+    detail = PartDetail(ctx)
+    parts_list = PartsList(rows, on_select=detail.show)
+
+    split = QHBoxLayout(); split.setSpacing(20)
+    left = QVBoxLayout(); left.setSpacing(10)
+    left.addWidget(parts_list, 1)
+    export = W.btn("Export Catalog", "ghost",
+                   "Write a Markdown catalog with rendered previews",
+                   lambda: _export_catalog(ctx))
+    left.addWidget(export)
+    left_w = QWidget(); left_w.setFixedWidth(300); left_w.setLayout(left)
+    split.addWidget(left_w)
+    split.addWidget(W.scroll_body(detail), 1)
+    lay.addLayout(split, 1)
+
+    root.parts_list = parts_list        # test/inspection handles
+    root.detail = detail
     return root
+
+
+def _export_catalog(ctx):
+    log = LogSink(ctx.services)
+    run_populate(ctx, lambda: LM.export_catalog(ctx.cfg, log),
+                 lambda p, ok: ctx.services.log(
+                     f"Catalog written to {p}" if p else "Catalog export failed."),
+                 busy="Exporting catalog...")
 
 
 def _sourcing_panel(ctx, _state) -> QWidget:
