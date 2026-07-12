@@ -1315,6 +1315,28 @@ def audit_bench_styled():
         if len(tables) < 4:
             _fail(f"Bench/Analysis: expected >=4 tables (category/materials/adg714/socket), "
                   f"got {len(tables)}")
+        # BENCH v2.11 regression lock: the Analysis tables must fit ALL their rows at
+        # natural height (fit_rows) — NOT clip to ~one visible row inside their own inner
+        # scrollbar (owner report: "cut to just one single line that you had to scroll
+        # through"). Each multi-row table must be sized to more than a single row's height
+        # and must NOT show a vertical scrollbar.
+        from PyQt5.QtCore import Qt as _Qt
+        fitted = 0
+        for t in tables:
+            if t.rowCount() < 2:
+                continue                     # a 0/1-row table is trivially fully shown
+            one_row = (t.horizontalHeader().height() + t.rowHeight(0)
+                       + 2 * t.frameWidth())
+            if t.verticalScrollBarPolicy() != _Qt.ScrollBarAlwaysOff:
+                _fail(f"Bench/Analysis: a {t.rowCount()}-row table still has an inner "
+                      f"vertical scrollbar (fit_rows not applied)")
+            elif t.height() <= one_row:
+                _fail(f"Bench/Analysis: a {t.rowCount()}-row table is sized to "
+                      f"{t.height()}px (<= one-row {one_row}px) — clipped to one line")
+            else:
+                fitted += 1
+        if fitted == 0:
+            _fail("Bench/Analysis: no multi-row table was fit to its content rows")
         lint_btn = next((b for b in p.findChildren(QPushButton)
                          if b.text().startswith("Lint Claim File")), None)
         if lint_btn is None:

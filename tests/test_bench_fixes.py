@@ -21,7 +21,8 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
-from PyQt5.QtWidgets import QApplication, QComboBox, QLabel, QTableWidget  # noqa: E402
+from PyQt5.QtWidgets import (QApplication, QComboBox, QHBoxLayout, QLabel,  # noqa: E402
+                             QTableWidget)
 
 import stm32_db as db  # noqa: E402
 import stm32_authority as sauth  # noqa: E402
@@ -206,6 +207,102 @@ class ProfilesFamilyFilterLocationTests(_DBTestBase):
         texts = " ".join(l.text() for l in prof.findChildren(QLabel))
         self.assertIn(f"{len(narrowed)} Supported Parts", texts)
         self.assertIn(f"Family {fam}", texts)
+
+
+# ── BENCH v2.11: Analysis tables fit all rows + legend/pin contrast ──────────
+class AnalysisFitRowsTests(unittest.TestCase):
+    """Regression lock (owner report, v2.11 exe): the Analysis tab's tables were
+    clipped to ~one visible row with an inner scrollbar. data_table(fit_rows=True)
+    must size the table to header + every row + frame, with NO inner v-scrollbar."""
+
+    def test_fit_rows_table_shows_all_rows_no_inner_scroll(self):
+        from PyQt5.QtCore import Qt
+        import ui.widgets as W
+        rows = [[f"r{i}", f"val {i}"] for i in range(8)]
+        tbl = W.data_table(["A", "B"], rows, stretch_col=1, fit_rows=True)
+        # inner vertical scrollbar is OFF for a fit table
+        self.assertEqual(tbl.verticalScrollBarPolicy(), Qt.ScrollBarAlwaysOff)
+        # height is sized to more than a single row + header (i.e. not clipped to one line)
+        one_row = tbl.horizontalHeader().height() + tbl.rowHeight(0) + 2 * tbl.frameWidth()
+        self.assertGreater(tbl.height(), one_row,
+                           "fit_rows table is clipped to a single row")
+        # and it is at least tall enough for the sum of all its rows
+        summed = sum(tbl.rowHeight(r) for r in range(tbl.rowCount()))
+        self.assertGreaterEqual(tbl.height(), summed,
+                                "fit_rows table shorter than its row content")
+
+    def test_non_fit_table_keeps_default_scrollbar(self):
+        from PyQt5.QtCore import Qt
+        import ui.widgets as W
+        rows = [[f"r{i}", f"val {i}"] for i in range(8)]
+        tbl = W.data_table(["A", "B"], rows, stretch_col=1)
+        # default (non-fit) tables must NOT force the scrollbar off — they stay bounded
+        self.assertNotEqual(tbl.verticalScrollBarPolicy(), Qt.ScrollBarAlwaysOff)
+
+
+class AnalysisPanelFitRowsTests(_DBTestBase):
+    def test_analysis_tables_are_fit_to_content(self):
+        from PyQt5.QtCore import Qt
+        state = bench.BenchState()
+        self.assertIsNone(state.error, state.error)
+        panel = bench._analysis_panel(_fake_ctx(), state)
+        tables = panel.findChildren(QTableWidget)
+        self.assertGreaterEqual(len(tables), 4, "Analysis tab lost its authority tables")
+        fitted = 0
+        for t in tables:
+            if t.rowCount() < 2:
+                continue
+            self.assertEqual(t.verticalScrollBarPolicy(), Qt.ScrollBarAlwaysOff,
+                             "an Analysis table still has an inner v-scrollbar")
+            one_row = t.horizontalHeader().height() + t.rowHeight(0) + 2 * t.frameWidth()
+            self.assertGreater(t.height(), one_row,
+                               "an Analysis table is clipped to one row")
+            fitted += 1
+        self.assertGreater(fitted, 0, "no multi-row Analysis table was fit to content")
+
+
+class LegendPinContrastTests(unittest.TestCase):
+    """Owner report (v2.11): pin colours + legend hard to see. Every category hue must
+    clear the 3:1 non-text floor on the pinmap card in BOTH themes, and the legend labels
+    must read at txt2 (not the txt3 dim tier that composited below AA)."""
+
+    def test_every_pin_category_clears_contrast_on_card_both_themes(self):
+        import ui.theme as T
+        cats = ("power", "ground", "core", "service", "lane", "must", "osc",
+                "fixed", "breakout", "fivev")
+        try:
+            for dark in (True, False):
+                T.set_theme(dark)
+                for c in cats:
+                    for surf in ("card", "inset"):
+                        r = T.category_contrast(c, surf)
+                        self.assertGreaterEqual(
+                            r, 3.0, f"{'dark' if dark else 'light'} {c} on {surf}: {r:.2f}")
+                # the pinmap sits on the card — hold the four historically-weak hues to AA
+                for c in ("service", "power", "breakout", "osc"):
+                    r = T.category_contrast(c, "card")
+                    self.assertGreaterEqual(
+                        r, 4.5, f"{'dark' if dark else 'light'} {c} on card below AA: {r:.2f}")
+        finally:
+            T.set_theme(True)
+
+    def test_legend_label_uses_txt2_not_txt3(self):
+        import ui.theme as T
+        import ui.widgets as W
+        from ui.features import bench_visuals as bv
+        lay = QHBoxLayout()
+        bv._leg_item(lay, QLabel(), "Power")
+        # the label added by _leg_item must resolve to txt2 (readable), never txt3
+        labels = [lay.itemAt(i).widget() for i in range(lay.count())
+                  if isinstance(lay.itemAt(i).widget(), QLabel)]
+        target = next(l for l in labels if l.text() == "Power")
+        for dark in (True, False):
+            T.set_theme(dark)
+            W.restyle_all()
+            ss = target.styleSheet()
+            self.assertIn(T.t("txt2"), ss, f"legend label not txt2 in {'dark' if dark else 'light'}")
+            self.assertNotIn(T.t("txt3"), ss, "legend label still uses the dim txt3 tier")
+        T.set_theme(True)
 
 
 if __name__ == "__main__":

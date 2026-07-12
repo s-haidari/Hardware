@@ -65,8 +65,12 @@ def test_category_contrast_composites_translucent_surface():
     bg = lum(comp) + 0.05
     expected = max(fg, bg) / min(fg, bg)
     assert abs(got - expected) < 1e-9
-    # And it is decisively different from the old fabricated-vs-black number (~3.84).
-    assert abs(got - 3.84) > 0.3
+    # And it is decisively different from the WRONG "hairline == pure black" number:
+    # compute that fabricated ratio dynamically (derived from the current power hue, so
+    # this stays true across category-palette retunes) and require a clear separation.
+    black_bg = lum(QColor(0, 0, 0)) + 0.05
+    fabricated_vs_black = max(fg, black_bg) / min(fg, black_bg)
+    assert abs(got - fabricated_vs_black) > 0.3
     T.set_theme(True)
 
 

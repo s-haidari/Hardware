@@ -164,15 +164,22 @@ def chrome_px(alias: str) -> int:
 # and the three greys given distinct temperatures (ground cool, lane neutral, fixed warm)
 # so power/osc no longer read as two near-identical ambers. One edit here retunes every
 # net + pin-class dot app-wide (single source of truth — see design-rules §3).
+# Contrast floor (owner report, v2.11 "colours hard to see on the pins"): every hue
+# clears WCAG's 3:1 non-text minimum on the card AND the inset surface in both themes,
+# and the four weakest (osc dark; service/fivev, power, breakout light) were bumped to
+# clear ~4.5:1 (AA text) on the card — the pins are small pads, so headroom matters.
+# Retuned in place: same semantic hue, just darker (light) / brighter (dark) enough to
+# separate cleanly from the surface. Guarded by category_contrast() +
+# test_category_contrast / test_prose_contract / test_bench_fixes.LegendPinContrastTests.
 CATEGORY_DARK = {
     "power": "#d69f4a", "ground": "#9aa8ba", "core": "#b69bea", "service": "#72c493",
-    "lane": "#969aa0", "must": "#eb8078", "osc": "#dc7f3c", "fixed": "#b2a99b",
+    "lane": "#969aa0", "must": "#eb8078", "osc": "#e58a45", "fixed": "#b2a99b",
     "breakout": "#52b6cc", "fivev": "#72c493",
 }
 CATEGORY_LIGHT = {
-    "power": "#9c6c1c", "ground": "#566374", "core": "#6d49b8", "service": "#37945a",
+    "power": "#8a5f14", "ground": "#566374", "core": "#6d49b8", "service": "#2e7d4c",
     "lane": "#565b64", "must": "#c74336", "osc": "#a85c14", "fixed": "#665e50",
-    "breakout": "#227e91", "fivev": "#37945a",
+    "breakout": "#1f7183", "fivev": "#2e7d4c",
 }
 
 UI_STACK = '"DM Sans","Segoe UI Variable Text","Segoe UI","Inter",sans-serif'

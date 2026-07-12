@@ -325,8 +325,14 @@ def _leg_item(row, sw, label, gap=8):
     # BENCH-01/02: compact, and a quiet sentence-case body label instead of the
     # ALL-CAPS eyebrow (which was over-used and shouted). Eyebrow stays for the
     # section headers only, so it keeps its structural meaning.
+    # Contrast (owner report, v2.11 "legend hard to see"): the label reads at txt2,
+    # NOT txt3. txt3 (W.body dim) composites to ~3.5:1 (dark) / ~4.0:1 (light) on the
+    # card — below WCAG AA for this 9px text; txt2 clears AA (~6.8 / ~5.9:1) while
+    # staying quieter than the txt1 swatch legend headers.
     row.addSpacing(gap); row.addWidget(sw); row.addSpacing(4)
-    lab = W.body(label, dim=True); lab.setFont(T.ui_font(9))
+    lab = QLabel(label); lab.setFont(T.ui_font(9))
+    W.register_restyle(lambda l=lab: l.setStyleSheet(
+        f"color:{T.t('txt2')};background:transparent;"), lab)
     row.addWidget(lab)
 
 

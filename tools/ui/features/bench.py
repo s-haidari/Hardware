@@ -796,7 +796,7 @@ def _analysis_panel(ctx, state: BenchState) -> QWidget:
         label = key.replace("_", " ").title()
         txt = ", ".join(str(n) for n in nums) if nums else "—"
         crows.append([W.body(label), str(len(nums)), W.body(txt, dim=not nums, mono=bool(nums), wrap=True)])
-    lay.addWidget(W.data_table(["Category", "Count", "Positions"], crows, stretch_col=2, wrap=True))
+    lay.addWidget(W.data_table(["Category", "Count", "Positions"], crows, stretch_col=2, wrap=True, fit_rows=True))
 
     # Card passive materials — the worst-cased per-package passive BOM.
     lay.addWidget(W.section_header(f"Card Passive Materials   {pkg}"))
@@ -812,7 +812,7 @@ def _analysis_panel(ctx, state: BenchState) -> QWidget:
         mrows.append([W.body(str(it.get("ref", "")), mono=True), W.body(str(it.get("part", ""))),
                       str(it.get("qty", "")), W.body(str(it.get("role", ""))),
                       W.body(str(it.get("note", "")), dim=True, wrap=True)])
-    lay.addWidget(W.data_table(["Reference", "Part", "Qty", "Role", "Note"], mrows, stretch_col=4, wrap=True))
+    lay.addWidget(W.data_table(["Reference", "Part", "Qty", "Role", "Note"], mrows, stretch_col=4, wrap=True, fit_rows=True))
 
     # ADG714 cell map — the must-switch fabric as octal-switch instances.
     cells = sauth.adg714_cell_map(authority)
@@ -837,7 +837,7 @@ def _analysis_panel(ctx, state: BenchState) -> QWidget:
                           W.tag("In Use", "ok") if used else W.tag("Spare", "mut")])
         card.body.addWidget(W.data_table(
             ["Channel", "S Pin", "D Pin", "Position", "Pin", "Destination", "State"],
-            srows, stretch_col=5))
+            srows, stretch_col=5, fit_rows=True))
         lay.addWidget(card)
 
     # Socket connections — every socket pin's path to the parent, not just switched ones.
@@ -851,7 +851,7 @@ def _analysis_panel(ctx, state: BenchState) -> QWidget:
                       W.body(str(cn.get("category", ""))), W.body(str(cn.get("contact", "")))])
     lay.addWidget(W.data_table(
         ["Pin", "Name", "Middle", "Destination", "Category", "Contact"],
-        krows, stretch_col=(3, 5), mono_cols={0}))
+        krows, stretch_col=(3, 5), mono_cols={0}, fit_rows=True))
 
     # Lint claim files — the drift gate.
     lay.addWidget(W.section_header("Lint Claim Files"))

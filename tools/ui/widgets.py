@@ -956,9 +956,50 @@ def dl(pairs: Sequence[Tuple[str, QWidget]], key_width: int = 136,
 
 
 # ── data table ───────────────────────────────────────────────────────────────
+class _FitTableWidget(QTableWidget):
+    """A data_table that sizes itself to show EVERY row at natural height — no inner
+    vertical scrollbar. Used for read-only analysis tables (bench Analysis tab) that
+    live inside an outer page scroll area, where a per-table inner scrollbar clipped
+    them to ~one visible row (owner report, v2.11). The fit height is
+    header + Σ(row heights) + frame, recomputed on show/resize because wrap=True row
+    heights depend on the (stretch-driven) column width, which is only known after
+    layout. Non-fit tables keep the default QTableWidget sizing + as-needed scrollbar."""
+
+    def _fit_height(self) -> int:
+        # Resize rows to their content first so wrapped cells report their true height
+        # at the current width; ResizeToContents does this lazily, but summing
+        # rowHeight() before a layout pass can read stale heights — force it.
+        self.resizeRowsToContents()
+        h = self.horizontalHeader().height() if not self.horizontalHeader().isHidden() else 0
+        for r in range(self.rowCount()):
+            h += self.rowHeight(r)
+        h += 2 * self.frameWidth()
+        # A horizontal scrollbar (non-wrap tables) eats vertical space; reserve it so the
+        # last row isn't clipped by the bar itself.
+        hsb = self.horizontalScrollBar()
+        if hsb is not None and hsb.isVisible():
+            h += hsb.height()
+        return h + 1                                        # +1 for the header underline hairline
+
+    def _apply_fit(self):
+        h = self._fit_height()
+        if h != self.minimumHeight() or h != self.maximumHeight():
+            self.setFixedHeight(h)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        # Width changed → wrapped row heights change → refit. Defer so this runs after
+        # the header/columns have taken the new width (avoids a stale first pass).
+        QTimer.singleShot(0, self._apply_fit)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        QTimer.singleShot(0, self._apply_fit)
+
+
 def data_table(columns: Sequence[str], rows: Sequence[Sequence], stretch_col=0,
                mono_cols=(), dim_cols=(), max_col: int = 300, wrap: bool = False,
-               row_tints=(), row_tips=None) -> QTableWidget:
+               row_tints=(), row_tips=None, fit_rows: bool = False) -> QTableWidget:
     """A structured table with light row and column separators.
 
     Cells may be a plain str (rendered as a native item) or a QWidget (tokens,
@@ -978,7 +1019,14 @@ def data_table(columns: Sequence[str], rows: Sequence[Sequence], stretch_col=0,
     fit (rows auto-size), instead of eliding — so a wide BOM stays readable in the
     panel width without a horizontal scrollbar (PROJ-07). Every cell's text colour
     comes from the active theme (PROJ-07: items no longer fall back to Qt's default
-    black, which was unreadable in dark mode)."""
+    black, which was unreadable in dark mode).
+
+    `fit_rows=True` makes the table size itself to ALL its rows (header + Σ row heights
+    + frame) with NO inner vertical scrollbar — for read-only tables that live inside an
+    outer page scroll area (bench Analysis tab), where the default QTableWidget height
+    otherwise clipped them to ~one visible row and forced an inner scroll (owner report,
+    v2.11). Only opt in for tables inside their own scroll parent; the default keeps the
+    normal viewport + as-needed scrollbar so large tables (BOM, sourcing) stay bounded."""
     from PyQt5.QtGui import QColor
     stretch = set(stretch_col) if isinstance(stretch_col, (list, tuple, set)) else {stretch_col}
     mono_cols = set(mono_cols); dim_cols = set(dim_cols)
@@ -994,7 +1042,8 @@ def data_table(columns: Sequence[str], rows: Sequence[Sequence], stretch_col=0,
                 painter.fillRect(option.rect, _qcolor(T.t("inset")))
             super().paint(painter, option, index)
 
-    tbl = QTableWidget(len(rows), len(columns))
+    tbl = (_FitTableWidget(len(rows), len(columns)) if fit_rows
+           else QTableWidget(len(rows), len(columns)))
     # Title-case headers (not letterspaced UPPERCASE): narrower, so a payload header
     # like "Manufacturer" stops clipping in a stretch column, and consistent with the
     # app's Title-case copy. A per-header tooltip is the safety net if one still elides.
@@ -1116,6 +1165,17 @@ def data_table(columns: Sequence[str], rows: Sequence[Sequence], stretch_col=0,
         _delegate = _RowTintDelegate(tbl)
         tbl.setItemDelegate(_delegate)
         tbl._row_tint_delegate = _delegate                # keep a ref alive with the table
+    if fit_rows:
+        # Show every row at natural height: kill the inner v-scrollbar and let the table
+        # own a Fixed height (computed in _FitTableWidget.showEvent / resizeEvent). Without
+        # the Fixed policy the surrounding layout would still hand it a viewport-bounded
+        # height and re-introduce the inner scroll.
+        tbl.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        tbl.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        # Size it up-front too so a never-shown table (offscreen render/regression test)
+        # already reports its full height before the first showEvent fires.
+        tbl.resizeRowsToContents()
+        tbl.setFixedHeight(tbl._fit_height())
     register_restyle(_style, tbl)
     return tbl
 
