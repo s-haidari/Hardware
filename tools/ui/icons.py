@@ -28,6 +28,10 @@ def _svg(body: str) -> str:
 GLYPHS = {
     # ── nav + chrome ────────────────────────────────────────────────────────
     "ham": _svg('<path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11"/>'),
+    # help: a question mark in a ring — the keyboard-shortcuts reference item.
+    "help": _svg('<circle cx="8" cy="8" r="5.6"/>'
+                 '<path d="M6.4 6.3a1.6 1.6 0 0 1 3.1.5c0 1.1-1.5 1.3-1.5 2.4"/>'
+                 '<path d="M8 11.2v.05"/>'),
     # activity: a pulse/waveform line — the Activity-log toggle in the nav footer.
     "activity": _svg('<path d="M2.2 8h2.3l1.5-3.6 2.7 7.2 1.5-3.6h3.6"/>'),
     "bench": _svg(

@@ -124,6 +124,10 @@ class NetdeckShell(QMainWindow):
         from . import motion as Mo
         from .util import _headless
         Mo.set_reduced_motion(_headless())   # headless render gate / CI = instant
+        # An 'Error:' log line auto-opens the Activity console so it can't scroll away
+        # unseen — but OFF under headless so the render gate / CI never auto-expand it
+        # (deterministic screenshots). Tests/drive-audit flip this to exercise the path.
+        self._auto_surface_errors = not _headless()
         self.setWindowTitle(WINDOW_TITLE)
         self.resize(1440, 900)
 
@@ -168,6 +172,7 @@ class NetdeckShell(QMainWindow):
         self._build_pages()
         self.apply_theme(self._dark)
         self._select(0)
+        self._restore_search_filter()       # re-apply a persisted Ctrl+K query (SEARCH-persist)
 
         # updates: a Settings button (or launch) asks; results marshal back to the GUI
         self._upd = _UpdateSignals()
@@ -204,36 +209,217 @@ class NetdeckShell(QMainWindow):
         br.addWidget(ham)
         self._nav_lay.addWidget(brand)
 
-        # Ctrl+K search — live-filters the workspace list
+        # Ctrl+K search — live-filters the workspace list by title AND category, so
+        # typing an area name ("firmware", "version") surfaces a workspace whose title
+        # differs. The text persists across launches (paired with the pane-width persist).
         self._search = QLineEdit(); self._search.setObjectName("navSearch")
-        self._search.setPlaceholderText("Search  Ctrl+K")
+        self._search.setPlaceholderText("Search workspace or category  Ctrl+K")
         self._search.setClearButtonEnabled(True)
         self._search.addAction(W.svg_icon(_ICON["search"]), QLineEdit.LeadingPosition)
+        import LibraryManager as LM
+        saved = str(LM.read_setting("NavSearch", "") or "").strip()
+        if saved:
+            self._search.setText(saved)          # applied once the pages exist (_restore_search_filter)
         self._search.textChanged.connect(self._filter_nav)
+        self._search.editingFinished.connect(self._persist_search)
+        # editingFinished covers a typed query on blur/Enter, but the CLEAR affordances
+        # (the line-edit X button, and Ctrl+B collapse which clears the field) empty it
+        # WITHOUT an editingFinished — so persist an emptied query immediately, or a stale
+        # query would remain in settings and wrongly re-apply on the next launch.
+        self._search.textChanged.connect(self._persist_search_if_cleared)
         self._nav_lay.addWidget(self._search)
+
+        # "Did you mean …?" — a quiet link shown only when a query matches nothing;
+        # clicking it adopts the closest workspace/category name (difflib).
+        self._suggestion = ""
+        self._did_you_mean = QPushButton()
+        self._did_you_mean.setObjectName("navDidYouMean")
+        self._did_you_mean.setCursor(Qt.PointingHandCursor)
+        self._did_you_mean.setVisible(False)
+        self._did_you_mean.clicked.connect(self._adopt_suggestion)
+        self._nav_lay.addWidget(self._did_you_mean)
         self._nav_lay.addSpacing(6)
 
-        # keyboard: Ctrl+K focuses search, Ctrl+B collapses, Esc clears (search-scoped)
-        QShortcut(QKeySequence("Ctrl+K"), self,
-                  activated=lambda: (self._search.setFocus(), self._search.selectAll()))
-        QShortcut(QKeySequence("Ctrl+B"), self, activated=self._toggle_nav)
+        # keyboard: Ctrl+K focuses search, Ctrl+B collapses, Ctrl+/ shows the shortcut
+        # reference, Esc clears (search-scoped). Each carries a 'shortcutHelp' property so
+        # the reference dialog enumerates every bound shortcut app-wide with a real label.
+        sc_k = QShortcut(QKeySequence("Ctrl+K"), self,
+                         activated=lambda: (self._search.setFocus(), self._search.selectAll()))
+        sc_k.setProperty("shortcutHelp", "Search workspaces")
+        sc_b = QShortcut(QKeySequence("Ctrl+B"), self, activated=self._toggle_nav)
+        sc_b.setProperty("shortcutHelp", "Collapse or expand the navigation")
+        sc_h = QShortcut(QKeySequence("Ctrl+/"), self, activated=self._show_shortcuts)
+        sc_h.setProperty("shortcutHelp", "Show keyboard shortcuts")
         esc = QShortcut(QKeySequence("Escape"), self._search)
         esc.setContext(Qt.WidgetShortcut)
-        esc.activated.connect(lambda: (self._search.clear(), self._search.clearFocus()))
+        esc.setProperty("shortcutHelp", "Clear the search")
+        esc.activated.connect(
+            lambda: (self._search.clear(), self._search.clearFocus(), self._persist_search()))
         return pane
 
     def _filter_nav(self, text: str = ""):
-        """Live-filter the workspace list by the search text (Ctrl+K). Only the main
-        workspaces are hidden; the footer (theme / Settings / update) is never
-        filtered. Empty query restores all. No-ops safely before the pages exist."""
+        """Live-filter the workspace list by the search text (Ctrl+K), matching on the
+        workspace title OR its category, so an area name surfaces a differently-titled
+        workspace. While searching, matches are grouped under per-category eyebrows (the
+        flat "Workspaces" header hides); an empty query restores the flat list. The footer
+        (theme / Settings / update) is never filtered. No-ops before the pages exist."""
         if not hasattr(self, "_page_specs"):
             return
         q = (text or "").strip().lower()
+        searching = bool(q)
+        cat_visible = {c: False for c in getattr(self, "_cat_eyebrows", {})}
+        any_visible = False
         for i, item in enumerate(self._nav_items):
             feat = self._page_specs[i][0]
             if feat.id == "settings":          # footer item — never filtered
                 continue
-            item.setVisible((not q) or (q in feat.title.lower()))
+            cat = getattr(feat, "category", "") or "Workspaces"
+            match = (not q) or (q in feat.title.lower()) or (q in cat.lower())
+            item.setVisible(match)
+            if match:
+                any_visible = True
+                if cat in cat_visible:
+                    cat_visible[cat] = True
+        # the default "Workspaces" header shows only when NOT searching; each category
+        # eyebrow shows only while searching AND when it has at least one visible match.
+        if hasattr(self, "_eyebrow"):
+            self._eyebrow.setVisible(not searching and not self._nav_collapsed)
+        for cat, eb in getattr(self, "_cat_eyebrows", {}).items():
+            eb.setVisible(searching and cat_visible.get(cat, False) and not self._nav_collapsed)
+        self._update_did_you_mean(q, any_visible)
+
+    def _update_did_you_mean(self, q: str, any_visible: bool):
+        """Show a 'Did you mean <name>?' link when a query matched no workspace, using
+        difflib against every workspace title + category. Hidden on an empty query, on any
+        match, or when the nav is collapsed. Stores the suggestion for _adopt_suggestion."""
+        dym = getattr(self, "_did_you_mean", None)
+        if dym is None:
+            return
+        if not q or any_visible:
+            self._suggestion = ""
+            dym.setVisible(False)
+            return
+        import difflib
+        names = []
+        for spec in self._page_specs:
+            feat = spec[0]
+            if feat.id == "settings":
+                continue
+            names.append(feat.title)
+            if getattr(feat, "category", ""):
+                names.append(feat.category)
+        lower = [n.lower() for n in names]
+        hit = difflib.get_close_matches(q, lower, n=1, cutoff=0.4)
+        if hit:
+            self._suggestion = names[lower.index(hit[0])]
+            dym.setText(f"Did you mean {self._suggestion}?")
+            dym.setVisible(not self._nav_collapsed)
+        else:
+            self._suggestion = ""
+            dym.setVisible(False)
+
+    def _adopt_suggestion(self):
+        """Adopt the 'Did you mean' suggestion — set it as the query (which now matches)."""
+        if getattr(self, "_suggestion", ""):
+            self._search.setText(self._suggestion)
+            self._search.setFocus()
+            self._persist_search()
+
+    def _persist_search(self):
+        """Persist the current Ctrl+K query so it survives a relaunch (paired with the
+        pane-width persist). The single writer for the "NavSearch" preference."""
+        try:
+            import LibraryManager as LM
+            LM.write_setting("NavSearch", self._search.text().strip())
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _persist_search_if_cleared(self, text: str = ""):
+        """Persist an EMPTIED query at once (the clear-button X / Ctrl+B collapse clear the
+        field without an editingFinished). Persisting only on empty keeps per-keystroke
+        writes off the hot path while closing the stale-query-re-applies-on-relaunch gap."""
+        if not (text or "").strip():
+            self._persist_search()
+
+    def _restore_search_filter(self):
+        """Apply a search query restored from settings once the pages exist. If the saved
+        query now matches no workspace (features changed since it was saved), clear it
+        silently so the user never opens to an empty, unexplained nav."""
+        q = self._search.text().strip()
+        if not q:
+            return
+        self._filter_nav(q)
+        # isHidden(), not isVisible(): at construction the window is not shown yet, so
+        # isVisible() is False for every item even when it matched — that would wrongly
+        # clear every restored query. isHidden() reflects the explicit filter flag.
+        main_visible = any(
+            not self._nav_items[i].isHidden()
+            for i in range(len(self._nav_items))
+            if self._page_specs[i][0].id != "settings")
+        if not main_visible:
+            self._search.blockSignals(True)
+            self._search.clear()
+            self._search.blockSignals(False)
+            self._filter_nav("")
+            self._persist_search()
+
+    # -- keyboard shortcuts reference --
+    def _iter_shortcuts(self):
+        """Every bound QShortcut under the window, as sorted (keys, description) pairs — the
+        app-wide keyboard map. Descriptions come from the 'shortcutHelp' dynamic property set
+        where each shortcut is created; a shortcut without one still appears by its key so the
+        reference is honest and complete. Deduplicated by key sequence (a described binding
+        wins over an undescribed duplicate)."""
+        from PyQt5.QtWidgets import QShortcut as _QS
+        seen: dict = {}
+        for sc in self.findChildren(_QS):
+            keys = sc.key().toString(QKeySequence.NativeText).strip()
+            if not keys:
+                continue
+            desc = str(sc.property("shortcutHelp") or "")
+            if keys not in seen or (desc and not seen[keys]):
+                seen[keys] = desc
+        return sorted(seen.items(), key=lambda kv: kv[0].lower())
+
+    def _build_shortcuts_dialog(self):
+        """The keyboard-shortcuts reference: a small two-column (keys | action) dialog
+        enumerated live from the bound shortcuts. Returned unshown so the render gate and
+        tests can inspect it without a blocking modal."""
+        from PyQt5.QtWidgets import QDialog, QGridLayout
+        dlg = QDialog(self)
+        dlg.setObjectName("shortcutsDialog")
+        dlg.setWindowTitle("Keyboard Shortcuts")
+        dlg.setModal(True)
+        dlg.setMinimumWidth(340)
+        lay = QVBoxLayout(dlg); lay.setContentsMargins(20, 18, 20, 16); lay.setSpacing(14)
+        lay.addWidget(W.eyebrow("Keyboard Shortcuts"))
+        rows = self._iter_shortcuts()
+        if rows:
+            grid = QGridLayout(); grid.setHorizontalSpacing(18); grid.setVerticalSpacing(8)
+            grid.setColumnStretch(1, 1)
+            for r, (keys, desc) in enumerate(rows):
+                grid.addWidget(W.body(keys, mono=True), r, 0, Qt.AlignTop)
+                grid.addWidget(W.body(desc or "Shortcut", dim=not desc), r, 1, Qt.AlignTop)
+            lay.addLayout(grid)
+        else:
+            lay.addWidget(W.body("No keyboard shortcuts are bound.", dim=True))
+        btns = QHBoxLayout(); btns.addStretch(1)
+        btns.addWidget(W.btn("Close", "ghost", "Close this reference", dlg.accept))
+        lay.addLayout(btns)
+        W.register_restyle(
+            lambda: dlg.setStyleSheet(f"QDialog{{background:{T.t('surface')};}}"), dlg)
+        dlg.setStyleSheet(f"QDialog{{background:{T.t('surface')};}}")
+        return dlg
+
+    def _show_shortcuts(self):
+        """Open the keyboard-shortcuts reference (Ctrl+/ or the footer item). Under headless
+        a modal would block the run forever, so the dialog is built and returned unshown."""
+        from .util import _headless
+        dlg = self._build_shortcuts_dialog()
+        if _headless():
+            return dlg
+        dlg.exec_()
+        return dlg
 
     def _build_pages(self):
         lay = self._nav_lay
@@ -241,10 +427,13 @@ class NetdeckShell(QMainWindow):
         settings = [f for f in self._features if f.id == "settings"]
         ordered = main + settings
 
+        # The flat "Workspaces" header (default view). Per-category eyebrows are inserted
+        # before each category's first item, hidden until a Ctrl+K search groups matches.
         self._eyebrow = W.eyebrow("Workspaces")
         lay.addWidget(self._eyebrow)
         self._nav_items = []
         self._page_specs = []          # [feature, built?] — pages build lazily on first nav
+        self._cat_eyebrows = {}        # category -> its (hidden) eyebrow, shown while searching
         for idx, feat in enumerate(ordered):
             self._stack.addWidget(QWidget())
             self._page_specs.append([feat, False])
@@ -255,6 +444,11 @@ class NetdeckShell(QMainWindow):
             if feat.id == "settings":
                 self._foot_items.append((idx, item))
             else:
+                cat = getattr(feat, "category", "") or "Workspaces"
+                if cat not in self._cat_eyebrows:
+                    eb = W.eyebrow(cat); eb.setVisible(False)
+                    lay.addWidget(eb)
+                    self._cat_eyebrows[cat] = eb
                 lay.addWidget(item)
             self._nav_items.append(item)
 
@@ -270,6 +464,12 @@ class NetdeckShell(QMainWindow):
         self._activity_item.setToolTip("Show or hide the activity log")
         lay.addWidget(self._activity_item)
         self._sync_activity_item()
+
+        # Keyboard-shortcuts reference — opens the app-wide shortcut map (also Ctrl+/).
+        self._shortcuts_item = NavItem("Keyboard Shortcuts", W.svg_icon(_ICON["help"]),
+                                       self._show_shortcuts)
+        self._shortcuts_item.setToolTip("Show the keyboard shortcuts (Ctrl+/)")
+        lay.addWidget(self._shortcuts_item)
 
         self._theme_btn = QPushButton()
         self._theme_btn.setObjectName("navItem")
@@ -299,11 +499,16 @@ class NetdeckShell(QMainWindow):
         self._nav.setFixedWidth(56 if self._nav_collapsed else 236)
         self._brand.setVisible(not self._nav_collapsed)
         self._search.setVisible(not self._nav_collapsed)
+        self._did_you_mean.setVisible(False)   # search chrome hides in the rail
         self._eyebrow.setVisible(not self._nav_collapsed)
+        for eb in getattr(self, "_cat_eyebrows", {}).values():
+            eb.setVisible(False)               # category headers only appear during search
         for it in self._nav_items:
             it.collapse(self._nav_collapsed)
         if hasattr(self, "_update_item"):
             self._update_item.collapse(self._nav_collapsed)
+        if hasattr(self, "_shortcuts_item"):
+            self._shortcuts_item.collapse(self._nav_collapsed)
         self._sync_activity_item()
         self._sync_theme_btn()
 
@@ -701,10 +906,28 @@ class NetdeckShell(QMainWindow):
         text = str(msg)
         if getattr(self, "_console", None) is not None:
             self._console.append(text)
-            if not getattr(self, "_console_open", False):   # count unseen lines for the badge
+            # An 'Error:' line (Services logs failures as "Error: {e}") auto-opens the
+            # console so a failure can't scroll away unseen — gated by _auto_surface_errors
+            # (off under headless). Otherwise a hidden console just bumps the unseen badge.
+            if text.strip().lower().startswith("error:") and getattr(self, "_auto_surface_errors", False):
+                self._surface_console()
+            elif not getattr(self, "_console_open", False):   # count unseen lines for the badge
                 self._unseen_activity = getattr(self, "_unseen_activity", 0) + 1
                 self._sync_activity_item()
         self.statusBar().showMessage(text, 6000)
+
+    def _surface_console(self):
+        """Open the Activity console and expand its body so an error line is visible at
+        once (auto-triggered from _log; clears the unseen badge). Only reached when
+        _auto_surface_errors is on. Deliberately does NOT persist ConsoleVisible: an error
+        forcing the console open is a transient reaction, not the user's choice to keep it
+        open — a one-off failure must not leave every future launch showing the console."""
+        if not getattr(self, "_console_open", False):
+            self._console_open = True
+            self._console.setVisible(True)
+        self._console.set_expanded(True, notify=False)   # expand the body; don't persist
+        self._unseen_activity = 0
+        self._sync_activity_item()
 
     def _persist_console(self, expanded: bool):
         """Persist the console's expanded/collapsed choice so it survives a relaunch."""

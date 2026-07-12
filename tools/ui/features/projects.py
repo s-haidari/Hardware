@@ -4237,6 +4237,7 @@ class ProjectsFeature(F.Feature):
     id = "projects"
     title = "Projects"
     order = 20
+    category = "Design"
 
     def build(self, ctx: F.Context) -> QWidget:
         state = ProjectsState(ctx.cfg)

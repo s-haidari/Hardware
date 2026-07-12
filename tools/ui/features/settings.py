@@ -360,6 +360,7 @@ class SettingsFeature(F.Feature):
     id = "settings"
     title = "Settings"
     order = 900
+    category = "System"
 
     def build(self, ctx: F.Context) -> QWidget:
         return W.scroll_body(_settings_panel(ctx, None))

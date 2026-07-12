@@ -816,6 +816,7 @@ class GitFeature(F.Feature):
     id = "git"
     title = "Git"
     order = 50                          # after Bench (30), before Settings (900)
+    category = "Version Control"
 
     def build(self, ctx: F.Context) -> QWidget:
         # Single-panel Workspace: the page title reads "Git" and the sub-tab bar is hidden

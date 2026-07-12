@@ -912,6 +912,7 @@ class BenchFeature(F.Feature):
     id = "bench"
     title = "Bench"
     order = 30
+    category = "Firmware"
 
     def build(self, ctx: F.Context) -> QWidget:
         state = BenchState()

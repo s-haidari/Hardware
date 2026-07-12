@@ -128,8 +128,65 @@ def render_all(out_dir, themes=("dark", "light"), only=None, settle=1.5):
             path = out_dir / f"{stem}.{theme}.png"
             win.grab().save(str(path))
             saved.append(path)
+        saved.extend(_render_chrome(win, app, out_dir, theme, settle))
     win.close()
     return saved
+
+
+def _render_chrome(win, app, out_dir, theme, settle):
+    """Capture the shell CHROME states the per-surface loop never shows: the collapsed
+    nav rail, a Ctrl+K search grouping matches under category eyebrows, the no-result
+    'Did you mean?' suggestion, the keyboard-shortcuts reference, and the Activity console
+    auto-expanded by an error. Restores the default chrome state afterwards so the other
+    theme's captures start clean."""
+    out = []
+    win._select(0)
+    win.resize(1440, 960)
+
+    # 1. collapsed nav rail
+    if not win._nav_collapsed:
+        win._toggle_nav()
+    _settle(app, settle)
+    p = out_dir / f"chrome.nav-collapsed.{theme}.png"; win.grab().save(str(p)); out.append(p)
+    win._toggle_nav()                       # expand back
+    _settle(app, settle)
+
+    # 2. Ctrl+K search grouping matches under category eyebrows ("r" hits every category)
+    win._search.setText("r")
+    _settle(app, settle)
+    p = out_dir / f"chrome.nav-search-grouped.{theme}.png"; win.grab().save(str(p)); out.append(p)
+
+    # 3. no-result 'Did you mean?' suggestion
+    win._search.setText("libary")
+    _settle(app, settle)
+    p = out_dir / f"chrome.nav-did-you-mean.{theme}.png"; win.grab().save(str(p)); out.append(p)
+    win._search.setText("")
+    _settle(app, settle)
+
+    # 4. keyboard-shortcuts reference dialog
+    dlg = win._build_shortcuts_dialog()
+    dlg.resize(360, dlg.sizeHint().height())
+    dlg.show()
+    _settle(app, settle)
+    p = out_dir / f"chrome.shortcuts.{theme}.png"; dlg.grab().save(str(p)); out.append(p)
+    dlg.close(); dlg.deleteLater()
+    _settle(app, settle)
+
+    # 5. Activity console auto-expanded by an Error line (flip the headless gate on)
+    prev = win._auto_surface_errors
+    win._auto_surface_errors = True
+    win._log("Error: example failure so the console auto-expands for the render gate")
+    _settle(app, settle)
+    p = out_dir / f"chrome.console-error.{theme}.png"; win.grab().save(str(p)); out.append(p)
+
+    # restore default chrome state for the next theme / a clean finish
+    win._auto_surface_errors = prev
+    win._console_open = False
+    win._console.setVisible(False)
+    win._unseen_activity = 0
+    win._sync_activity_item()
+    _settle(app, min(settle, 0.4))
+    return out
 
 
 def main(argv=None):

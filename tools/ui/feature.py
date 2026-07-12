@@ -131,6 +131,10 @@ class Feature:
     title: str = ""               # nav label (Title Case)
     icon: str = ""                # ui.widgets icon name
     order: int = 100              # nav ordering (lower first)
+    category: str = ""            # search grouping label (Ctrl+K groups matches under a
+                                  # category eyebrow) AND a second match target, so typing
+                                  # the area name surfaces a workspace whose title differs.
+                                  # Empty falls back to the default "Workspaces" group.
     enabled: bool = True          # False → an honest DISABLED nav item (greyed, not
                                   # clickable, `disabled_tip` on hover) whose page is
                                   # never built — for a shelved feature, so the nav

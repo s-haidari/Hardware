@@ -978,6 +978,91 @@ def audit_subtab_animation():
         _motion.set_reduced_motion(prev)
 
 
+def audit_shell_chrome():
+    """Drive the shell CHROME quick-wins end-to-end on the real NetdeckShell: nav
+    collapse/expand, Ctrl+K filter matching title AND category with per-category eyebrow
+    grouping, a no-result 'Did you mean?' suggestion + adopt, the keyboard-shortcuts
+    reference enumeration, and an 'Error:'-line auto-expanding the Activity console. The
+    console assertion flips _auto_surface_errors ON explicitly because it is gated OFF
+    under headless — the guard itself is asserted first so both halves are proven."""
+    from ui.shell import NetdeckShell
+    from ui import features  # noqa: F401 — importing registers every feature
+    LM.write_setting("NavSearch", "")            # clean slate for the persist/restore path
+    try:
+        shell = NetdeckShell(LM.load_config())
+        shell.show(); _pump()                     # show so isHidden() reflects the filter flags
+
+        def vis_ids():
+            return [shell._page_specs[i][0].id for i, it in enumerate(shell._nav_items)
+                    if not it.isHidden() and shell._page_specs[i][0].id != "settings"]
+
+        # nav collapse/expand
+        w_open = shell._nav.width()
+        shell._toggle_nav(); _pump()
+        if not shell._nav_collapsed or shell._nav.width() >= w_open:
+            _fail("Shell chrome: nav did not collapse")
+        shell._toggle_nav(); _pump()
+        if shell._nav_collapsed:
+            _fail("Shell chrome: nav did not expand back")
+
+        # Ctrl+K filter by CATEGORY text + per-category eyebrow grouping
+        shell._search.setText("firmware"); _pump()
+        if vis_ids() != ["bench"]:
+            _fail(f"Shell chrome: category search 'firmware' → {vis_ids()} (want ['bench'])")
+        if shell._cat_eyebrows["Firmware"].isHidden() or not shell._eyebrow.isHidden():
+            _fail("Shell chrome: category grouping eyebrows wrong while searching")
+
+        # no-result 'Did you mean?' + adopt
+        shell._search.setText("libary"); _pump()
+        if shell._did_you_mean.isHidden() or shell._suggestion != "Library":
+            _fail(f"Shell chrome: 'did you mean' missing (suggestion={shell._suggestion!r})")
+        shell._adopt_suggestion(); _pump()
+        if shell._search.text() != "Library" or shell._did_you_mean.isHidden() is False:
+            _fail("Shell chrome: adopting the suggestion did not resolve to a match")
+        shell._search.setText(""); _pump()
+        if set(vis_ids()) != {"library", "projects", "bench", "git"}:
+            _fail(f"Shell chrome: clearing search did not restore the flat list ({vis_ids()})")
+
+        # persist-on-clear: a query cleared by Ctrl+B collapse (bypasses editingFinished)
+        # must NOT stay persisted, or it would wrongly re-apply next launch
+        shell._search.setText("bench"); shell._persist_search(); _pump()
+        shell._toggle_nav(); _pump()              # collapse clears the field
+        if LM.read_setting("NavSearch", "") != "":
+            _fail("Shell chrome: collapsing left a stale query persisted (would re-apply on relaunch)")
+        shell._toggle_nav(); _pump()
+
+        # keyboard-shortcuts reference enumerates the bound shortcuts
+        rows = dict(shell._iter_shortcuts())
+        for keys in ("Ctrl+K", "Ctrl+B", "Ctrl+/"):
+            if not rows.get(keys):
+                _fail(f"Shell chrome: shortcut '{keys}' missing from the reference")
+        dlg = shell._show_shortcuts()             # headless → built, not exec'd
+        if dlg is None:
+            _fail("Shell chrome: shortcuts dialog did not build")
+        else:
+            dlg.deleteLater()
+
+        # Error auto-expand (headless-guarded): OFF by default, ON when enabled
+        if shell._auto_surface_errors is not False:
+            _fail("Shell chrome: _auto_surface_errors should be OFF under headless")
+        shell._console_open = False; shell._console.setVisible(False); shell._unseen_activity = 0
+        shell._log("Error: gated off stays hidden"); _pump()
+        if shell._console_open is not False:
+            _fail("Shell chrome: error surfaced the console while gated OFF")
+        shell._auto_surface_errors = True
+        shell._log("Error: this must surface"); _pump()
+        if not shell._console_open or not shell._console.is_expanded():
+            _fail("Shell chrome: an Error line did not auto-expand the console when enabled")
+
+        shell.close(); _pump()
+    except Exception as e:  # noqa: BLE001
+        _fail("Shell chrome quick-wins", e); return
+    finally:
+        LM.write_setting("NavSearch", "")
+    print("  shell chrome driven (collapse, Ctrl+K category grouping, did-you-mean, "
+          "shortcuts, error auto-expand — no crash)", flush=True)
+
+
 def main() -> int:
     cfg = _make_fixture()
     print("drive-audit fixture:", cfg["RepoRoot"], flush=True)
@@ -987,6 +1072,7 @@ def main() -> int:
     audit_bench_styled()
     audit_settings_styled()
     audit_subtab_animation()
+    audit_shell_chrome()
     # Whole-app smoke: build the real NetdeckShell and lazily build EVERY page. The styled
     # shell is what `python -m ui` now launches; a construction/selection crash (a feature
     # registration or page-build regression, or the library-location rebuild) must fail here,

@@ -449,6 +449,11 @@ QLabel {{ background: transparent; }}
    Qt disabled widgets don't receive hover, but pin :disabled:hover explicitly so the
    greyed state can never flash the hover wash regardless of Qt/style quirks. */
 #navItem:disabled, #navItem:disabled:hover {{ background: transparent; color: {c['txt3']}; }}
+/* the "Did you mean …?" search suggestion — a quiet link under the search box,
+   shown only when a Ctrl+K query matches nothing (difflib nearest workspace). */
+#navDidYouMean {{ background: transparent; border: none; color: {c['txt3']};
+    text-align: left; padding: 2px 6px; }}
+#navDidYouMean:hover {{ color: {c['txt1']}; }}
 
 /* buttons */
 QPushButton {{ background: {c['ctl']}; border: 1px solid {c['stroke']}; border-radius: {rc}px;

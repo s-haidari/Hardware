@@ -106,6 +106,167 @@ def test_activity_console_hidden_by_default_and_toggles_from_the_nav():
         win.close()
 
 
+def test_search_matches_category_and_groups_under_eyebrows():
+    """Ctrl+K matches a workspace by title OR category, and while searching the matches
+    group under per-category eyebrows (the flat "Workspaces" header hides); an empty query
+    restores the flat list. Uses isHidden() because the window is not shown in the suite."""
+    _app().setStyle("Fusion")
+    import LibraryManager as LM
+    from ui.shell import NetdeckShell
+    LM.write_setting("NavSearch", "")
+    win = NetdeckShell(LM.load_config())
+    try:
+        def visible_ids():
+            return [win._page_specs[i][0].id for i, it in enumerate(win._nav_items)
+                    if not it.isHidden() and win._page_specs[i][0].id != "settings"]
+
+        # default: flat list, the "Workspaces" header shows, category eyebrows hidden
+        assert set(visible_ids()) == {"library", "projects", "bench", "git"}
+        assert not win._eyebrow.isHidden()
+        assert all(eb.isHidden() for eb in win._cat_eyebrows.values())
+
+        # match by CATEGORY text ("Firmware") even though the title is "Bench"
+        win._search.setText("firmware")
+        assert visible_ids() == ["bench"]
+        assert not win._cat_eyebrows["Firmware"].isHidden()   # its group header appears
+        assert win._eyebrow.isHidden()                        # the flat header hides while searching
+
+        # match by title
+        win._search.setText("git")
+        assert visible_ids() == ["git"]
+        assert not win._cat_eyebrows["Version Control"].isHidden()
+
+        # cleared → flat list restored, category headers hidden again
+        win._search.setText("")
+        assert set(visible_ids()) == {"library", "projects", "bench", "git"}
+        assert not win._eyebrow.isHidden()
+        assert all(eb.isHidden() for eb in win._cat_eyebrows.values())
+    finally:
+        win.close()
+
+
+def test_search_did_you_mean_on_zero_results():
+    """A query that matches nothing surfaces a 'Did you mean <name>?' link (difflib) that,
+    when adopted, becomes the query and now matches."""
+    _app().setStyle("Fusion")
+    import LibraryManager as LM
+    from ui.shell import NetdeckShell
+    LM.write_setting("NavSearch", "")
+    win = NetdeckShell(LM.load_config())
+    try:
+        win._search.setText("libary")            # a typo of "Library"
+        assert not win._did_you_mean.isHidden()
+        assert win._suggestion == "Library"
+        assert "Library" in win._did_you_mean.text()
+        win._adopt_suggestion()                  # clicking the link adopts the suggestion
+        assert win._search.text() == "Library"
+        assert win._did_you_mean.isHidden()      # now it matches → the link hides
+        # a query that matches leaves the link hidden and no stale suggestion
+        win._search.setText("bench")
+        assert win._did_you_mean.isHidden()
+        assert win._suggestion == ""
+    finally:
+        win.close()
+
+
+def test_search_text_persists_across_relaunch():
+    """The Ctrl+K query persists across launches (paired with pane-width persistence):
+    a saved query is restored and applied on init; a saved query that now matches nothing
+    is cleared silently so the nav is never left empty and unexplained."""
+    _app().setStyle("Fusion")
+    import LibraryManager as LM
+    from ui.shell import NetdeckShell
+    try:
+        # a valid saved query is restored AND applied (the nav opens filtered)
+        LM.write_setting("NavSearch", "bench")
+        win = NetdeckShell(LM.load_config())
+        assert win._search.text() == "bench"
+        vis = [win._page_specs[i][0].id for i, it in enumerate(win._nav_items)
+               if not it.isHidden() and win._page_specs[i][0].id != "settings"]
+        assert vis == ["bench"]
+        # a fresh edit persists through the single writer
+        win._search.setText("git")
+        win._persist_search()
+        assert LM.read_setting("NavSearch", "") == "git"
+        # clearing via a path that bypasses editingFinished (Ctrl+B collapse clears the
+        # field; the clear-button X calls clear()) must ALSO persist the emptied query, or a
+        # stale query would wrongly re-apply next launch (adversarial-review finding).
+        win._toggle_nav()                        # collapse clears the search field
+        assert win._search.text() == ""
+        assert LM.read_setting("NavSearch", "") == ""
+        win._toggle_nav()
+        win._search.setText("bench")
+        win._persist_search()
+        win._search.clear()                      # the clear-button X path
+        assert LM.read_setting("NavSearch", "") == ""
+        win.close()
+
+        # a stale query that matches nothing is cleared silently on the next launch
+        LM.write_setting("NavSearch", "zzznomatch")
+        win2 = NetdeckShell(LM.load_config())
+        assert win2._search.text() == ""
+        vis2 = [win2._page_specs[i][0].id for i, it in enumerate(win2._nav_items)
+                if not it.isHidden() and win2._page_specs[i][0].id != "settings"]
+        assert set(vis2) == {"library", "projects", "bench", "git"}
+        win2.close()
+    finally:
+        LM.write_setting("NavSearch", "")
+
+
+def test_error_log_auto_expands_console_but_only_when_enabled():
+    """An 'Error:'-prefixed log line auto-opens + expands the Activity console so a failure
+    can't scroll away unseen — but ONLY when _auto_surface_errors is on (it is off under
+    headless so CI/render-gate stay deterministic)."""
+    _app().setStyle("Fusion")
+    import LibraryManager as LM
+    from ui.shell import NetdeckShell
+    LM.write_setting("ConsoleVisible", "")
+    win = NetdeckShell(LM.load_config())
+    try:
+        assert win._auto_surface_errors is False     # headless default: gated OFF
+        win._console_open = False; win._console.setVisible(False); win._unseen_activity = 0
+        win._log("Error: something broke")
+        assert win._console_open is False            # gated off → stays hidden
+        assert win._unseen_activity == 1             # just bumps the unseen badge
+
+        # with the gate on, the same line surfaces the console
+        win._auto_surface_errors = True
+        win._log("Error: another failure")
+        assert win._console_open is True
+        assert win._console.is_expanded() is True
+        assert win._unseen_activity == 0             # surfacing clears the badge
+        # a non-error line does NOT force the console open
+        win._console_open = False; win._console.setVisible(False); win._unseen_activity = 0
+        win._log("wrote file")
+        assert win._console_open is False
+        assert win._unseen_activity == 1
+    finally:
+        win.close()
+
+
+def test_shortcuts_reference_enumerates_bound_shortcuts():
+    """The keyboard-shortcuts reference enumerates every bound QShortcut app-wide with its
+    key + description (from the 'shortcutHelp' property), and builds a non-empty dialog."""
+    _app().setStyle("Fusion")
+    import LibraryManager as LM
+    from ui.shell import NetdeckShell
+    win = NetdeckShell(LM.load_config())
+    try:
+        rows = dict(win._iter_shortcuts())
+        assert rows.get("Ctrl+K") == "Search workspaces"
+        assert rows.get("Ctrl+B") == "Collapse or expand the navigation"
+        assert rows.get("Ctrl+/") == "Show keyboard shortcuts"
+        assert "Esc" in rows                          # the search-scoped clear
+        dlg = win._show_shortcuts()                   # headless → built but not exec'd
+        assert dlg is not None
+        from PyQt5.QtWidgets import QLabel
+        texts = {lbl.text() for lbl in dlg.findChildren(QLabel)}
+        assert "Ctrl+K" in texts and "Search workspaces" in texts
+        dlg.deleteLater()
+    finally:
+        win.close()
+
+
 def test_theme_button_label_and_icon_stay_in_sync():
     """_sync_theme_btn is the single source of truth for the theme button's label +
     glyph; toggling the theme and collapsing the nav both route through it, so the

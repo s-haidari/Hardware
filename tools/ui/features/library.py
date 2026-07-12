@@ -1330,6 +1330,7 @@ class LibraryFeature(F.Feature):
     id = "library"
     title = "Library"
     order = 10
+    category = "Library"
 
     def build(self, ctx: F.Context) -> QWidget:
         return W.Workspace(ctx, "Library", [
