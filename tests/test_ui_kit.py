@@ -82,31 +82,6 @@ def test_state_empty_and_loading_and_error():
     assert lo.findChildren(W.Skeleton)
     _destroy(e); _destroy(lo); _destroy(er)
 
-def test_async_region_renders_synchronously_offscreen():
-    # offscreen run_populate is synchronous, so the rendered result is present immediately
-    r = kit.async_region(lambda: [1, 2, 3], lambda data: W.body(f"{len(data)} rows"))
-    assert any("3 rows" in l.text() for l in r.findChildren(QLabel))
-    _destroy(r)
-
-def test_async_region_error_path_with_no_services_does_not_raise():
-    # With ctx=None (the default) there is no async bridge; a raising compute must render
-    # the error state inline, NOT AttributeError on ctx.services (run_populate touches it
-    # on every branch). This is the real-app / error path the happy test above never hits.
-    r = kit.async_region(lambda: (_ for _ in ()).throw(RuntimeError("boom")),
-                         lambda data: W.body("should not render"))
-    texts = [l.text() for l in r.findChildren(QLabel)]
-    assert any("Could Not Load" in t for t in texts)
-    assert not any("should not render" in t for t in texts)
-    _destroy(r)
-
-def test_async_region_bare_ctx_without_services_runs_inline():
-    # A ctx object that lacks a usable `services` must also fall back to inline compute.
-    bare = type("Ctx", (), {"services": None})()
-    r = kit.async_region(lambda: [1], lambda data: W.body(f"{len(data)} inline"),
-                         ctx=bare)
-    assert any("1 inline" in l.text() for l in r.findChildren(QLabel))
-    _destroy(r)
-
 def test_stat_strip_uses_stat_scale():
     s = kit.stat_strip([("64", "Positions"), ("11", "Channels")])
     texts = [l.text() for l in s.findChildren(QLabel)]
@@ -175,7 +150,6 @@ def _pump():
     lambda: kit.legend([("Net Colour", [("power", "Power"), ("ground", "Ground")])]),
     lambda: kit.detail("Part", [("Part Number", "R1"), ("Value", "10k")]),
     lambda: kit.state("empty", "Nothing Here", glyph="search"),
-    lambda: kit.async_region(lambda: [1, 2, 3], lambda d: W.body(f"{len(d)} rows")),
 ])
 def test_restyler_registry_stable_across_build_rebuild(build):
     # A restyler registered inside a rebuildable builder MUST carry an owner so it

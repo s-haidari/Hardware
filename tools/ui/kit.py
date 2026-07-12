@@ -156,41 +156,6 @@ def state(kind: str, line: str, *, glyph: str = "", sub: str = "",
     return W.empty_state(line, glyph=g, sub=sub, action=act)
 
 
-def async_region(compute: Callable[[], object], render: Callable[[object], QWidget], *,
-                 rows: int = 6, cols: int = 4, ctx=None) -> QWidget:
-    """Run compute() off the GUI thread (via ui.util.run_populate); show a skeleton
-    until it lands, then swap in render(result). Offscreen/headless is synchronous, and
-    so is the no-services fallback: with no ctx.services to marshal a worker (ctx=None or
-    a bare ctx), compute() runs inline so the region still renders instead of raising —
-    run_populate reaches for ctx.services on every branch, so it is only safe with one.
-    The callback is (result, ok); on failure we show an error state."""
-    from .util import run_populate
-    host = QWidget()
-    v = QVBoxLayout(host); v.setContentsMargins(0, 0, 0, 0); v.setSpacing(0)
-    placeholder = W.skeleton_rows(rows=rows, cols=cols)
-    v.addWidget(placeholder)
-
-    def populate(result, ok):
-        while v.count():
-            it = v.takeAt(0)
-            wdg = it.widget()
-            if wdg is not None:
-                wdg.setParent(None); wdg.deleteLater()
-        v.addWidget(render(result) if ok else state("error", "Could Not Load", glyph="alert"))
-
-    if getattr(ctx, "services", None) is None:
-        # No async bridge to marshal a worker (ctx=None or a bare ctx): run inline so
-        # the region still renders. Mirrors run_populate's synchronous branch without
-        # touching ctx.services (which would AttributeError).
-        try:
-            populate(compute(), True)
-        except Exception:  # noqa: BLE001
-            populate(None, False)
-    else:
-        run_populate(ctx, compute, populate)
-    return host
-
-
 from PyQt5.QtWidgets import QLabel, QGridLayout, QSizePolicy
 
 
