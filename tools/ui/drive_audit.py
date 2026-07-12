@@ -1506,11 +1506,41 @@ def audit_shell_chrome():
           "shortcuts, error auto-expand — no crash)", flush=True)
 
 
+def audit_library_empty_state():
+    """P0 regression lock: a chosen folder that resolves NO parts must show the diagnostic
+    banner (which path was checked + Open Settings), never a silent empty list — the fix
+    for the v2.11 'correct folder, zero parts' report. Points the Library at an empty
+    folder and asserts the list is empty AND the banner surfaces + names the path."""
+    from PyQt5.QtWidgets import QLabel as _QLabel
+    from ui.features import library as LIB
+    import tempfile as _tf
+    d = Path(_tf.mkdtemp(prefix="drive_lib_empty_"))
+    cfg = {"RepoRoot": str(d), "Libs": str(d / "libs"),
+           "SymbolLib": str(d / "libs" / "MySymbols.kicad_sym"),
+           "FootprintLib": str(d / "libs" / "MyFootprints.pretty"),
+           "ModelLib": str(d / "libs" / "My3DModels")}
+    ctx = _styled_ctx(cfg)
+    try:
+        panel = LIB._parts_panel(ctx, None)
+        _pump()
+    except Exception as e:  # noqa: BLE001
+        _fail("Library empty-state build", e); return
+    if panel.parts_list._list.count() != 0:
+        _fail("Library empty-state: expected 0 parts on an empty library")
+    labels = [lb.text() for lb in panel.findChildren(_QLabel)]
+    if not any("No Parts Loaded" in t for t in labels):
+        _fail("Library empty-state: diagnostic banner did not show 'No Parts Loaded'")
+    if not any("Looking in:" in t for t in labels):
+        _fail("Library empty-state: banner did not name the path it checked")
+    print("  library empty-state driven (diagnostic banner names the path + Open Settings)")
+
+
 def main() -> int:
     cfg = _make_fixture()
     print("drive-audit fixture:", cfg["RepoRoot"], flush=True)
     audit_git_workbench()
     audit_library_workbench()
+    audit_library_empty_state()
     audit_projects_styled()
     audit_bench_styled()
     audit_settings_styled()

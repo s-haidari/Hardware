@@ -265,6 +265,43 @@ def _parts_panel(ctx, _state) -> QWidget:
         on_group_change=lambda mode: LM.write_setting(_GROUP_BY_SETTING, mode),
         on_resolve_dup=_resolve_dup)
 
+    # ── empty-library diagnostic (P0): a chosen folder that resolves no parts must SAY
+    # so — which path was checked and how to fix it — never a silent empty list. This is
+    # the fix for the v2.11 report where a correct folder loaded nothing because the
+    # derived symbol-lib path was absent and an empty stub got read as zero.
+    empty_banner = W.Card(pad=16)
+    empty_banner.setVisible(False)
+
+    def _refresh_empty_banner(n: int):
+        if n > 0:
+            empty_banner.setVisible(False)
+            return
+        clear_layout(empty_banner.body)
+        st = LM.library_status(cfg)
+        empty_banner.body.addWidget(W.static_label("No Parts Loaded", "sub"))
+        if st["reason"] == "not_found":
+            empty_banner.body.addWidget(W.static_label(
+                "No symbol library was found at the configured location. Set the library "
+                "location in Settings, or reset to the bundled snapshot.", "body"))
+        elif st["reason"] == "empty":
+            empty_banner.body.addWidget(W.static_label(
+                "This library has no parts yet. Import a vendor ZIP on this tab, or set a "
+                "different library location in Settings.", "body"))
+        else:
+            empty_banner.body.addWidget(W.static_label(
+                "No parts matched the current view.", "body"))
+        empty_banner.body.addWidget(W.static_label(
+            "Looking in: " + (st["symbol_path"] or "(location not set)"), "dim"))
+        b = getattr(ctx, "bus", None)
+        if b is not None:
+            row = QHBoxLayout(); row.setSpacing(8)
+            row.addWidget(W.btn("Open Settings", "default",
+                                "Change the library location or reset to the bundled snapshot",
+                                lambda: b.emit("nav.open", "settings")))
+            row.addStretch(1)
+            empty_banner.body.addLayout(row)
+        empty_banner.setVisible(True)
+
     def _scan_with_dupes():
         """Scan the library AND compute the byte-identical-geometry footprint groups in
         one off-thread pass, so the 'Duplicates only' filter and the Manage Duplicates
@@ -290,6 +327,7 @@ def _parts_panel(ctx, _state) -> QWidget:
             _set_fp_groups(groups)
             parts_list.set_rows(fresh)
             parts_list.set_duplicate_footprints(dup_stems)
+            _refresh_empty_banner(len(fresh))
         run_populate(ctx, _scan_with_dupes, done, busy="Rescanning library...")
     detail._on_changed = rescan
 
@@ -471,6 +509,7 @@ def _parts_panel(ctx, _state) -> QWidget:
     split = K.panes([picker_w, W.scroll_body(detail)],
                     key="library2", sizes=[348, 812],
                     collapsible=[True, False], min_widths=[300, 520])
+    lay.insertWidget(0, empty_banner)   # P0 diagnostic sits above the picker | canvas
     lay.addWidget(split, 1)
 
     # SHELL-02: initial load off the GUI thread. Headless (tests / render_gate) runs
@@ -485,6 +524,7 @@ def _parts_panel(ctx, _state) -> QWidget:
         _set_fp_groups(groups)
         parts_list.set_rows(fresh)
         parts_list.set_duplicate_footprints(dup_stems)
+        _refresh_empty_banner(len(fresh))
         # First run (no persisted grouping): pick the smart default by library size and
         # persist it so it survives the next launch. Persist explicitly — set_group_by is
         # a no-op (no persist) when the smart default already equals the current mode.

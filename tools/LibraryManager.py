@@ -276,7 +276,24 @@ def _prompt_choose_location(parent=None) -> Optional[Path]:
     clicked = box.clickedButton()
     if clicked is open_btn:
         d = QFileDialog.getExistingDirectory(parent, "Open existing library folder")
-        return Path(d) if d else None
+        if not d:
+            return None
+        dest = Path(d)
+        # Validate at pick time: does this folder actually resolve a library (using the
+        # SAME resolver load_config uses)? If not, offer to seed it rather than silently
+        # pointing at an empty layout — the "correct folder, zero parts" trap.
+        probe = derive_paths(dest)
+        _resolve_existing_library(probe, dest, {})
+        if not Path(probe["SymbolLib"]).is_file():
+            ans = QMessageBox.question(
+                parent, "No Library Found Here",
+                f"No symbol library was found in:\n{dest}\n\nSeed it from the bundled "
+                "snapshot so it has parts to start from? Choose No to open the folder "
+                "as-is (it will start empty).",
+                QMessageBox.Yes | QMessageBox.No)
+            if ans == QMessageBox.Yes:
+                seed_library(dest)
+        return dest
     if clicked is new_btn:
         d = QFileDialog.getExistingDirectory(parent, "Choose a folder for a new library")
         if not d:
@@ -318,6 +335,56 @@ def derive_paths(repo_root: Path) -> Dict[str, str]:
         "LogFile":      str(repo_root / "tools" / "ui_python.log"),
         "PythonExe":    sys.executable,
     }
+
+
+def _find_named(root: Path, name: str, *, is_dir: bool) -> Optional[Path]:
+    """The first `name` (file or dir) at `root` or exactly one level below it, searched
+    deterministically (sorted) so resolution is stable. Bounded to depth 1 to stay fast
+    and predictable — enough to catch 'the chosen folder IS the library' and 'the library
+    is one subdir down' without a full-tree walk. Never raises."""
+    try:
+        root = Path(root)
+        direct = root / name
+        if (direct.is_dir() if is_dir else direct.is_file()):
+            return direct
+        for child in sorted(root.iterdir()):
+            if not child.is_dir():
+                continue
+            cand = child / name
+            if (cand.is_dir() if is_dir else cand.is_file()):
+                return cand
+    except Exception:                       # noqa: BLE001 — resolution never fails a load
+        pass
+    return None
+
+
+def _resolve_existing_library(cfg: Dict[str, str], root: Path, data: Dict) -> None:
+    """Point the three library paths at an EXISTING library when the derived
+    `<root>/libs/...` layout is absent, so a chosen folder laid out differently still
+    loads its parts instead of silently reading zero.
+
+    For each of SymbolLib/FootprintLib/ModelLib, ONLY when the derived path is missing on
+    disk: honor an explicit config.json override if it exists, else search `root` (depth 1)
+    for KiCad's canonical name. A present derived library is never touched, and nothing is
+    invented — so a standard layout is byte-for-byte unchanged, and the frozen-exe
+    'correct folder but zero parts' failure (the library lives at a non-standard subpath)
+    resolves automatically. Mutates cfg in place."""
+    root = Path(root)
+
+    def _resolve(key: str, name: str, is_dir: bool) -> None:
+        cur = Path(cfg[key])
+        if (cur.is_dir() if is_dir else cur.is_file()):
+            return                          # standard/derived library present — leave it
+        ov = data.get(key)
+        if ov and (Path(ov).is_dir() if is_dir else Path(ov).is_file()):
+            cfg[key] = str(Path(ov)); return
+        found = _find_named(root, name, is_dir=is_dir)
+        if found is not None:
+            cfg[key] = str(found)
+
+    _resolve("SymbolLib", "MySymbols.kicad_sym", is_dir=False)
+    _resolve("FootprintLib", "MyFootprints.pretty", is_dir=True)
+    _resolve("ModelLib", "My3DModels", is_dir=True)
 
 
 def _can_write_dir(path: Path) -> bool:
@@ -424,6 +491,12 @@ def load_config(config_path: Optional[Path] = None) -> Dict[str, str]:
             cfg["MouserApiKey"] = data["MouserApiKey"]    # secret; gitignored config only
     except Exception as e:
         print(f"WARNING: failed to apply config.json overrides: {e}")
+
+    # If the derived <root>/libs/... library is absent, point at an existing library the
+    # chosen folder actually holds (honoring explicit SymbolLib/FootprintLib/ModelLib
+    # overrides) BEFORE the auto-create below writes an empty stub — the fix for the
+    # frozen-exe "correct folder but zero parts" report.
+    _resolve_existing_library(cfg, root, data)
 
     # Ensure directories exist
     for key in ("RepoRoot", "Downloads", "Libs", "FootprintLib", "ModelLib", "MiscDir"):
@@ -4859,6 +4932,34 @@ def library_health_report(cfg: Dict[str, str], overrides: Optional[dict] = None)
             "no_description": _names(no_desc, 10_000),
             "no_category": _names(no_cat, 10_000),
             "markdown": "\n".join(L) + "\n"}
+
+
+def library_status(cfg: Dict[str, str]) -> dict:
+    """A read-only diagnostic for the Library page's empty state: does the configured
+    symbol library resolve, at what path, and how many symbols does it hold. Turns a
+    silent 'zero parts' into an actionable message — the fix for the frozen-exe report
+    where a correct folder loaded nothing because the derived symbol-lib path was absent
+    and an empty stub was auto-created. Never raises.
+
+    reason: 'ok' (a library with symbols) · 'empty' (the file exists but holds no
+    symbols — e.g. a freshly-seeded or auto-created stub) · 'not_found' (no symbol
+    library at the configured path)."""
+    sym = _cfg_path(cfg, "SymbolLib")
+    found = sym.is_file()
+    count = 0
+    if found:
+        try:
+            count = sum(1 for _ in extract_symbol_blocks(read_text(sym)))
+        except Exception:                   # noqa: BLE001
+            count = 0
+    return {
+        "found": found,
+        # Always the path the app actually looked at, so a not-found state can NAME it.
+        "symbol_path": sym.as_posix(),
+        "root": str(cfg.get("RepoRoot", "") or ""),
+        "symbol_count": count,
+        "reason": "ok" if (found and count) else ("empty" if found else "not_found"),
+    }
 
 
 def suggest_footprint_for_symbol(sym_name: str, current_fp_basename: str,
