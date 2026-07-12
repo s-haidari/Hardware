@@ -107,6 +107,12 @@ class NetClass:
     diff_pair_width: Optional[float] = None
     diff_pair_gap: Optional[float] = None
     diff_pair_via_gap: float = 0.25  # mm
+    # Whether this class genuinely carries a differential pair. Set from KEY
+    # PRESENCE on load (see from_kicad_dict) — NOT from a value heuristic — so a
+    # legitimate width=0.2/gap=0.25 pair is preserved instead of being mistaken
+    # for the old "baked default" sentinel and silently dropped. None means
+    # "derive from the width" (any positive width => has a pair).
+    has_diff_pair: Optional[bool] = None
 
     # Priority (lower = higher precedence; Default uses 2147483647)
     priority: int = 0
@@ -117,6 +123,9 @@ class NetClass:
     def __post_init__(self):
         if self.patterns is None:
             self.patterns = []
+        if self.has_diff_pair is None:
+            self.has_diff_pair = (self.diff_pair_width is not None
+                                  and self.diff_pair_width > 0)
 
     def to_kicad_dict(self) -> dict:
         """Convert to KiCad .kicad_pro format"""
@@ -176,13 +185,19 @@ class NetClass:
         bus_thickness = NetClass._width_from_kicad(
             data.get("bus_width", 12), default_mm=0.3048)
 
-        # Legacy files written by an older build baked the KiCad defaults
-        # (diff_pair_width=0.2, diff_pair_gap=0.25) into every non-diff class.
-        # Treat that exact sentinel pair as "no diff pair" so a GND/PWR class
-        # does not resurrect as a diff-pair class on load.
+        # A differential pair is inferred from the WIDTH key's presence — the key
+        # that actually defines a pair and drives serialization (to_kicad_dict
+        # emits the pair only for a positive width). Basing has_diff_pair on the
+        # width key keeps load and save in lock-step: a class WITH a width (even
+        # the legitimate 0.2/0.25 pair the old sentinel hack silently wiped) is
+        # preserved and re-emitted; a class WITHOUT a width is a non-diff class.
+        # A stray gap-with-no-width is not a usable pair (KiCad needs the width),
+        # so it is normalised to "no diff pair" rather than left as an internally
+        # contradictory has_diff_pair=True whose gap the writer would then drop.
         dp_width = data.get("diff_pair_width")
         dp_gap = data.get("diff_pair_gap")
-        if dp_width == 0.2 and dp_gap == 0.25:
+        has_dp = isinstance(dp_width, (int, float)) and not isinstance(dp_width, bool) and dp_width > 0
+        if not has_dp:
             dp_width = None
             dp_gap = None
 
@@ -201,6 +216,7 @@ class NetClass:
             diff_pair_width=dp_width,
             diff_pair_gap=dp_gap,
             diff_pair_via_gap=data.get("diff_pair_via_gap", 0.25),
+            has_diff_pair=has_dp,
             priority=data.get("priority", 0),
             patterns=[]
         )

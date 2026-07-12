@@ -89,8 +89,12 @@ __all__ = [
     "KEY_ALIASES",
     "resolve_key",
     "has_setup_block",
+    "validate_kicad_pcb",
     "get_board_setup",
     "set_board_setup",
+    "get_board_setup_safe",
+    "set_board_setup_safe",
+    "read_pcb_text",
     "load_board_setup",
     "save_board_setup",
     "BoardSetupManager",
@@ -108,14 +112,25 @@ def resolve_key(name: str) -> Optional[str]:
 # ═══════════════════════════════════════════════════════════════════
 # STRING-AWARE S-EXPRESSION SCANNING
 # ═══════════════════════════════════════════════════════════════════
+def _snippet(text: str, idx: int, width: int = 40) -> str:
+    """A short, single-line context window around `idx` for diagnostics."""
+    lo = max(0, idx - width)
+    hi = min(len(text), idx + width)
+    frag = text[lo:hi].replace("\n", "\\n").replace("\t", "\\t")
+    return f"...{frag}..." if (lo > 0 or hi < len(text)) else frag
+
+
 def _scan_sexpr(text: str, i: int) -> int:
     """Given text[i] == '(', return the index just PAST the matching ')'.
 
     Respects double-quoted strings (which may contain unbalanced parens) and
-    backslash escapes inside them. Raises ValueError on an unbalanced form."""
+    backslash escapes inside them. Raises ValueError on an unbalanced/truncated
+    form, with the opening offset and a text snippet so a corrupt .kicad_pcb is
+    diagnosable rather than an opaque failure."""
     n = len(text)
     if i >= n or text[i] != "(":
-        raise ValueError(f"_scan_sexpr: expected '(' at {i}")
+        raise ValueError(f"_scan_sexpr: expected '(' at offset {i}: {_snippet(text, i)!r}")
+    open_idx = i
     depth = 0
     in_str = False
     while i < n:
@@ -137,7 +152,9 @@ def _scan_sexpr(text: str, i: int) -> int:
             if depth == 0:
                 return i + 1
         i += 1
-    raise ValueError("_scan_sexpr: unbalanced S-expression")
+    raise ValueError(
+        f"_scan_sexpr: unbalanced/truncated S-expression opened at offset "
+        f"{open_idx}: {_snippet(text, open_idx)!r}")
 
 
 def _read_atom(text: str, i: int) -> Tuple[int, int]:
@@ -217,6 +234,25 @@ def has_setup_block(pcb_text: str) -> bool:
         return _find_setup(pcb_text) is not None
     except ValueError:
         return False
+
+
+def validate_kicad_pcb(pcb_text: str) -> Tuple[bool, Optional[str]]:
+    """Pre-validate that `pcb_text` is a well-formed top-level (kicad_pcb ...) form.
+
+    Returns (ok, error). Confirms there is an outer S-expression, that it scans
+    to a single balanced form (no unbalanced/truncated parens), and that its head
+    symbol is ``kicad_pcb``. This is the guard the safe get/set wrappers run first
+    so a corrupt board yields a structured error instead of a raise deep in the
+    scanner — letting schematic-side (.kicad_pro) settings still save."""
+    try:
+        outer = _outer_open(pcb_text)
+        head, _, _, _ = _children(pcb_text, outer)
+    except ValueError as e:
+        return False, str(e)
+    if head != "kicad_pcb":
+        return False, (f"top-level form is ({head} ...), not (kicad_pcb ...) at "
+                       f"offset {outer}: {_snippet(pcb_text, outer)!r}")
+    return True, None
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -447,6 +483,40 @@ def set_board_setup(pcb_text: str, values: Dict[str, object]) -> str:
     return out
 
 
+def get_board_setup_safe(pcb_text: str, include_aliases: bool = True) -> Dict[str, object]:
+    """Structured-result wrapper around get_board_setup.
+
+    Returns {"ok": True, "value": {..}} on success, or
+    {"ok": False, "error": "..."} if the board is corrupt/unparseable — instead
+    of raising. Pre-validates the (kicad_pcb ...) form so a truncated/unbalanced
+    file is reported, not crashed on. Callers that must keep going even when the
+    board is unreadable (e.g. still save schematic-side .kicad_pro settings) use
+    this rather than the raising get_board_setup."""
+    ok, err = validate_kicad_pcb(pcb_text)
+    if not ok:
+        return {"ok": False, "error": err}
+    try:
+        return {"ok": True, "value": get_board_setup(pcb_text, include_aliases=include_aliases)}
+    except ValueError as e:  # pragma: no cover - validate_kicad_pcb catches the common cases
+        return {"ok": False, "error": str(e)}
+
+
+def set_board_setup_safe(pcb_text: str, values: Dict[str, object]) -> Dict[str, object]:
+    """Structured-result wrapper around set_board_setup.
+
+    Returns {"ok": True, "text": "<new board text>"} on success, or
+    {"ok": False, "error": "..."} if the board is corrupt/unparseable — instead
+    of raising, so a corrupt .kicad_pcb never aborts a caller that also has valid
+    schematic-side settings to persist."""
+    ok, err = validate_kicad_pcb(pcb_text)
+    if not ok:
+        return {"ok": False, "error": err}
+    try:
+        return {"ok": True, "text": set_board_setup(pcb_text, values)}
+    except ValueError as e:  # pragma: no cover - validate_kicad_pcb catches the common cases
+        return {"ok": False, "error": str(e)}
+
+
 def _render_setup_block(resolved: Dict[str, object], indent_unit: str, nl: str) -> str:
     lines = [indent_unit + "(setup"]
     for real_key, val in resolved.items():
@@ -489,9 +559,23 @@ def _insert_setup_block(pcb_text: str, block: str, nl: str) -> str:
 # ═══════════════════════════════════════════════════════════════════
 # FILE HELPERS (Path-based load / atomic save)
 # ═══════════════════════════════════════════════════════════════════
+def read_pcb_text(path: Union[str, Path]) -> str:
+    """Read a .kicad_pcb PRESERVING its line endings verbatim.
+
+    Path.read_text uses universal-newline translation, which silently strips
+    every ``\\r`` — so a CRLF board would be seen (and rewritten) as LF, corrupting
+    line endings on Windows. Opening with newline="" disables translation so the
+    file's own CRLF/LF survives round-trip through set_board_setup + _atomic_write.
+    """
+    with open(path, "r", encoding="utf-8", newline="") as fh:
+        return fh.read()
+
+
 def _atomic_write(path: Path, text: str, backup: bool = False) -> None:
-    """Write `text` to `path` atomically. If backup=True and the file exists,
-    a <name>.kicad_pcb.bak copy of the ORIGINAL is made first."""
+    """Write `text` to `path` atomically, PRESERVING its line endings verbatim
+    (newline="" — no CRLF/LF translation, so a CRLF board stays CRLF on Windows).
+    If backup=True and the file exists, a <name>.kicad_pcb.bak copy of the
+    ORIGINAL is made first."""
     path = Path(path)
     if backup and path.exists():
         try:
@@ -500,7 +584,8 @@ def _atomic_write(path: Path, text: str, backup: bool = False) -> None:
             print(f"⚠️  Could not write backup for {path.name}: {e}")
     tmp = path.parent / (path.name + ".tmp")
     try:
-        tmp.write_text(text, encoding="utf-8")
+        with open(tmp, "w", encoding="utf-8", newline="") as fh:
+            fh.write(text)
         os.replace(str(tmp), str(path))
     except Exception:
         if tmp.exists():
@@ -520,7 +605,7 @@ def save_board_setup(pcb_path: Union[str, Path], values: Dict[str, object],
     """Read a .kicad_pcb file, update the given setup keys, and atomically write
     it back (optionally leaving a .bak). Returns the new file text."""
     p = Path(pcb_path)
-    text = p.read_text(encoding="utf-8")
+    text = read_pcb_text(p)          # preserve CRLF/LF verbatim
     new_text = set_board_setup(text, values)
     _atomic_write(p, new_text, backup=backup)
     return new_text
@@ -543,12 +628,12 @@ class BoardSetupManager:
     @property
     def text(self) -> str:
         if self._text is None:
-            self._text = self.path.read_text(encoding="utf-8")
+            self._text = read_pcb_text(self.path)     # preserve CRLF/LF
         return self._text
 
     def load(self, include_aliases: bool = True) -> Dict[str, object]:
         """(Re)read the file from disk and return its supported setup keys."""
-        self._text = self.path.read_text(encoding="utf-8")
+        self._text = read_pcb_text(self.path)          # preserve CRLF/LF
         return get_board_setup(self._text, include_aliases=include_aliases)
 
     def get(self, include_aliases: bool = True) -> Dict[str, object]:

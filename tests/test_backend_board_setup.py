@@ -287,6 +287,28 @@ def test_crlf_newlines_preserved():
 # ─────────────────────────────────────────────────────────────────────
 # FILE HELPERS
 # ─────────────────────────────────────────────────────────────────────
+def test_save_preserves_crlf_on_disk(tmp_path):
+    # Review regression lock (design/Windows): a CRLF-encoded board must stay CRLF
+    # after a save — read_pcb_text + _atomic_write use newline="" so no \r is
+    # stripped or doubled (the Windows release gate requires CRLF preservation).
+    p = tmp_path / "crlf.kicad_pcb"
+    crlf = SAMPLE_PCB.replace("\n", "\r\n")
+    p.write_bytes(crlf.encode("utf-8"))
+    BS.save_board_setup(p, {"solder_paste_margin": -0.05}, backup=False)
+    raw = p.read_bytes()
+    assert b"\r\n" in raw
+    assert b"\r\r\n" not in raw          # not doubled
+    # Every newline is a CRLF (no lone LF slipped in).
+    assert raw.count(b"\n") == raw.count(b"\r\n")
+    assert BS.load_board_setup(p)["pad_to_paste_clearance"] == pytest.approx(-0.05)
+
+
+def test_read_pcb_text_preserves_newlines(tmp_path):
+    p = tmp_path / "crlf.kicad_pcb"
+    p.write_bytes(SAMPLE_PCB.replace("\n", "\r\n").encode("utf-8"))
+    assert "\r\n" in BS.read_pcb_text(p)   # \r survives (universal-newlines would strip it)
+
+
 def test_load_and_save_helpers(tmp_path):
     p = tmp_path / "board.kicad_pcb"
     p.write_text(SAMPLE_PCB, encoding="utf-8")

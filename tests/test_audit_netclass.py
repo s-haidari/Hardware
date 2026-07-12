@@ -378,10 +378,23 @@ def test_zero_diff_pair_width_omits_keys():
     assert "diff_pair_gap" not in d
 
 
-def test_legacy_sentinel_on_disk_reads_as_no_diff_pair():
-    """A .kicad_pro written by an older build baked 0.2/0.25 into every class;
-    loading it must treat that exact pair as 'no diff pair', not a diff class."""
+def test_present_diff_pair_keys_are_preserved_not_wiped():
+    """Data-loss fix (backend-data-loss-fixes item 3): a class whose diff_pair
+    keys are PRESENT on disk keeps its exact width/gap — even the 0.2/0.25 pair
+    an older build baked in. 'No diff pair' is inferred ONLY when both keys are
+    truly absent, so a legitimate 0.2/0.25 pair is never mistaken for a sentinel
+    and silently dropped. has_diff_pair reflects key presence."""
     nc = NCM.NetClass.from_kicad_dict(
         "OLD", {"diff_pair_width": 0.2, "diff_pair_gap": 0.25})
+    assert nc.diff_pair_width == pytest.approx(0.2)
+    assert nc.diff_pair_gap == pytest.approx(0.25)
+    assert nc.has_diff_pair is True
+
+
+def test_absent_diff_pair_keys_read_as_no_diff_pair():
+    """When BOTH diff_pair keys are absent, the class is a non-diff class:
+    width/gap are None and has_diff_pair is False."""
+    nc = NCM.NetClass.from_kicad_dict("GND", {"clearance": 0.2, "track_width": 0.25})
     assert nc.diff_pair_width is None
     assert nc.diff_pair_gap is None
+    assert nc.has_diff_pair is False

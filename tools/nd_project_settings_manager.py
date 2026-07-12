@@ -373,6 +373,12 @@ class ProjectSettingsManager:
         # empty list/default from "key was never there", and keeps verify honest.
         self._present: set = set()
 
+        # Result of the most recent solder-mask/paste routing to the sibling
+        # .kicad_pcb (see save_board_globals). None until a save runs. Lets the
+        # GUI/CLI report whether the board globals actually landed (or why not),
+        # instead of the old silent write to dead .kicad_pro keys.
+        self.last_board_globals: Optional[dict] = None
+
     def check_project_locked(self, project_file: Path) -> bool:
         """Check if the project is currently open in KiCad.
 
@@ -502,12 +508,16 @@ class ProjectSettingsManager:
             self.settings.default_via_diameter = round(mm_to_mils(default_nc.get("via_diameter", 0.8)), 1)
             self.settings.default_via_drill = round(mm_to_mils(default_nc.get("via_drill", 0.4)), 1)
 
-            # Solder mask/paste — NOTE: these physically live in the .kicad_pcb
-            # (setup) block, not .kicad_pro; KiCad ignores them here. Retained only
-            # for this tool's own round-trip. See report (skipped: needs .kicad_pcb).
+            # Solder mask/paste globals physically live in the sibling .kicad_pcb
+            # (setup ...) block — the ONLY place KiCad reads them. Read them from
+            # there (via nd_board_setup), falling back to the legacy dead .kicad_pro
+            # keys / defaults only when there is no board or it is unreadable. This
+            # is the read side of the round-trip fix: save_board_globals writes the
+            # same real keys, so a re-load returns exactly what was saved.
             pcb_settings = data.get("board", {}).get("design_settings", {})
             self.settings.solder_mask_clearance = round(mm_to_mils(pcb_settings.get("solder_mask_clearance", 0.05)), 1)
             self.settings.solder_paste_margin = round(mm_to_mils(pcb_settings.get("solder_paste_margin", -0.05)), 1)
+            self._load_board_globals(project_file)
 
             return True
 
@@ -633,11 +643,11 @@ class ProjectSettingsManager:
             default_nc["via_diameter"] = round(mils_to_mm(self.settings.default_via_diameter), 4)
             default_nc["via_drill"] = round(mils_to_mm(self.settings.default_via_drill), 4)
 
-            # Solder mask/paste: these physically belong to the .kicad_pcb (setup)
-            # block, NOT .kicad_pro — KiCad ignores them here. Written only so this
-            # tool round-trips its own value; never verified. (See report: skipped.)
-            design["solder_mask_clearance"] = round(mils_to_mm(self.settings.solder_mask_clearance), 4)
-            design["solder_paste_margin"] = round(mils_to_mm(self.settings.solder_paste_margin), 4)
+            # Solder mask/paste: NOT written to .kicad_pro any more — those keys are
+            # dead (KiCad ignores design_settings.solder_mask_clearance/
+            # solder_paste_margin). They are routed to their REAL home, the sibling
+            # .kicad_pcb (setup ...) block, by save_board_globals() below, after the
+            # .kicad_pro is written. Verify reads them back from the board.
 
             # ═══ EXTENDED COVERAGE (DRC/ERC severities, size tables, text vars,
             # editable Default net class) — deep-merged, preserve-by-default. A
@@ -671,6 +681,12 @@ class ProjectSettingsManager:
                     tmp_path.unlink()
                 raise
 
+            # Route the solder-mask / solder-paste globals to the sibling .kicad_pcb
+            # (their real home). A corrupt/absent board does NOT fail the .kicad_pro
+            # save — the result is recorded for verify/reporting instead, so
+            # schematic-side settings still land even when the board is unreadable.
+            self.last_board_globals = self.save_board_globals(project_file, backup=backup)
+
             # ═══ CLEAR CACHE FILES AUTOMATICALLY ═══
             self._clear_project_cache(project_file)
 
@@ -681,6 +697,146 @@ class ProjectSettingsManager:
             import traceback
             traceback.print_exc()
             return False
+
+    # ═══════════════════════════════════════════════════════════════════
+    # SOLDER-MASK / PASTE GLOBALS → sibling .kicad_pcb (setup ...) block
+    # ═══════════════════════════════════════════════════════════════════
+    @staticmethod
+    def _sibling_board(project_file: Path) -> Optional[Path]:
+        """The .kicad_pcb that sits next to a .kicad_pro (same stem), or None when
+        there is no board (a schematic-only project has no board globals)."""
+        board = Path(project_file).with_suffix(".kicad_pcb")
+        return board if board.exists() else None
+
+    def _load_board_globals(self, project_file: Path) -> None:
+        """Read solder-mask/paste globals from the sibling .kicad_pcb (setup ...)
+        block into self.settings (mm -> mils). No board, or an unreadable/corrupt
+        board, leaves the values from the .kicad_pro / defaults untouched."""
+        board = self._sibling_board(project_file)
+        if board is None:
+            return
+        try:
+            import nd_board_setup as BS
+        except Exception:
+            return
+        try:
+            text = board.read_text(encoding="utf-8")
+        except Exception:
+            return
+        res = BS.get_board_setup_safe(text, include_aliases=True)
+        if not res.get("ok"):
+            return
+        vals = res["value"]
+        if "pad_to_mask_clearance" in vals:
+            self.settings.solder_mask_clearance = round(mm_to_mils(vals["pad_to_mask_clearance"]), 1)
+        if "pad_to_paste_clearance" in vals:
+            self.settings.solder_paste_margin = round(mm_to_mils(vals["pad_to_paste_clearance"]), 1)
+
+    def _intended_board_globals_mils(self) -> Dict[str, float]:
+        """The solder globals this manager intends, keyed by REAL board key, at the
+        manager's native MILS resolution (ProjectSettings stores these in mils on a
+        0.1-mil grid). Comparing at this resolution — not raw mm — is what keeps the
+        write idempotent: an on-disk mm value that already rounds to the intended
+        mils is left untouched, so an untouched board never drifts (e.g. KiCad's
+        -0.05 mm default paste margin does NOT creep to -0.0508 on the first save)."""
+        return {
+            "pad_to_mask_clearance": round(self.settings.solder_mask_clearance, 1),
+            "pad_to_paste_clearance": round(self.settings.solder_paste_margin, 1),
+        }
+
+    @staticmethod
+    def _mm_matches_mils(mm_value, want_mils: float) -> bool:
+        """True when an on-disk mm value already represents the intended mils value
+        at 0.1-mil resolution — i.e. rewriting it would only drift, not change it."""
+        if not isinstance(mm_value, (int, float)) or isinstance(mm_value, bool):
+            return False
+        return abs(round(mm_to_mils(mm_value), 1) - want_mils) < 0.05
+
+    def save_board_globals(self, project_file: Path, backup: bool = False) -> dict:
+        """Write the solder-mask / solder-paste globals to the sibling .kicad_pcb
+        (setup ...) block — their real KiCad home — via nd_board_setup, replacing
+        the old dead-key .kicad_pro write.
+
+        Drift-free: a key is written ONLY when the board's current value differs
+        from the intended value at 0.1-mil resolution. A value that already matches
+        (including one KiCad wrote at a finer mm resolution) is left byte-exact, so
+        an untouched save never corrupts an unedited solder global.
+
+        Returns {"ok", "wrote", "board", "error"}:
+          - no sibling .kicad_pcb            -> ok=True,  wrote=False, board=None
+          - corrupt/unreadable/unwritable    -> ok=False, wrote=False, error set
+          - already matches at mils res       -> ok=True,  wrote=False (no churn/drift)
+          - values written                   -> ok=True,  wrote=True
+
+        A False `ok` NEVER aborts the .kicad_pro save (the caller records it and
+        keeps going), so a corrupt board still lets schematic-side settings save."""
+        board = self._sibling_board(project_file)
+        if board is None:
+            return {"ok": True, "wrote": False, "board": None, "error": None}
+        try:
+            import nd_board_setup as BS
+        except Exception as e:  # pragma: no cover - import guard
+            return {"ok": False, "wrote": False, "board": board.name,
+                    "error": f"nd_board_setup unavailable: {e}"}
+        try:
+            text = BS.read_pcb_text(board)     # preserve CRLF/LF verbatim
+        except Exception as e:
+            return {"ok": False, "wrote": False, "board": board.name,
+                    "error": f"read failed: {e}"}
+        cur = BS.get_board_setup_safe(text, include_aliases=False)
+        if not cur.get("ok"):
+            return {"ok": False, "wrote": False, "board": board.name,
+                    "error": cur.get("error")}
+        current = cur["value"]
+        # Only write the real keys whose on-disk value does NOT already match the
+        # intended mils value — everything else is preserved byte-exact (no drift).
+        values: Dict[str, object] = {}
+        for key, want_mils in self._intended_board_globals_mils().items():
+            if not self._mm_matches_mils(current.get(key), want_mils):
+                values[key] = round(mils_to_mm(want_mils), 4)
+        if not values:
+            return {"ok": True, "wrote": False, "board": board.name, "error": None}
+        res = BS.set_board_setup_safe(text, values)
+        if not res.get("ok"):
+            return {"ok": False, "wrote": False, "board": board.name,
+                    "error": res.get("error")}
+        new_text = res["text"]
+        if new_text == text:
+            return {"ok": True, "wrote": False, "board": board.name, "error": None}
+        try:
+            BS._atomic_write(board, new_text, backup=backup)
+        except Exception as e:
+            return {"ok": False, "wrote": False, "board": board.name,
+                    "error": f"write failed: {e}"}
+        return {"ok": True, "wrote": True, "board": board.name, "error": None}
+
+    def _collect_board_globals_mismatches(self, project_file: Path) -> List[str]:
+        """Verify the solder globals actually landed in the sibling .kicad_pcb.
+        Reads them BACK from the board (the real landing site) and compares at the
+        manager's native 0.1-mil resolution (so a value preserved byte-exact still
+        verifies, and a genuine drift/drop fails). Empty list when there is no board
+        (nothing to verify). A corrupt/unreadable board is itself a mismatch, so a
+        silent drop can't pass as 'verified'."""
+        board = self._sibling_board(project_file)
+        if board is None:
+            return []
+        try:
+            import nd_board_setup as BS
+        except Exception as e:  # pragma: no cover - import guard
+            return [f"board globals: nd_board_setup unavailable: {e}"]
+        try:
+            text = BS.read_pcb_text(board)
+        except Exception as e:
+            return [f"board globals: read failed: {e}"]
+        res = BS.get_board_setup_safe(text, include_aliases=False)
+        if not res.get("ok"):
+            return [f"board globals: {res.get('error')}"]
+        got = res["value"]
+        out: List[str] = []
+        for key, want_mils in self._intended_board_globals_mils().items():
+            if not self._mm_matches_mils(got.get(key), want_mils):
+                out.append(f"{board.name}:{key}={got.get(key)} (wanted {want_mils} mils)")
+        return out
 
     def save_design_rules_only(self, project_file: Path, settings: 'ProjectSettings' = None,
                                backup: bool = False) -> bool:
@@ -839,6 +995,10 @@ class ProjectSettingsManager:
         # the key KiCad actually reads. No-op (adds nothing) when the extended
         # state is empty, so the existing flat-settings verify is unchanged.
         mismatches.extend(self._collect_extended_mismatches(data))
+        # Solder globals live in the sibling .kicad_pcb, not this .kicad_pro — read
+        # them back from the REAL landing site so a silent drop can't pass as
+        # verified. No board -> nothing added.
+        mismatches.extend(self._collect_board_globals_mismatches(project_file))
         return (len(mismatches) == 0), mismatches
 
     # ═══════════════════════════════════════════════════════════════════
@@ -867,25 +1027,27 @@ class ProjectSettingsManager:
         ds = data.get("board", {}).get("design_settings", {})
         erc = data.get("erc", {})
 
-        # DRC severities — capture only curated IDs that are actually present.
+        # DRC severities — capture EVERY rule id present in the file's map, not
+        # just the curated UI subset. A KiCad-added or custom rule the UI does
+        # not enumerate would otherwise never enter the managed set, so verify
+        # could not confirm it and a future wholesale rewrite would drop it. The
+        # curated DRC_RULE_IDS list stays only a UI combo hint.
         self.drc_severities = {}
         rs = ds.get("rule_severities")
         if isinstance(rs, dict):
             self._present.add("board.rule_severities")
-            for rid in DRC_RULE_IDS:
-                val = rs.get(rid)
+            for rid, val in rs.items():
                 if isinstance(val, str):
-                    self.drc_severities[rid] = val
+                    self.drc_severities[str(rid)] = val
 
-        # ERC severities — same treatment.
+        # ERC severities — same treatment: every present id, not just curated.
         self.erc_severities = {}
         ers = erc.get("rule_severities")
         if isinstance(ers, dict):
             self._present.add("erc.rule_severities")
-            for rid in ERC_RULE_IDS:
-                val = ers.get(rid)
+            for rid, val in ers.items():
                 if isinstance(val, str):
-                    self.erc_severities[rid] = val
+                    self.erc_severities[str(rid)] = val
 
         # ERC pin-conflict matrix (12x12 severity ints).
         self.erc_pin_map = []

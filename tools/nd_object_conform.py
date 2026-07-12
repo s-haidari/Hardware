@@ -54,19 +54,23 @@ def _span_end(text: str, open_idx: int) -> int:
 
 def _set_font(block: str, size_mm, thickness_mm) -> tuple:
     """Set the size (and thickness, if the font already carries one) of the FIRST
-    (font …) inside `block`. Returns (new_block, changed)."""
+    (font …) inside `block`. Returns (new_block, changed).
+
+    Idempotent: ``changed`` reflects an ACTUAL byte difference, not merely that a
+    (size …)/(thickness …) atom matched. An object already at the target size is
+    reported unchanged, so a second conform pass over an already-conformed file is
+    a true no-op (zero count, byte-identical output) with zero float drift — the
+    (marker-free) idempotency the acceptance requires."""
     fm = re.search(r"\(font\b", block)
     if not fm:
         return block, False
     fs = fm.start()
     fe = _span_end(block, fs)
     font = block[fs:fe]
-    new_font, n = _SIZE_RE.subn(f"(size {_fmt(size_mm)} {_fmt(size_mm)})", font, count=1)
-    changed = bool(n)
+    new_font = _SIZE_RE.sub(f"(size {_fmt(size_mm)} {_fmt(size_mm)})", font, count=1)
     if thickness_mm is not None and _THICK_RE.search(new_font):
         new_font = _THICK_RE.sub(f"(thickness {_fmt(thickness_mm)})", new_font, count=1)
-        changed = True
-    if not changed:
+    if new_font == font:                       # already at target — no byte change
         return block, False
     return block[:fs] + new_font + block[fe:], True
 
