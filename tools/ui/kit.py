@@ -156,6 +156,22 @@ def state(kind: str, line: str, *, glyph: str = "", sub: str = "",
     return W.empty_state(line, glyph=g, sub=sub, action=act)
 
 
+def page_layout(root=None, *, spacing: Optional[int] = None,
+                margin: Optional[int] = None) -> QVBoxLayout:
+    """The ONE page frame: a QVBoxLayout with SYMMETRIC page margins + the contract's
+    24px inter-section spacing (design-rules §Spacing: "24px between sections"), routed
+    through `T.sp("page")` so the app-wide rhythm is tunable in one place. Replaces the
+    scattered, asymmetric `(24,16,24,24)` + `setSpacing(14/12/16)` frames every panel
+    hand-rolled (the "spacing is cooked" report). Pass `root` to parent it; override
+    `margin`/`spacing` (px) only for a deliberate, documented exception."""
+    m = T.sp("page") if margin is None else margin
+    s = T.sp("page") if spacing is None else spacing
+    lay = QVBoxLayout(root) if root is not None else QVBoxLayout()
+    lay.setContentsMargins(m, m, m, m)
+    lay.setSpacing(s)
+    return lay
+
+
 from PyQt5.QtWidgets import QLabel, QGridLayout, QSizePolicy
 
 

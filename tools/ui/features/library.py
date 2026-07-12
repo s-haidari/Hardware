@@ -201,7 +201,7 @@ def _parts_panel(ctx, _state) -> QWidget:
     root = _PartsRoot()
     if not _headless():
         root.setAcceptDrops(True)
-    lay = QVBoxLayout(root); lay.setContentsMargins(24, 16, 24, 24); lay.setSpacing(14)
+    lay = K.page_layout(root)
     cfg = ctx.cfg
     # SHELL-02: build the panel instantly with an empty list, then fill it from the
     # heavy library scan OFF the GUI thread (below) — opening the Library tab used

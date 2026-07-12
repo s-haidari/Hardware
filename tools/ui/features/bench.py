@@ -98,9 +98,7 @@ class BenchState:
 # ── Authority panel ──────────────────────────────────────────────────────────
 def _authority_panel(ctx, state: BenchState) -> QWidget:
     root = QWidget()
-    outer = QVBoxLayout(root)
-    outer.setContentsMargins(24, 16, 24, 24)
-    outer.setSpacing(14)
+    outer = kit.page_layout(root)
 
     if state.error or state.package is None:
         outer.addWidget(kit.state(
@@ -270,7 +268,7 @@ def _resolved_five_v_label(pn) -> str:
 # ── Part Resolver panel (real resolve_part) ──────────────────────────────────
 def _resolver_panel(ctx, state: BenchState) -> QWidget:
     root = QWidget()
-    lay = QVBoxLayout(root); lay.setContentsMargins(24, 16, 24, 24); lay.setSpacing(14)
+    lay = kit.page_layout(root)
     # every ordering part number in this package — the browsable set
     try:
         part_nos = [r[0] for r in state.conn.execute(
@@ -451,7 +449,7 @@ def _budget_hazard_rails(budget: dict) -> set:
 # ── Card Outputs panel (real card_bom + current_budget) ──────────────────────
 def _outputs_panel(ctx, state: BenchState) -> QWidget:
     root = QWidget()
-    lay = QVBoxLayout(root); lay.setContentsMargins(24, 16, 24, 24); lay.setSpacing(14)
+    lay = kit.page_layout(root)
     if state.package is None:
         lay.addWidget(kit.state("empty", "No Package Loaded", glyph="bench")); return root
     pkg = state.package
@@ -692,7 +690,7 @@ def _allpins_section(ctx, state: BenchState) -> QWidget:
 def _allpins_panel(ctx, state: BenchState) -> QWidget:
     """Standalone page wrapper (kept for direct callers); the Overview embeds the section."""
     root = QWidget()
-    lay = QVBoxLayout(root); lay.setContentsMargins(24, 16, 24, 24); lay.setSpacing(12)
+    lay = kit.page_layout(root)
     if state.package is None:
         lay.addWidget(kit.state("empty", "No Package Loaded", glyph="bench")); return root
     lay.addWidget(_allpins_section(ctx, state))
@@ -894,7 +892,7 @@ def _profiles_panel(ctx, state: BenchState) -> QWidget:
     """Standalone page wrapper (kept for direct callers/tests); the Overview embeds the
     section directly."""
     root = QWidget()
-    lay = QVBoxLayout(root); lay.setContentsMargins(24, 16, 24, 24); lay.setSpacing(14)
+    lay = kit.page_layout(root)
     if state.error or state.package is None:
         lay.addWidget(kit.state("empty", "No Package Loaded", glyph="bench")); return root
     lay.addWidget(_profiles_section(ctx, state))
@@ -909,7 +907,7 @@ def _analysis_panel(ctx, state: BenchState) -> QWidget:
     gate. All derived read-only from the current authority (lint rebuilds per claim's
     own package)."""
     root = QWidget()
-    lay = QVBoxLayout(root); lay.setContentsMargins(24, 16, 24, 24); lay.setSpacing(16)
+    lay = kit.page_layout(root)
     if state.error or state.package is None:
         lay.addWidget(kit.state("empty", "No Package Loaded", glyph="bench")); return root
     try:
