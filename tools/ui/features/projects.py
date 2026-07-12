@@ -39,6 +39,7 @@ import nd_pcb_profiles as pcbprof
 import nd_board_setup
 import nd_fab_presets as fabp
 import nd_project_settings_manager as psm
+import nd_design_presets as dpre
 import nd_object_conform as conform
 import LibraryManager as LM
 import fp_render
@@ -2694,6 +2695,197 @@ def _pcb_targets(p):
     return t
 
 
+# Editable fields of a FabPreset the manager modal surfaces, as (attr, label, kind).
+# kind: "mm" = length (shown/edited in mm), "num" = plain number, "int" = layer count,
+# "text" = free string. Stackup + hole/text sub-fields ride along unchanged from the
+# source preset (per-layer stackup editing is a KiCad-GUI job — a logged gap).
+_FAB_FIELDS = (
+    ("min_track_width", "Min Track Width", "mm"),
+    ("min_clearance", "Min Clearance", "mm"),
+    ("min_drill", "Min Drill", "mm"),
+    ("min_annular_ring", "Min Annular Ring", "mm"),
+    ("min_edge_clearance", "Min Edge Clearance", "mm"),
+    ("default_track_width", "Default Track Width", "mm"),
+    ("default_via_diameter", "Default Via Diameter", "mm"),
+    ("default_via_drill", "Default Via Drill", "mm"),
+    ("board_thickness_mm", "Board Thickness", "mm"),
+    ("copper_oz", "Copper Weight (oz)", "num"),
+    ("layers", "Layers", "int"),
+    ("material", "Material", "text"),
+    ("finish", "Finish", "text"),
+    ("soldermask", "Soldermask", "text"),
+)
+
+
+class FabPresetManagerDialog(QDialog):
+    """Manage Fabrication Presets — New / Duplicate / Edit / Delete over the user
+    fab-preset store (nd_fab_presets). Built-ins are locked: editing one and saving
+    writes a same-name USER OVERRIDE (copy-to-override), and Delete on an override
+    reverts to the built-in default. A pure user preset is fully editable/deletable.
+
+    The name is set only at New / Duplicate (a prompt) and shown read-only in the form,
+    so Save always upserts the selected preset in place — no rename orphans. Stackup and
+    the hole/text sub-fields are carried verbatim from the edited preset (per-layer
+    stackup editing is a KiCad-GUI job — logged gap), so a saved preset stays complete."""
+
+    def __init__(self, parent=None, *, on_change=None):
+        super().__init__(parent)
+        from PyQt5.QtWidgets import QListWidget
+        self.setWindowTitle("Manage Fabrication Presets")
+        self.setMinimumWidth(560)
+        self._on_change = on_change
+        self._fields = {}
+        self._current = None
+        outer = QVBoxLayout(self)
+        body = QHBoxLayout(); outer.addLayout(body)
+        self._list = QListWidget(); self._list.setFixedWidth(220)
+        self._list.currentTextChanged.connect(self._on_pick)
+        body.addWidget(self._list)
+        form_w = QWidget(); self._form = QFormLayout(form_w)
+        self._name_lab = QLabel("-")
+        self._form.addRow("Preset", self._name_lab)
+        for attr, label, kind in _FAB_FIELDS:
+            if kind in ("mm", "num"):
+                sp = QDoubleSpinBox(); sp.setDecimals(4 if kind == "mm" else 2)
+                sp.setRange(0.0, 1000.0); sp.setSingleStep(0.01)
+                if kind == "mm":
+                    sp.setSuffix(" mm")
+                w = sp
+            elif kind == "int":
+                w = QSpinBox(); w.setRange(1, 64)
+            else:
+                w = QLineEdit()
+            self._fields[attr] = (w, kind)
+            self._form.addRow(label, w)
+        body.addWidget(form_w, 1)
+        # action row
+        btns = QHBoxLayout()
+        for text, slot in (("New", self._new), ("Duplicate", self._duplicate),
+                           ("Delete", self._delete), ("Save", self._save)):
+            b = QPushButton(text); b.clicked.connect(slot); btns.addWidget(b)
+        btns.addStretch(1)
+        close = QPushButton("Close"); close.clicked.connect(self.accept); btns.addWidget(close)
+        outer.addLayout(btns)
+        self._reload()
+
+    # ── list / form binding ───────────────────────────────────────────────────
+    def _reload(self, select=None):
+        self._list.blockSignals(True)
+        self._list.clear()
+        presets = fabp.load_presets()
+        for name in presets:
+            tag = "built-in" if fabp.is_builtin(name) else "user"
+            if fabp.is_builtin(name) and fabp.has_user_preset(name):
+                tag = "override"
+            self._list.addItem(f"{name}   · {tag}")
+        self._list.blockSignals(False)
+        target = select or self._current or (next(iter(presets)) if presets else None)
+        if target is not None:
+            self._select_name(target)
+
+    def _select_name(self, name):
+        for i in range(self._list.count()):
+            if self._list.item(i).text().split("   · ")[0] == name:
+                self._list.setCurrentRow(i)
+                return
+
+    def _name_of(self, item_text):
+        return (item_text or "").split("   · ")[0]
+
+    def _on_pick(self, item_text):
+        name = self._name_of(item_text)
+        if not name:
+            return
+        preset = fabp.get_preset(name)
+        if preset is None:
+            return
+        self._current = name
+        self._name_lab.setText(name + ("   (built-in: Save writes a user override)"
+                                        if fabp.is_builtin(name) else ""))
+        for attr, (w, kind) in self._fields.items():
+            val = getattr(preset, attr)
+            if kind in ("mm", "num"):
+                w.setValue(float(val))
+            elif kind == "int":
+                w.setValue(int(val))
+            else:
+                w.setText(str(val))
+
+    def _form_preset(self, name):
+        """Build a FabPreset from the form, carrying non-form fields from the current
+        source preset so nothing (stackup, hole clearances, text sizes) is dropped."""
+        import dataclasses
+        src = fabp.get_preset(self._current) or fabp.PRESETS[fabp.builtin_names()[0]]
+        kw = {}
+        for attr, (w, kind) in self._fields.items():
+            kw[attr] = (w.value() if kind in ("mm", "num", "int") else w.text().strip())
+        return dataclasses.replace(src, name=name, **kw)
+
+    # ── actions ────────────────────────────────────────────────────────────────
+    def _prompt_name(self, title, default):
+        from PyQt5.QtWidgets import QInputDialog
+        name, ok = QInputDialog.getText(self, title, "Preset name:", text=default)
+        name = (name or "").strip()
+        if not ok or not name:
+            return None
+        if fabp.is_builtin(name):
+            _warn_dialog(self, "That name is a built-in preset. Choose a different name "
+                               "(edit the built-in directly to make an override).")
+            return None
+        return name
+
+    def _new(self):
+        name = self._prompt_name("New Fabrication Preset", "New Fab Preset")
+        if not name:
+            return
+        # seed from the current selection so stackup + values are sensible, not blank
+        fabp.save_preset(self._form_preset(name))
+        self._changed(select=name)
+
+    def _duplicate(self):
+        if not self._current:
+            return
+        name = self._prompt_name("Duplicate Fabrication Preset", f"{self._current} copy")
+        if not name:
+            return
+        import dataclasses
+        fabp.save_preset(dataclasses.replace(fabp.get_preset(self._current), name=name))
+        self._changed(select=name)
+
+    def _delete(self):
+        name = self._current
+        if not name:
+            return
+        if fabp.is_builtin(name) and not fabp.has_user_preset(name):
+            _warn_dialog(self, f"'{name}' is a built-in preset and can't be deleted.")
+            return
+        verb = "Revert your override of" if fabp.is_builtin(name) else "Delete"
+        if not confirm(self, "Delete Fabrication Preset", f"{verb} the preset '{name}'?"):
+            return
+        fabp.delete_preset(name)
+        self._current = None
+        self._changed()
+
+    def _save(self):
+        if not self._current:
+            return
+        fabp.save_preset(self._form_preset(self._current))
+        self._changed(select=self._current)
+
+    def _changed(self, select=None):
+        self._reload(select=select)
+        if callable(self._on_change):
+            self._on_change()
+
+
+def _warn_dialog(parent, msg):
+    from ..util import _headless
+    if _headless():
+        return
+    from PyQt5.QtWidgets import QMessageBox
+    QMessageBox.information(parent, "Fabrication Presets", msg)
+
+
 def _pcb_setup_panel(ctx, state) -> QWidget:
     """PCB Setup — rebuilt onto the ``kit.editor`` recipe (spec 2026-07-10-phase2-projects
     -kit-editor). The four editable sections — Fabrication Profile (+ text-size Conform),
@@ -2800,6 +2992,12 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
             _pm = S.get("pm")
             if _pm is not None:
                 S["dre_base"] = _dre_fingerprint(_pm)
+            # the four extended sections all rode this write — clear their dirty dots
+            rb = S.get("rebaseline_sections"); rd = S.get("refresh_dirty")
+            if rb:
+                rb()
+            if rd:
+                rd()
         if "net classes" in done:
             mark(nc_fields)
         if "board geometry" in done:
@@ -2825,9 +3023,20 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
         prof_combo.setCurrentText(_default_prof)      # set BEFORE connecting so it doesn't fire the loader
         prof_combo.setToolTip("Board-setup profile: a fab floor + a net-class set. NETDECK = OSH Park "
                               "4-layer + all net classes; the bare OSH Park profiles carry no nets.")
+        # Fab selector: which fabrication preset backs this profile's floor. Independent of
+        # the profile (a profile can target any fab), so a custom (non-OSH-Park) preset is
+        # reachable end-to-end. Seeded to the profile's fab; a profile switch re-syncs it.
+        fab_combo = QComboBox()
+        fab_combo.addItems(list(fabp.load_presets()))
+        if prof_state["fab"] in [fab_combo.itemText(i) for i in range(fab_combo.count())]:
+            fab_combo.setCurrentText(prof_state["fab"])
+        fab_combo.setToolTip("Fabrication preset backing this profile's fab floor, stackup and "
+                             "board thickness. Manage adds custom fabs.")
+        b_fab_manage = W.btn("Manage", "ghost", "Create, edit or delete fabrication presets")
         unit_seg = W.Segmented([_MM, _MILS], selected=(1 if unit["u"] == _MILS else 0),
                                tip="Length units, applied app-wide (also in Settings)")
         top.addWidget(pv.field_label("Profile")); top.addWidget(prof_combo)
+        top.addWidget(pv.field_label("Fab")); top.addWidget(fab_combo); top.addWidget(b_fab_manage)
         top.addStretch(1)
         top.addWidget(pv.field_label("Units")); top.addWidget(unit_seg)
         lay.addLayout(top)
@@ -2873,7 +3082,7 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
 
         def rebuild_fabfacts():
             clear_layout(fhl); fab_labels.clear()
-            preset = fabp.PRESETS.get(prof_state["fab"])
+            preset = fabp.get_preset(prof_state["fab"])
             if not preset:
                 fhl.addWidget(W.empty_state("No Fabrication Preset",
                                             glyph=icons.GLYPHS["alert"],
@@ -2906,7 +3115,7 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
             # (key -> (human label, (size_mm, thick_mm) default, conform-on-by-default)).
             # silk / fab defaults track the selected fabrication profile; the rest are the
             # KiCad stock defaults (1.0 mm PCB text, 1.27 mm schematic text).
-            preset = fabp.PRESETS.get(prof_state["fab"])
+            preset = fabp.get_preset(prof_state["fab"])
             pt = _pcb_targets(preset) if preset else {}
             return {
                 "silk":   ("Silk screen (F/B.Silkscreen)", pt.get("silk", (1.0, 0.15)), True),
@@ -2947,7 +3156,7 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
         lay.addLayout(text_top)
 
         def seed_text_sizes():
-            preset = fabp.PRESETS.get(prof_state["fab"])
+            preset = fabp.get_preset(prof_state["fab"])
             pt = _pcb_targets(preset) if preset else {}
             for key in ("silk", "fab"):
                 if key in pt and key in text_fields:
@@ -3039,7 +3248,7 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
         # is a KiCad-GUI job (no file-rewrite backend) — logged gap; summary only here.
         add_section("Stackup & Thickness")
 
-        _preset0 = fabp.PRESETS.get(prof_state["fab"])
+        _preset0 = fabp.get_preset(prof_state["fab"])
         st_top = QWidget(); stg = QGridLayout(st_top); stg.setContentsMargins(0, 4, 0, 0)
         stg.setHorizontalSpacing(16); stg.setVerticalSpacing(10)
         thick_field = _len_spin(unit, (_preset0.board_thickness_mm if _preset0 else 1.6),
@@ -3069,7 +3278,7 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
 
         def rebuild_stackup():
             clear_layout(shl); stack_labels.clear()
-            preset = fabp.PRESETS.get(prof_state["fab"])
+            preset = fabp.get_preset(prof_state["fab"])
             if not preset or not preset.stackup:
                 shl.addWidget(W.empty_state("No Stackup",
                                             glyph=icons.GLYPHS["alert"],
@@ -3090,12 +3299,54 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
         def reseed_stackup():
             # profile switched: re-seed the editable thickness to the new fab floor + redraw
             # the read-only stack, so the section always reflects the selected profile.
-            p = fabp.PRESETS.get(prof_state["fab"])
+            p = fabp.get_preset(prof_state["fab"])
             if p is not None:
                 thick_field._mm = float(p.board_thickness_mm); thick_field._render()
             rebuild_stackup()
 
         host._thick_field = thick_field                    # drive/test seam
+
+        # ── Fab selector + Manage wiring (needs rebuild_fabfacts / reseed_stackup above) ────
+        def _set_fab(name):
+            """Adopt a fab preset for the current profile: redraw the fab facts, re-seed the
+            stackup + thickness, and re-seed the silk/fab text defaults. The choice rides
+            into New / Save Profile (persisted on the profile via pcbprof)."""
+            if not name or fabp.get_preset(name) is None:
+                return
+            prof_state["fab"] = name
+            fab_combo.blockSignals(True); fab_combo.setCurrentText(name); fab_combo.blockSignals(False)
+            rebuild_fabfacts()
+            reseed_stackup()
+            _log(f"Fab preset set to {name}. Save Profile (or New Profile) to keep it on this profile.")
+
+        def _refresh_fab_presets(select=None):
+            names = list(fabp.load_presets())
+            fab_combo.blockSignals(True)
+            fab_combo.clear(); fab_combo.addItems(names)
+            want = select or prof_state["fab"]
+            if want in names:
+                fab_combo.setCurrentText(want)
+            fab_combo.blockSignals(False)
+            # a delete/revert may have removed the active fab — fall back to a live one
+            if prof_state["fab"] not in names and names:
+                _set_fab(fab_combo.currentText())
+            else:
+                rebuild_fabfacts(); reseed_stackup()
+
+        def _open_fab_manager():
+            dlg = FabPresetManagerDialog(host, on_change=lambda: _refresh_fab_presets())
+            from ..util import _headless
+            if _headless():
+                return                                    # headless drive can't exec a modal
+            dlg.exec_()
+            _refresh_fab_presets()
+
+        fab_combo.currentTextChanged.connect(_set_fab)
+        b_fab_manage.clicked.connect(_open_fab_manager)
+        host._fab_combo = fab_combo                        # drive/test seams
+        host._set_fab = _set_fab
+        host._refresh_fab_presets = _refresh_fab_presets
+        host._open_fab_manager = _open_fab_manager
 
         # ── Section B — Design Rules (PSM, editable) ──────────────────────────────────────
         add_section("Design Rules")
@@ -3189,7 +3440,18 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
                     for c in range(ncols):
                         sp = _len_spin(unit, row[c] if c < len(row) else 0.0, width=98, hi_mm=25.0)
                         pv.nc_cell_font(sp); sp.setEnabled(dre_writable)
+                        sp.valueChanged.connect(lambda *_a: _bump_dirty())   # per-section dirty dot
                         psize_fields.append(sp); tbl.setCellWidget(r, c, sp)
+
+        def _ps_delete_row(k, r):
+            # Per-row delete (right-click) so a middle row can go without the remove-then-add
+            # friction of the "Remove" (last-only) button. Captures the live cells first.
+            for kk in _PS_SPEC:
+                pd_state[kk] = _ps_read(kk)
+            if 0 <= r < len(pd_state[k]):
+                pd_state[k] = pd_state[k][:r] + pd_state[k][r + 1:]
+            rebuild_predefined(); _bump_dirty()
+        host._ps_delete_row = _ps_delete_row                # drive/test seam
 
         ps_body = QWidget(); psl = QVBoxLayout(ps_body)
         psl.setContentsMargins(0, 2, 0, 0); psl.setSpacing(10)
@@ -3217,6 +3479,18 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
             pd_tables[key] = tbl
             row.addWidget(tbl)
 
+            def _mk_ps_menu(k, table):
+                def _menu(pos):
+                    r = table.rowAt(pos.y())
+                    if r < 0:
+                        return
+                    m = QMenu(host); act = m.addAction("Delete this row")
+                    if m.exec_(table.viewport().mapToGlobal(pos)) is act:
+                        _ps_delete_row(k, r)
+                return _menu
+            tbl.setContextMenuPolicy(Qt.CustomContextMenu)
+            tbl.customContextMenuRequested.connect(_mk_ps_menu(key, tbl))
+
             def _mk_add(k):
                 def _add():
                     for kk in _PS_SPEC:
@@ -3237,7 +3511,75 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
             b_add.clicked.connect(_mk_add(key)); b_del.clicked.connect(_mk_del(key))
             psl.addLayout(row)
         rebuild_predefined()
-        lay.addWidget(W.CollapsibleSection("Predefined Sizes", ps_body))
+
+        # ---- size-template quick-apply (Fine-Pitch / Power / Mixed / Hobby + Save As) --------
+        tmpl_row = QHBoxLayout(); tmpl_row.setSpacing(8)
+        tmpl_row.addWidget(pv.field_label("Template"))
+        ps_tmpl_combo = QComboBox(); ps_tmpl_combo.setFixedWidth(160)
+        ps_tmpl_combo.setToolTip("Pre-fill the track / via / diff-pair tables from a coherent set")
+        b_tmpl_apply = W.btn("Apply", "ghost", "Replace the tables with the selected template (confirm)")
+        b_tmpl_saveas = W.btn("Save As", "ghost", "Save the current tables as a reusable template")
+        b_tmpl_del = W.btn("Delete", "ghost", "Delete the selected custom template (built-ins are locked)")
+        for w in (ps_tmpl_combo, b_tmpl_apply, b_tmpl_saveas, b_tmpl_del):
+            tmpl_row.addWidget(w)
+        tmpl_row.addStretch(1)
+        psl.addLayout(tmpl_row)
+
+        def _refresh_size_templates(select=None):
+            ps_tmpl_combo.blockSignals(True)
+            ps_tmpl_combo.clear(); ps_tmpl_combo.addItems(list(dpre.load_size_templates()))
+            if select:
+                ps_tmpl_combo.setCurrentText(select)
+            ps_tmpl_combo.blockSignals(False)
+
+        def _apply_size_template(name):
+            t = dpre.get_size_template(name)
+            if not t:
+                return
+            if not confirm(host, "Apply Size Template",
+                           f"Replace the predefined track / via / diff-pair tables with the "
+                           f"'{name}' template? Current rows are discarded."):
+                return
+            for kk in _PS_SPEC:
+                pd_state[kk] = [tuple(r) for r in t.get(kk, [])]
+            rebuild_predefined(); _bump_dirty()
+            _log(f"Applied the '{name}' size template.")
+
+        def _save_size_template_as(name=None):
+            from PyQt5.QtWidgets import QInputDialog
+            if name is None:
+                name, ok = QInputDialog.getText(host, "Save Size Template", "Template name:")
+                name = (name or "").strip()
+                if not ok or not name:
+                    return
+            if dpre.is_builtin_template(name):
+                _log(f"'{name}' is a built-in template name; choose another."); return
+            for kk in _PS_SPEC:
+                pd_state[kk] = _ps_read(kk)
+            dpre.save_size_template(name, pd_state["track"], pd_state["via"], pd_state["dp"])
+            _refresh_size_templates(select=name)
+            _log(f"Saved size template '{name}'.")
+
+        def _delete_size_template(name=None):
+            name = name or ps_tmpl_combo.currentText()
+            if dpre.is_builtin_template(name):
+                _log(f"'{name}' is a built-in template and can't be deleted."); return
+            if not confirm(host, "Delete Size Template", f"Delete the custom template '{name}'?"):
+                return
+            if dpre.delete_size_template(name):
+                _refresh_size_templates()
+                _log(f"Deleted size template '{name}'.")
+
+        _refresh_size_templates()
+        b_tmpl_apply.clicked.connect(lambda: _apply_size_template(ps_tmpl_combo.currentText()))
+        b_tmpl_saveas.clicked.connect(lambda: _save_size_template_as())
+        b_tmpl_del.clicked.connect(lambda: _delete_size_template())
+        host._apply_size_template = _apply_size_template    # drive/test seams
+        host._save_size_template_as = _save_size_template_as
+        host._delete_size_template = _delete_size_template
+
+        ps_section = W.CollapsibleSection("Predefined Sizes", ps_body)
+        lay.addWidget(ps_section)
 
         # ---- DRC & ERC severities -----------------------------------------------------------
         sev_combos = {"drc": {}, "erc": {}}
@@ -3262,6 +3604,7 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
                 cb.setCurrentText(loaded.get(rid, _SEV_UNMANAGED))
                 cb.setEnabled(dre_writable)
                 cb.setToolTip("Unmanaged = leave the project's current value untouched.")
+                cb.currentIndexChanged.connect(lambda *_a: _bump_dirty())   # per-section dirty dot
                 store[rid] = cb
                 tbl.setCellWidget(r, 1, cb)
             pv.apply_netclass_table(tbl)
@@ -3269,6 +3612,18 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
 
         sev_body = QWidget(); svl = QVBoxLayout(sev_body)
         svl.setContentsMargins(0, 2, 0, 0); svl.setSpacing(8)
+        # scheme quick-apply (Strict / Moderate / Relaxed + Save As)
+        scheme_row = QHBoxLayout(); scheme_row.setSpacing(8)
+        scheme_row.addWidget(pv.field_label("Scheme"))
+        sev_scheme_combo = QComboBox(); sev_scheme_combo.setFixedWidth(160)
+        sev_scheme_combo.setToolTip("Pre-fill every DRC/ERC severity to a checking posture")
+        b_scheme_apply = W.btn("Apply", "ghost", "Set every rule severity from the scheme (confirm)")
+        b_scheme_saveas = W.btn("Save As", "ghost", "Save the current severities as a reusable scheme")
+        b_scheme_del = W.btn("Delete", "ghost", "Delete the selected custom scheme (built-ins are locked)")
+        for w in (sev_scheme_combo, b_scheme_apply, b_scheme_saveas, b_scheme_del):
+            scheme_row.addWidget(w)
+        scheme_row.addStretch(1)
+        svl.addLayout(scheme_row)
         sev_filter = QLineEdit(); sev_filter.setPlaceholderText("Filter rules")
         sev_filter.setFixedWidth(240)
         sev_filter.setToolTip("Show only rules whose name contains this text")
@@ -3285,7 +3640,67 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
                     tb.setRowHidden(r, bool(t) and t not in rid.lower()
                                     and t not in _humanize_rule(rid).lower())
         sev_filter.textChanged.connect(_filter_sev)
-        lay.addWidget(W.CollapsibleSection("DRC & ERC Severities", sev_body))
+
+        def _refresh_severity_schemes(select=None):
+            sev_scheme_combo.blockSignals(True)
+            sev_scheme_combo.clear(); sev_scheme_combo.addItems(list(dpre.load_severity_schemes()))
+            if select:
+                sev_scheme_combo.setCurrentText(select)
+            sev_scheme_combo.blockSignals(False)
+
+        def _apply_severity_scheme(name):
+            sch = dpre.get_severity_scheme(name)
+            if not sch:
+                return
+            if not confirm(host, "Apply Severity Scheme",
+                           f"Set the DRC and ERC rule severities from the '{name}' scheme? "
+                           f"Rules the scheme does not mention are left unchanged."):
+                return
+            for kind in ("drc", "erc"):
+                for rid, cb in sev_combos[kind].items():
+                    lv = sch.get(kind, {}).get(rid)
+                    if lv in psm.SEVERITY_LEVELS:
+                        cb.setCurrentText(lv)
+            _bump_dirty()
+            _log(f"Applied the '{name}' severity scheme.")
+
+        def _save_severity_scheme_as(name=None):
+            from PyQt5.QtWidgets import QInputDialog
+            if name is None:
+                name, ok = QInputDialog.getText(host, "Save Severity Scheme", "Scheme name:")
+                name = (name or "").strip()
+                if not ok or not name:
+                    return
+            if dpre.is_builtin_scheme(name):
+                _log(f"'{name}' is a built-in scheme name; choose another."); return
+            drc = {rid: cb.currentText() for rid, cb in sev_combos["drc"].items()
+                   if cb.currentText() in psm.SEVERITY_LEVELS}
+            erc = {rid: cb.currentText() for rid, cb in sev_combos["erc"].items()
+                   if cb.currentText() in psm.SEVERITY_LEVELS}
+            dpre.save_severity_scheme(name, drc, erc)
+            _refresh_severity_schemes(select=name)
+            _log(f"Saved severity scheme '{name}' ({plural(len(drc) + len(erc), 'managed rule')}).")
+
+        def _delete_severity_scheme(name=None):
+            name = name or sev_scheme_combo.currentText()
+            if dpre.is_builtin_scheme(name):
+                _log(f"'{name}' is a built-in scheme and can't be deleted."); return
+            if not confirm(host, "Delete Severity Scheme", f"Delete the custom scheme '{name}'?"):
+                return
+            if dpre.delete_severity_scheme(name):
+                _refresh_severity_schemes()
+                _log(f"Deleted severity scheme '{name}'.")
+
+        _refresh_severity_schemes()
+        b_scheme_apply.clicked.connect(lambda: _apply_severity_scheme(sev_scheme_combo.currentText()))
+        b_scheme_saveas.clicked.connect(lambda: _save_severity_scheme_as())
+        b_scheme_del.clicked.connect(lambda: _delete_severity_scheme())
+        host._apply_severity_scheme = _apply_severity_scheme        # drive/test seams
+        host._save_severity_scheme_as = _save_severity_scheme_as
+        host._delete_severity_scheme = _delete_severity_scheme
+
+        sev_section = W.CollapsibleSection("DRC & ERC Severities", sev_body)
+        lay.addWidget(sev_section)
 
         # ---- ERC pin-conflict map (12×12, symmetric) ---------------------------------------
         pin_types = list(psm.ERC_PIN_TYPES)
@@ -3364,6 +3779,7 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
             sp._seed_present = _present          # preserve-by-default: only manage a field the
             sp._seed_mm = float(_mmv)            # file carried, or one the user changed from seed
             all_fields.append(sp); dnc_fields[_attr] = sp
+            sp.valueChanged.connect(lambda *_a: _bump_dirty())   # per-section dirty dot
             cell = QVBoxLayout(); cell.setSpacing(2)
             cell.addWidget(pv.field_label(_label)); cell.addWidget(sp)
             dncg.addLayout(cell, _i // 2, _i % 2)
@@ -3374,7 +3790,8 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
         dncw.addWidget(dnc_body)
         dncw.addWidget(W.body("Via size and drill for the Default class live in Design Rules -> "
                               "Via Diameter / Via Drill above.", dim=True))
-        lay.addWidget(W.CollapsibleSection("Default Net Class", dnc_wrap))
+        dnc_section = W.CollapsibleSection("Default Net Class", dnc_wrap)
+        lay.addWidget(dnc_section)
         host._dnc_fields = dnc_fields                        # drive/test seam
 
         # ---- Project Meta (text variables: project-wide ${VAR} substitutions) --------------
@@ -3421,21 +3838,25 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
                 ve = pv.nc_cell_font(QLineEdit(str(vv))); ve.setEnabled(dre_writable)
                 ve.setPlaceholderText("value"); ve.setCursorPosition(0)
                 meta_tbl.setCellWidget(r, 0, ne); meta_tbl.setCellWidget(r, 1, ve)
+                ne.textChanged.connect(lambda *_a: _bump_dirty())   # per-section dirty dot
+                ve.textChanged.connect(lambda *_a: _bump_dirty())
                 meta_state["rows"].append({"name": ne, "value": ve})
 
         def _meta_add():
-            _meta_capture(); meta_state["vars"] = meta_state["vars"] + [("", "")]; rebuild_meta()
+            _meta_capture(); meta_state["vars"] = meta_state["vars"] + [("", "")]
+            rebuild_meta(); _bump_dirty()
 
         def _meta_del():
             _meta_capture()
             if meta_state["vars"]:
                 meta_state["vars"] = meta_state["vars"][:-1]
-            rebuild_meta()
+            rebuild_meta(); _bump_dirty()
 
         b_meta_add.clicked.connect(lambda: _meta_add())
         b_meta_del.clicked.connect(lambda: _meta_del())
         rebuild_meta()
-        lay.addWidget(W.CollapsibleSection("Project Meta", meta_body))
+        meta_section = W.CollapsibleSection("Project Meta", meta_body)
+        lay.addWidget(meta_section)
         host._meta_tbl = meta_tbl                             # drive/test seam
         host._meta_add = _meta_add
 
@@ -3516,6 +3937,48 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
         host._sev_combos = sev_combos
         host._pin_matrix = pin_matrix
         host._psize_tables = pd_tables
+
+        # ── per-section dirty dots: each collapsible header shows an accent dot when its
+        #    own state diverges from the as-loaded baseline, so the ▶ Save preview scope is
+        #    visible while scrolling even with the section collapsed. Signal-driven (edits
+        #    call _bump_dirty), re-baselined on save. ──────────────────────────────────────
+        def _fp_predefined():
+            return tuple(tuple(round(x, 6) for x in r) for k in _PS_SPEC for r in _ps_read(k))
+
+        def _fp_severities():
+            d = tuple(sorted((rid, cb.currentText()) for rid, cb in sev_combos["drc"].items()))
+            e = tuple(sorted((rid, cb.currentText()) for rid, cb in sev_combos["erc"].items()))
+            return (d, e)
+
+        def _fp_default_nc():
+            return tuple((a, round(float(sp._mm), 6)) for a, sp in dnc_fields.items())
+
+        def _fp_meta():
+            return tuple((r["name"].text().strip(), r["value"].text())
+                         for r in meta_state["rows"])
+
+        _sec_defs = [(ps_section, _fp_predefined), (sev_section, _fp_severities),
+                     (dnc_section, _fp_default_nc), (meta_section, _fp_meta)]
+        _sec_base = {}
+
+        def _capture_section_baselines():
+            for sec, fn in _sec_defs:
+                _sec_base[id(sec)] = fn()
+
+        def _bump_dirty():
+            if not _sec_base:
+                return
+            for sec, fn in _sec_defs:
+                try:
+                    sec.set_dirty(fn() != _sec_base.get(id(sec)))
+                except RuntimeError:                          # section deleted by a rebuild
+                    pass
+
+        _capture_section_baselines()
+        S["rebaseline_sections"] = _capture_section_baselines
+        S["refresh_dirty"] = _bump_dirty
+        host._section_dirty = lambda: {sec._title: sec.is_dirty() for sec, _ in _sec_defs}
+        host._bump_dirty = _bump_dirty
 
         # ── Section C — Net Classes (ncm, editable, sticky-header table) ───────────────────
         add_section("Net Classes")
@@ -3655,12 +4118,40 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
             nc_state["mgr"].remove_netclass(name)
             rebuild_netclasses()
 
+        def _nc_duplicate(name):
+            """Right-click Duplicate: a fast variant (<name>_2) with the same dimensions,
+            style and priority but no patterns (so it doesn't double-claim member nets)."""
+            _commit_netclasses()
+            new = nc_state["mgr"].duplicate_netclass(name)
+            if new:
+                rebuild_netclasses()
+                _log(f"Duplicated net class '{name}' as '{new}'. Save To Project to persist it.")
+            return new
+
+        def _nc_context_menu(pos):
+            row = tbl.rowAt(pos.y())
+            if row < 0 or row >= len(nc_state["rows"]):
+                return
+            name = nc_state["rows"][row]["name"]
+            m = QMenu(host)
+            act_dup = m.addAction(f"Duplicate '{name}'")
+            act_del = m.addAction(f"Delete '{name}'")
+            chosen = m.exec_(tbl.viewport().mapToGlobal(pos))
+            if chosen is act_dup:
+                _nc_duplicate(name)
+            elif chosen is act_del:
+                _nc_delete(name)
+
+        tbl.setContextMenuPolicy(Qt.CustomContextMenu)
+        tbl.customContextMenuRequested.connect(_nc_context_menu)
+
         nc_filter.textChanged.connect(lambda _t: _apply_filter())
         b_newnc.clicked.connect(lambda: _nc_new())
         rebuild_netclasses()
 
         host._nc_new = _nc_new
         host._nc_delete = _nc_delete
+        host._nc_duplicate = _nc_duplicate
         host._nc_rename = _nc_rename
         host._nc_name_cell = lambda r: tbl.cellWidget(r, 0)
         host._nc_filter_edit = nc_filter
@@ -3746,6 +4237,10 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
             _commit_netclasses()
             prof_state["name"] = name
             prof_state["fab"] = prof.fab
+            fab_combo.blockSignals(True)                   # sync the Fab selector to the profile
+            if prof.fab in [fab_combo.itemText(i) for i in range(fab_combo.count())]:
+                fab_combo.setCurrentText(prof.fab)
+            fab_combo.blockSignals(False)
             nc_state["mgr"] = _mgr_from_netclasses(prof.netclasses)
             host._ncmgr = nc_state["mgr"]
             rebuild_netclasses()
@@ -3934,7 +4429,7 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
         # Bake the edited physical thickness into the fab-preset copy so the ONE fab write
         # (▶ Save) uses the spinner value, never silently reverting it to the preset default.
         # The stackup stays the preset's (per-layer editing is a KiCad-GUI job — logged gap).
-        fab_preset = fabp.PRESETS.get(prof_state["fab"])
+        fab_preset = fabp.get_preset(prof_state["fab"])
         thick_sp = S.get("thick_field")
         if fab_preset is not None and thick_sp is not None:
             import dataclasses
@@ -4064,6 +4559,27 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
                         "detail": "", "safe": True})
         if not ops:
             save_flow.empty = "Nothing to write: no project files, or nothing changed."
+            S["last_violations"] = []
+            return ops
+        # Validate-on-save: surface net-class-vs-fab-floor violations in the preview as
+        # non-blocking, opt-in "acknowledge" rows (amber, unchecked). Checking one is a
+        # suppress-and-save-anyway gesture; the net-class write proceeds regardless — the
+        # check never blocks the save. Only shown when a write is actually pending.
+        violations = []
+        if snap["n_nc"]:
+            fp = snap.get("fab_preset")
+            fab_name = snap["prof_snapshot"].fab if snap.get("prof_snapshot") else ncm.DEFAULT_NETCLASS_PROFILE
+            try:
+                floor = ncm.floor_from_fab_preset(fp) if fp is not None else None
+                violations = ncm.validate_netclasses(snap["mgr"], fab_name, floor=floor)
+            except Exception:  # noqa: BLE001
+                violations = []
+            for i, v in enumerate(violations[:20]):
+                ops.append({"key": f"ack:{i}", "safe": False,
+                            "label": f"Below fab floor: {v.get('netclass', '')} ({v.get('issue', '')})",
+                            "detail": "Under the fabrication minimum. Check to acknowledge and save "
+                                      "anyway; the net-class write is not blocked either way."})
+        S["last_violations"] = violations
         return ops
 
     def _save_intro(snap, ops):
@@ -4216,6 +4732,8 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
     # ── seams the coupled tests + cross-panel code read ───────────────────────────────────
     host._save = save
     host._validate = validate
+    host._save_audit = _save_audit                         # drive seam: inspect preview ops
+    host._save_violations = lambda: S.get("last_violations", [])
     host._commit_netclasses = _commit_netclasses
     host._dr_fields = dr_fields
     host._prof_state = prof_state

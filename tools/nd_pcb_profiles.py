@@ -70,14 +70,15 @@ class Profile:
     overridden but never removed)."""
 
     name: str
-    fab: str                                   # a key in nd_fab_presets.PRESETS
+    fab: str                                   # a fab-preset name (built-in or user, see nd_fab_presets)
     netclasses: List["ncm.NetClass"] = field(default_factory=list)
     builtin: bool = False
 
     @property
     def fab_preset(self):
-        """The FabPreset backing this profile's fab floor, or None if unknown."""
-        return fabp.PRESETS.get(self.fab)
+        """The FabPreset backing this profile's fab floor, or None if unknown. Resolves
+        user presets too (get_preset), so a profile can point at a custom fab."""
+        return fabp.get_preset(self.fab)
 
     @property
     def has_nets(self) -> bool:
@@ -132,7 +133,7 @@ def validate_profile(profile: Profile) -> List[str]:
     errs: List[str] = []
     if not (profile.name or "").strip():
         errs.append("Profile name is empty")
-    if profile.fab not in fabp.PRESETS:
+    if fabp.get_preset(profile.fab) is None:
         errs.append(f"Unknown fab preset: {profile.fab!r}")
     names = [nc.name for nc in profile.netclasses]
     dupes = sorted({n for n in names if names.count(n) > 1})

@@ -519,6 +519,29 @@ class NetClassManager:
         self.deleted_names.discard(new_name)
         return True
 
+    def duplicate_netclass(self, name: str) -> Optional[str]:
+        """Duplicate a managed net class, returning the new class's name (or None if
+        ``name`` is absent). The copy carries the source's dimensions, colour, line
+        style and priority, but starts with NO patterns — a duplicate is a fast base
+        for a variant you then assign nets to, and copying the patterns would make two
+        classes claim the same nets. The new name is ``<name>_2`` (``_3`` … on collision)
+        so a repeated duplicate never clobbers an existing class."""
+        src = self.net_classes.get(name)
+        if src is None:
+            return None
+        import copy
+        new_name = f"{name}_2"
+        i = 2
+        while new_name in self.net_classes:
+            i += 1
+            new_name = f"{name}_{i}"
+        dup = copy.deepcopy(src)
+        dup.name = new_name
+        dup.patterns = []
+        self.add_netclass(dup)
+        self.patterns.pop(new_name, None)     # add_netclass copies empty patterns; keep it clean
+        return new_name
+
     def mark_deleted(self, name: str):
         """Mark a name for authoritative deletion on the next save without requiring
         it to currently be in the managed set (e.g. deleting a class that was only
@@ -670,14 +693,32 @@ def netclass_profiles() -> list:
     return list(NETCLASS_PROFILES)
 
 
-def validate_netclasses(manager, profile: str = DEFAULT_NETCLASS_PROFILE) -> list:
+def floor_from_fab_preset(preset) -> dict:
+    """Derive the net-class fab floor (min_clearance / track / via / drill / annular)
+    from a FabPreset, so a CUSTOM (non-built-in) fab validates against its own real
+    minimums instead of silently borrowing the default profile's floor."""
+    return {
+        "min_clearance": preset.min_clearance,
+        "min_track": preset.min_track_width,
+        "min_via": preset.min_via_diameter,
+        "min_drill": preset.min_drill,
+        "min_annular": preset.min_annular_ring,
+    }
+
+
+def validate_netclasses(manager, profile: str = DEFAULT_NETCLASS_PROFILE,
+                        floor: dict = None) -> list:
     """Check every net class carries proper, fab-legal values for a profile. Returns
     a list of {netclass, issue} — empty means every class is sound. Checks: clearance
     / track / via / drill at or above the fab floor, drill smaller than via, annular
     ring >= the fab minimum, positive wire/bus stroke, a valid hex color, at least one
-    membership pattern, and unique priorities."""
+    membership pattern, and unique priorities.
+
+    ``floor`` (a dict with min_clearance/min_track/min_via/min_drill/min_annular) wins
+    over ``profile`` when supplied — the caller passes it for a custom fab preset so
+    the check uses that fab's real minimums (see ``floor_from_fab_preset``)."""
     import re as _re
-    prof = NETCLASS_PROFILES.get(profile, NETCLASS_PROFILES[DEFAULT_NETCLASS_PROFILE])
+    prof = floor or NETCLASS_PROFILES.get(profile, NETCLASS_PROFILES[DEFAULT_NETCLASS_PROFILE])
     findings = []
     prios = {}
     for name in manager.list_netclasses():

@@ -183,6 +183,17 @@ Sourcing-Health subtabs); Phase B adds faster, mockup-faithful front doors and c
 | `projects_referencing_symbol` | the **Rename heads-up** — the confirm dialog names the projects that instantiate the symbol (informational; they keep a cached copy and won't break) |
 | `nav.open` bus event (shell `_open_feature`) | the no-provider Sourcing empty-state's **Open Settings** CTA (cross-feature navigation) |
 
+### Editor enhancements — fab presets, schemes, templates, duplicate (2026-07-12, gen [6])
+
+| Capability | Now reachable as |
+|-----------|--------------|
+| `nd_fab_presets.load_presets` / `get_preset` / `save_preset` / `delete_preset` / `is_builtin` / `has_user_preset` / `builtin_names` | the **Fab selector + Manage Fabrication Presets modal** (`FabPresetManagerDialog`): New / Duplicate / Edit / Delete over the user fab-preset store; built-ins locked (Save writes a copy-to-override); a profile can now target a custom (non-OSH-Park) fab end-to-end |
+| `nd_design_presets.load_severity_schemes` / `get_severity_scheme` / `save_severity_scheme` / `delete_severity_scheme` | the **DRC & ERC Severities → Scheme** row (Strict / Moderate / Relaxed + Save As / Delete); Apply sets every rule severity in one click (confirm-guarded) |
+| `nd_design_presets.load_size_templates` / `get_size_template` / `save_size_template` / `delete_size_template` | the **Predefined Sizes → Template** row (Fine-Pitch / Power / Mixed / Hobby + Save As / Delete); Apply refills the track/via/diff-pair tables |
+| `nd_netclass_manager.duplicate_netclass` | the net-class table **right-click → Duplicate** (creates `<name>_2`, same dimensions, no patterns) |
+| `nd_netclass_manager.validate_netclasses(floor=)` / `floor_from_fab_preset` | the **validate-on-save preview** (below-fab-floor net classes surface as non-blocking amber "acknowledge" rows) AND the correct fab floor for a custom preset |
+| `CollapsibleSection.set_dirty` | the **per-section unsaved-change dots** on Predefined Sizes / DRC & ERC Severities / Default Net Class / Project Meta headers (Save preview scope, visible while scrolling) |
+
 ### capability_audit accounting (run 2026-07-11)
 `capability_audit.py` flags **60 LibraryManager publics not literally named in the UI**.
 Judged: **all 60 are internal helpers or plumbing wrappers**, not unsurfaced user

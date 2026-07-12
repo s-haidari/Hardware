@@ -14,9 +14,13 @@ stackups change and are not worth asserting from memory.
 from __future__ import annotations
 
 import dataclasses
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, fields
+from pathlib import Path
+from typing import Dict, List, Optional
 
 MIL = 0.0254  # mm per mil
+FABP_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -57,6 +61,22 @@ class FabPreset:
     def min_via_diameter(self) -> float:
         """Smallest annular via: drill + 2 x minimum annular ring."""
         return round(self.min_drill + 2 * self.min_annular_ring, 4)
+
+    def to_dict(self) -> dict:
+        """JSON-safe dict for the user-preset store (stackup tuples become lists)."""
+        d = dataclasses.asdict(self)
+        d["stackup"] = [list(layer) for layer in self.stackup]
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "FabPreset":
+        """Rebuild a FabPreset from a stored dict, tolerating missing optional keys
+        (a preset written by an older version) and restoring the stackup tuples.
+        Unknown keys are ignored so a newer file never crashes an older reader."""
+        known = {f.name for f in fields(cls)}
+        kw = {k: v for k, v in d.items() if k in known}
+        kw["stackup"] = tuple(tuple(layer) for layer in kw.get("stackup", ()))
+        return cls(**kw)
 
 
 # ── OSH Park 2-layer (1.6 mm, 1 oz, ENIG) ────────────────────────────────────
@@ -101,6 +121,110 @@ OSH_PARK_4LAYER = FabPreset(
 )
 
 PRESETS = {p.name: p for p in (OSH_PARK_2LAYER, OSH_PARK_4LAYER)}
+_BUILTIN_FAB_NAMES = tuple(PRESETS)
+
+
+# ── user-preset persistence (mirrors nd_pcb_profiles: built-ins overridable, not
+#    deletable; pure user presets fully editable) ──────────────────────────────
+def _presets_path() -> Path:
+    """Where user fab presets are read/written. Under a frozen --onefile exe __file__
+    points into the throwaway PyInstaller bundle, so it must write to the user's
+    library location; dev keeps it next to the module (matches pcb_profiles.json)."""
+    import sys
+    if getattr(sys, "frozen", False):
+        try:
+            import LibraryManager as _LM
+            loc = _LM.library_location()
+            if loc:
+                return Path(loc) / "fab_presets.json"
+        except Exception:  # noqa: BLE001
+            pass
+        return Path(sys.executable).resolve().parent / "fab_presets.json"
+    return Path(__file__).resolve().parent / "fab_presets.json"
+
+
+def _load_user_presets(path: Path) -> List[FabPreset]:
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return []
+    out: List[FabPreset] = []
+    for d in data.get("presets", []):
+        try:
+            out.append(FabPreset.from_dict(d))
+        except Exception:  # noqa: BLE001
+            pass
+    return out
+
+
+def _write_user_presets(presets: List[FabPreset], path: Path) -> None:
+    payload = {"version": FABP_VERSION,
+               "presets": [p.to_dict() for p in presets]}
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    tmp.replace(path)                                   # atomic
+
+
+def builtin_names() -> tuple:
+    """The code-defined seed preset names (overridable but never deletable outright)."""
+    return _BUILTIN_FAB_NAMES
+
+
+def is_builtin(name: str) -> bool:
+    return name in _BUILTIN_FAB_NAMES
+
+
+def load_presets(path: Optional[Path] = None) -> Dict[str, FabPreset]:
+    """Every fab preset by name: built-ins first (canonical order), each replaced by a
+    user override of the same name, then any user-only presets appended. Mirrors
+    ``nd_pcb_profiles.load_profiles`` so the two stores behave identically."""
+    path = path or _presets_path()
+    user = {p.name: p for p in _load_user_presets(path)}
+    out: Dict[str, FabPreset] = {}
+    for name in _BUILTIN_FAB_NAMES:
+        out[name] = user.get(name, PRESETS[name])
+    for name, p in user.items():
+        if name not in _BUILTIN_FAB_NAMES:
+            out[name] = p
+    return out
+
+
+def get_preset(name: str, path: Optional[Path] = None) -> Optional[FabPreset]:
+    """Merged lookup: a user override/preset wins over the built-in of the same name.
+    The single call site the whole app should use instead of ``PRESETS.get`` so custom
+    (non-OSH-Park) fabs resolve everywhere."""
+    if not name:
+        return None
+    return load_presets(path).get(name)
+
+
+def has_user_preset(name: str, path: Optional[Path] = None) -> bool:
+    """True when something user-saved exists under ``name`` (a pure user preset or a
+    user override of a built-in) — i.e. delete_preset(name) would change something."""
+    path = path or _presets_path()
+    return any(p.name == name for p in _load_user_presets(path))
+
+
+def save_preset(preset: FabPreset, path: Optional[Path] = None) -> None:
+    """Upsert a preset into the user file. Reusing a built-in's name stores an override
+    (the built-in stays the fallback, KiCad-profile style)."""
+    path = path or _presets_path()
+    user = [p for p in _load_user_presets(path) if p.name != preset.name]
+    user.append(preset)
+    _write_user_presets(user, path)
+
+
+def delete_preset(name: str, path: Optional[Path] = None) -> bool:
+    """Delete a user preset, or revert a user override of a built-in. Returns False when
+    there is nothing user-saved under ``name`` (a pure built-in is already at its default)."""
+    path = path or _presets_path()
+    user = _load_user_presets(path)
+    if not any(p.name == name for p in user):
+        return False
+    _write_user_presets([p for p in user if p.name != name], path)
+    return True
 
 
 def _fmt(v) -> str:

@@ -829,6 +829,10 @@ class CollapsibleSection(QWidget):
         super().__init__(parent)
         self._body = body
         self._expanded = False
+        self._title = title
+        self._dot = None
+        self._head_w = None
+        self._dirty = False
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(T.sp("sm"))
@@ -845,13 +849,37 @@ class CollapsibleSection(QWidget):
         head = QHBoxLayout(); head.setContentsMargins(0, 0, 0, 0); head.setSpacing(T.sp("md"))
         head.addWidget(self._chevron)
         head.addWidget(subhead(title))
+        # An unsaved-change dot: hidden until set_dirty(True), so a collapsed section's
+        # edits stay visible in the Save preview scope while scrolling (design contract §6).
+        self._dot = QLabel()
+        self._dot.setFixedSize(6, 6)
+        register_restyle(lambda: self._dot.setStyleSheet(dot_css(T.t("accent"), 6)), self._dot)
+        self._dot.setVisible(False)
+        head.addWidget(self._dot)
         head.addStretch(1)
         head_w = QWidget(); head_w.setLayout(head)
         head_w.setCursor(Qt.PointingHandCursor)
+        self._head_w = head_w
         v.addWidget(head_w)
         body.setVisible(False)                  # collapsed by default
         v.addWidget(body)
         self.setVisible(True)                    # the section itself shows (body stays collapsed)
+
+    def set_dirty(self, on: bool):
+        """Show/hide the header's unsaved-change dot. No-op on an empty (bodyless)
+        section. Safe to call repeatedly (drives the Save preview scope indicator)."""
+        if self._dot is None:
+            return
+        self._dirty = bool(on)
+        self._dot.setVisible(self._dirty)
+        if self._head_w is not None:
+            self._head_w.setToolTip(f"{self._title} has unsaved changes" if self._dirty else "")
+
+    def is_dirty(self) -> bool:
+        # An explicit flag, not _dot.isVisible() — a child's isVisible() is False whenever
+        # the top-level window is not shown (headless tests / offscreen), which would make
+        # the state untestable.
+        return self._dirty
 
     def set_expanded(self, on: bool):
         self._expanded = bool(on)

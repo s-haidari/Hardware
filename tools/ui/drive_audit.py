@@ -992,6 +992,108 @@ def audit_projects_styled():
             _fail("Projects/Editor: Design Rules + Net Classes completion "
                   "(severities/tables/pin map/net-class columns/Default class)", e)
 
+        # ── Editor enhancements: fab-preset manager, net-class Duplicate, validate-on-save
+        #    preview, severity schemes + size templates, per-section dirty dots, per-row
+        #    delete. Store paths are redirected to a temp dir so the repo is never written.
+        _store_dir = Path(tempfile.mkdtemp(prefix="drive_edit_"))
+        _o_fab, _o_dp = PROJ.fabp._presets_path, PROJ.dpre._store_path
+        PROJ.fabp._presets_path = lambda: _store_dir / "fab.json"
+        PROJ.dpre._store_path = lambda: _store_dir / "design.json"
+        try:
+            d5 = Path(tempfile.mkdtemp(prefix="drive_edit_pro_"))
+            (d5 / "Edit.kicad_pro").write_text(_json.dumps({
+                "board": {"design_settings": {"rule_severities": {"clearance": "error"},
+                                              "track_widths": [0.0, 0.25]}},
+                "erc": {"rule_severities": {}, "pin_map": [[0] * 12 for _ in range(12)]},
+                "net_settings": {"classes": [{"name": "Default", "clearance": 0.2,
+                                              "track_width": 0.2, "via_diameter": 0.8, "via_drill": 0.4}]},
+                "meta": {"version": 1}}), encoding="utf-8", newline="\n")
+            cfg5 = dict(cfg); cfg5["RepoRoot"] = str(d5)
+            ep = PROJ._pcb_setup_panel(_styled_ctx(cfg5), PROJ.ProjectsState(cfg5))
+
+            # 1. per-section dirty dots start clean, then a severity scheme + a size template
+            #    make exactly their sections dirty.
+            if any(ep._section_dirty().values()):
+                _fail("Projects/Editor: sections reported dirty on a freshly-loaded panel")
+            ep._apply_severity_scheme("Strict")
+            if ep._sev_combos["drc"]["unconnected_items"].currentText() != "error":
+                _fail("Projects/Editor: severity scheme did not set every rule")
+            if not ep._section_dirty()["DRC & ERC Severities"]:
+                _fail("Projects/Editor: severity-scheme apply did not mark its section dirty")
+            ep._apply_size_template("Power")
+            if ep._psize_tables["track"].rowCount() != 3:
+                _fail(f"Projects/Editor: size template did not refill the track table "
+                      f"({ep._psize_tables['track'].rowCount()} rows)")
+            if not ep._section_dirty()["Predefined Sizes"]:
+                _fail("Projects/Editor: size-template apply did not mark its section dirty")
+
+            # 2. per-row predefined delete (removes the remove-then-add friction)
+            _before = ep._psize_tables["track"].rowCount()
+            ep._ps_delete_row("track", 0)
+            if ep._psize_tables["track"].rowCount() != _before - 1:
+                _fail("Projects/Editor: per-row predefined delete did not drop a row")
+
+            # 3. net-class Duplicate creates a <name>_2 variant with no patterns
+            ep._nc_new()
+            _src = ep._nc_rows()[-1]["name"]
+            _dup = ep._nc_duplicate(_src)
+            if not _dup or ep._ncmgr.get_netclass(_dup) is None:
+                _fail(f"Projects/Editor: net-class Duplicate produced no class (src {_src!r})")
+            elif ep._ncmgr.get_netclass(_dup).patterns:
+                _fail("Projects/Editor: duplicated net class copied patterns (double-claims nets)")
+
+            # 4. validate-on-save preview: a below-floor class surfaces a non-blocking warn op,
+            #    and the save still proceeds (the check never blocks a write).
+            ep._nc_rows()[-1]["spins"]["track_width"]._mm = 0.005      # far below any fab floor
+            ep._commit_netclasses()
+            _snap = ep._capture()
+            _ops = ep._save_audit(_snap)
+            if not any((not o.get("safe")) and str(o.get("key", "")).startswith("ack:") for o in _ops):
+                _fail("Projects/Editor: below-floor class did not appear as a preview violation")
+            if not ep._save_violations():
+                _fail("Projects/Editor: validate-on-save did not record any violation")
+            ep._save(); _pump()                                       # non-blocking: still writes
+
+            # 5. create + select a custom fab preset; it persists and reloads on a rebuild.
+            _cp = PROJ.fabp.FabPreset(
+                name="Drive Custom Fab", layers=2, min_track_width=0.15, min_clearance=0.15,
+                min_drill=0.3, min_annular_ring=0.13, min_edge_clearance=0.3,
+                default_track_width=0.25, default_via_diameter=0.6, default_via_drill=0.3,
+                board_thickness_mm=1.6, copper_oz=1.0, material="FR-4", finish="HASL",
+                soldermask="green",
+                stackup=(("F.Cu", "copper", 0.035, "copper"), ("core", "core", 1.5, "FR-4"),
+                         ("B.Cu", "copper", 0.035, "copper")))
+            PROJ.fabp.save_preset(_cp)
+            ep._refresh_fab_presets()
+            ep._set_fab("Drive Custom Fab")
+            if ep._prof_state["fab"] != "Drive Custom Fab":
+                _fail("Projects/Editor: custom fab preset was not selected")
+            if ep._fab_combo.currentText() != "Drive Custom Fab":
+                _fail("Projects/Editor: fab selector did not show the custom preset")
+            if PROJ.fabp.get_preset("Drive Custom Fab") is None:
+                _fail("Projects/Editor: custom fab preset did not persist")
+            ep2 = PROJ._pcb_setup_panel(_styled_ctx(cfg5), PROJ.ProjectsState(cfg5))
+            if "Drive Custom Fab" not in [ep2._fab_combo.itemText(i)
+                                          for i in range(ep2._fab_combo.count())]:
+                _fail("Projects/Editor: custom fab preset not reloaded on a fresh panel")
+
+            # 6. open the Manage modal (headless: constructs the dialog + returns before exec_)
+            #    and exercise the _warn_dialog import path (Delete on a locked built-in). Locks
+            #    the _open_fab_manager / _warn_dialog relative-import path — a wrong import there
+            #    crashes the real button while the backend seams (above) stay green. Avoids
+            #    QInputDialog (would block offscreen), so no New/Duplicate prompt path here.
+            ep._open_fab_manager()
+            _dlg = PROJ.FabPresetManagerDialog(ep, on_change=lambda: None)
+            _dlg._select_name("OSH Park 4-layer")                 # a locked built-in
+            _dlg._delete()                                        # hits _warn_dialog + returns
+            PROJ._warn_dialog(ep, "drive-audit reachability check")
+        except Exception as e:  # noqa: BLE001
+            _fail("Projects/Editor: enhancements (fab manager / duplicate / validate-preview "
+                  "/ schemes / templates / dirty dots / per-row delete)", e)
+        finally:
+            PROJ.fabp._presets_path = _o_fab
+            PROJ.dpre._store_path = _o_dp
+
     def _refactor(p):
         from PyQt5.QtWidgets import QPushButton as _QPB
         if not p.findChildren(_QPB):
