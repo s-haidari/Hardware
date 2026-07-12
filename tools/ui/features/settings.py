@@ -26,7 +26,7 @@ def _setting_row(title, sub, control=None) -> W.Card:
     """A titled card row. `control` is an optional right-aligned widget (a segment,
     button, or status tag); status-only rows pass None and get no trailing widget."""
     card = W.Card(pad=16)
-    row = QHBoxLayout(); row.setSpacing(16)
+    row = QHBoxLayout(); row.setSpacing(T.sp("lg"))
     col = QVBoxLayout(); col.setSpacing(2)
     t = QLabel(title); t.setFont(T.ui_font(10, semibold=True))
     W.register_restyle(lambda: t.setStyleSheet(f"color:{T.t('txt1')};background:transparent;"), t)
@@ -120,7 +120,7 @@ def _machine_setup(ctx, root, lay) -> None:
     import stm32_db
 
     lay.addWidget(W.eyebrow("Machine Setup"))
-    holder = QVBoxLayout(); holder.setSpacing(10)
+    holder = QVBoxLayout(); holder.setSpacing(T.sp("row"))
     lay.addLayout(holder)
 
     def build_card():
@@ -149,7 +149,7 @@ def _machine_setup(ctx, root, lay) -> None:
         # Quiet Settings idiom (design-rules §4): a dot+text status tag + a plain summary
         # line — NOT a filled Verdict band; the Settings panel carries no surface-hue chips.
         head = QWidget(); hl = QHBoxLayout(head)
-        hl.setContentsMargins(0, 0, 0, 0); hl.setSpacing(10)
+        hl.setContentsMargins(0, 0, 0, 0); hl.setSpacing(T.sp("row"))
         hl.addWidget(W.tag("Machine Ready", "ok") if not gaps
                      else W.tag(f"{len(gaps)} Setup Item{'s' if len(gaps) != 1 else ''} To Address", "warn"))
         if gaps:
@@ -165,7 +165,7 @@ def _machine_setup(ctx, root, lay) -> None:
 
     build_card()
 
-    actions = QHBoxLayout(); actions.setSpacing(8)
+    actions = QHBoxLayout(); actions.setSpacing(T.sp("sm"))
     b_setup = W.btn("Set Up This Machine", "primary",
                     "Register the KiCad libraries and report everything this machine still needs")
     b_db = W.btn("Rebuild STM32 Database", "ghost",
@@ -275,9 +275,9 @@ def _settings_panel(ctx, _s) -> QWidget:
     lay.addWidget(W.eyebrow("Library Location"))
     loc = _current_location()
     loc_card = W.Card(pad=16)
-    loc_col = QVBoxLayout(); loc_col.setSpacing(8)
+    loc_col = QVBoxLayout(); loc_col.setSpacing(T.sp("sm"))
     loc_col.addWidget(W.body(loc.as_posix(), mono=True, dim=True))
-    actions = QHBoxLayout(); actions.setSpacing(8)
+    actions = QHBoxLayout(); actions.setSpacing(T.sp("sm"))
     actions.addWidget(W.btn("Change", tip="Open an existing library or seed a new one",
                             on_click=lambda: _change_location(root)))
     actions.addWidget(W.btn("Open Folder", tip="Reveal the library folder",
