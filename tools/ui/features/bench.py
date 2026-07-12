@@ -27,7 +27,7 @@ from ..prose import plural
 from ..util import clear_layout, run_populate, _headless
 
 from .bench_visuals import (
-    PinMap, legend, connection_blocks, stat, pin_header, pin_meta, profile_badge,
+    PinMap, legend, connection_diagram, stat, pin_header, pin_meta, profile_badge,
     _pin_category, _is_5v, _resolved_cat, _CAT_FROM_NET,
 )
 
@@ -149,11 +149,11 @@ def _authority_panel(ctx, state: BenchState) -> QWidget:
     grid.addWidget(insp_card, 1)
     outer.addLayout(grid)
 
-    outer.addWidget(W.eyebrow("Connection Diagram"))
-    conn_holder = QVBoxLayout(); conn_holder.setSpacing(10)
-    outer.addLayout(conn_holder)
     outer.addStretch(1)
-    cw_holder = {}
+
+    # The per-pin Connection Diagram moved to the Analysis tab (owner v2.11: "it should
+    # live more on the Analysis page"), rebuilt there as a real painted diagram. The
+    # Overview stays the map + inspector.
 
     def _clear_layout(lay):
         while lay.count():
@@ -191,19 +191,8 @@ def _authority_panel(ctx, state: BenchState) -> QWidget:
         insp_card.body.addWidget(W.dl(rows, key_width=128))
         insp_card.body.addStretch(1)
 
-        # connection diagram: the per-pin flow from the socket to the delivered net
-        _clear_layout(conn_holder)
-        try:
-            if not cw_holder.get("cw"):
-                cw_holder["cw"] = sauth.card_wiring(authority)
-            chain = pins._pin_chain(authority, pos, cw_holder["cw"])
-            conn_holder.addWidget(connection_blocks(chain, ctx.cfg))
-        except Exception as e:  # noqa: BLE001
-            conn_holder.addWidget(W.body(f"Connection diagram unavailable: {e}", dim=True))
-
     def refresh():
         _clear_layout(verdict_holder)
-        cw_holder.clear()
         try:
             authority = state.authority()
         except Exception as e:  # noqa: BLE001 - unsupported package build (e.g. BGA)
@@ -832,6 +821,46 @@ def _analysis_panel(ctx, state: BenchState) -> QWidget:
         lay.addWidget(kit.state("error", "Authority Unavailable", glyph="alert",
                                 sub=f"Could not build the authority: {e}")); return root
     pkg = state.package
+
+    # Connection Diagram — the real painted socket→net signal path for a chosen pin,
+    # moved here from the Overview (owner v2.11: "the Connection Diagram should live more
+    # on the Analysis page" + "make it a real, clean diagram"). A pin picker drives it,
+    # since Analysis has no map to click.
+    lay.addWidget(W.section_header("Connection Diagram"))
+    order = sorted(authority["positions"], key=lambda p: p["position"])
+    cw = sauth.card_wiring(authority)
+    cd_bar = QHBoxLayout(); cd_bar.setSpacing(8)
+    cd_bar.addWidget(W.eyebrow("Pin"))
+    pin_combo = QComboBox(); pin_combo.setFixedWidth(240)
+    pin_combo.setToolTip("Choose a socket pin to draw its path from the MCU to the delivered net")
+    for p in order:
+        nm = next(iter(p["pin_names"]), "")
+        pin_combo.addItem(f"Pin {p['position']}" + (f" · {nm}" if nm else ""), p["position"])
+    cd_bar.addWidget(pin_combo)
+    cd_bar.addWidget(W.body("The socket-to-net path for the selected pin.", dim=True))
+    cd_bar.addStretch(1)
+    lay.addLayout(cd_bar)
+    cd_holder = QVBoxLayout(); cd_holder.setSpacing(6); lay.addLayout(cd_holder)
+
+    def _paint_diagram(pos):
+        clear_layout(cd_holder)
+        if pos is None:
+            return
+        try:
+            cd_holder.addWidget(connection_diagram(pins._pin_chain(authority, pos, cw)))
+        except Exception as e:  # noqa: BLE001
+            cd_holder.addWidget(W.body(f"Connection diagram unavailable: {e}", dim=True))
+    pin_combo.currentIndexChanged.connect(lambda _i: _paint_diagram(pin_combo.currentData()))
+    # default to the first must-switch pin (the most interesting path), else the first pin
+    _default = next((p["position"] for p in order if p.get("switch_class") == "must_switch"),
+                    order[0]["position"] if order else None)
+    if _default is not None:
+        pin_combo.blockSignals(True)
+        _di = pin_combo.findData(_default)
+        if _di >= 0:
+            pin_combo.setCurrentIndex(_di)
+        pin_combo.blockSignals(False)
+    _paint_diagram(pin_combo.currentData())
 
     # Category pin lists — explicit socket-pin-number lists per category.
     lay.addWidget(W.section_header(f"Category Pin Lists   {pkg}"))

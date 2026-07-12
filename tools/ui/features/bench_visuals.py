@@ -19,7 +19,7 @@ self-contained; bench.py re-exports `_pin_category` for callers/tests.
 from __future__ import annotations
 
 from PyQt5.QtCore import Qt, QRectF, QPointF
-from PyQt5.QtGui import QPainter, QColor, QPen
+from PyQt5.QtGui import QPainter, QColor, QPen, QFontMetrics, QPolygonF
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSizePolicy,
                              QFrame)
 
@@ -163,6 +163,117 @@ def connection_blocks(chain, cfg=None) -> QWidget:
     if chain.get("one_hot"):
         col.addWidget(W.body("One-hot: exactly one switched path closes per socketed part.", dim=True))
     return wrap
+
+
+# ── the connection diagram: a real painted left→right signal-path flow ────────
+class _ConnectionDiagram(QWidget):
+    """A left→right signal-path DIAGRAM for one socket pin: rounded node boxes
+    (MCU Pin → ZIF Socket → the in-line element → Destination → Delivered Net) joined by
+    connector lines with arrowheads, one lane per delivered branch; the delivered-net
+    node is tinted by its net category. Replaces the old definition-list 'blocks' —
+    owner v2.11: 'the Connection Diagram isn't a diagram — make it a real, clean
+    diagram.' Bespoke painting (a node/edge flow the generic kit has no builder for)."""
+    NODE_W = 152
+    NODE_H = 58
+    GAP_X = 30
+    GAP_Y = 16
+    PAD = 8
+    FOOT = 22
+
+    def __init__(self, chain, parent=None):
+        super().__init__(parent)
+        self._branches = self._build(chain)
+        self._one_hot = bool(chain.get("one_hot"))
+        cols = max((len(b) for b in self._branches), default=1)
+        rows = max(1, len(self._branches))
+        w = self.PAD * 2 + cols * self.NODE_W + (cols - 1) * self.GAP_X
+        h = (self.PAD * 2 + rows * self.NODE_H + (rows - 1) * self.GAP_Y
+             + (self.FOOT if self._one_hot else 0))
+        self.setFixedHeight(int(h))
+        self.setMinimumWidth(int(w))
+        self.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+
+    def _build(self, chain):
+        pos = chain["pos"]; name = chain.get("name") or ""
+        mcu = ("MCU Pin", f"Pin {pos}" + (f" · {name}" if name else ""), None)
+        branches = []
+        for r in chain.get("rows", []):
+            dcat = _CAT_FROM_NET.get(r.get("drain_cat", "lane"), "lane")
+            nodes = [mcu, ("ZIF Socket", f"Pin {pos}", None)]
+            if r["kind"] == "switch":
+                nodes.append(("Switch Cell", f"{r.get('cell', '')} · Ch {r.get('channel', '')}", None))
+            elif r["kind"] == "lane" and r.get("series"):
+                nodes.append(("Series Resistor", str(r["series"]), None))
+            else:
+                nodes.append(("Route", "Direct", None))
+            if r.get("drain_via"):
+                nodes.append(("Destination", str(r["drain_via"]), None))
+            nodes.append(("Delivered Net", r.get("drain_net", "") or "—", dcat))
+            branches.append(nodes)
+        if not branches:                       # a pin with no path -> a single stub lane
+            branches = [[mcu, ("Route", "No connection path", None)]]
+        return branches
+
+    def _node_x(self, k):
+        return self.PAD + k * (self.NODE_W + self.GAP_X)
+
+    def paintEvent(self, _e):
+        qp = QPainter(self); qp.setRenderHint(QPainter.Antialiasing, True)
+        title_f = T.ui_font(9); val_f = T.mono_font(11)
+        tfm = QFontMetrics(title_f); vfm = QFontMetrics(val_f)
+        line = QPen(T.qcolor("hairline_strong")); line.setWidthF(1.4); line.setCosmetic(True)
+        inner = self.NODE_W - 20
+        for li, nodes in enumerate(self._branches):
+            y0 = self.PAD + li * (self.NODE_H + self.GAP_Y)
+            yc = y0 + self.NODE_H / 2.0
+            # connectors first (behind the node boxes): a line + a filled arrowhead
+            for k in range(1, len(nodes)):
+                x1 = self._node_x(k - 1) + self.NODE_W
+                x2 = self._node_x(k)
+                qp.setPen(line); qp.setBrush(Qt.NoBrush)
+                qp.drawLine(QPointF(x1, yc), QPointF(x2 - 5, yc))
+                qp.setPen(Qt.NoPen); qp.setBrush(T.qcolor("hairline_strong"))
+                qp.drawPolygon(QPolygonF([QPointF(x2, yc), QPointF(x2 - 6, yc - 3.5),
+                                          QPointF(x2 - 6, yc + 3.5)]))
+            # node boxes
+            for k, (title, val, cat) in enumerate(nodes):
+                x = self._node_x(k)
+                rect = QRectF(x, y0, self.NODE_W, self.NODE_H)
+                bp = QPen(T.qcolor(T.category(cat)) if cat else T.qcolor("hairline"))
+                bp.setWidthF(1.6 if cat else 1.0); bp.setCosmetic(True)
+                qp.setBrush(T.qcolor("raised")); qp.setPen(bp)
+                qp.drawRoundedRect(rect, 6, 6)
+                qp.setFont(title_f); qp.setPen(T.qcolor("txt3"))
+                qp.drawText(QRectF(x + 10, y0 + 8, inner, 13), Qt.AlignLeft | Qt.AlignVCenter,
+                            tfm.elidedText(title, Qt.ElideRight, inner))
+                qp.setFont(val_f)
+                qp.setPen(T.qcolor(T.category(cat)) if cat else T.qcolor("txt1"))
+                qp.drawText(QRectF(x + 10, y0 + 24, inner, self.NODE_H - 30),
+                            Qt.AlignLeft | Qt.AlignVCenter,
+                            vfm.elidedText(str(val), Qt.ElideRight, inner))
+                if cat:                          # a category dot on the delivered-net node
+                    qp.setBrush(T.qcolor(T.category(cat))); qp.setPen(Qt.NoPen)
+                    qp.drawEllipse(QRectF(x + self.NODE_W - 16, y0 + 9, 6, 6))
+        if self._one_hot:
+            qp.setFont(title_f); qp.setPen(T.qcolor("txt3"))
+            fy = self.height() - self.FOOT + 2
+            qp.drawText(QRectF(self.PAD, fy, self.width() - 2 * self.PAD, self.FOOT - 4),
+                        Qt.AlignLeft | Qt.AlignVCenter,
+                        "One-hot: exactly one switched path closes per socketed part.")
+        qp.end()
+
+
+def connection_diagram(chain) -> QWidget:
+    """The painted per-pin connection diagram, left-scrollable when a wide chain exceeds
+    the panel (so an unusually long path never clips). `chain` is a `pins._pin_chain`."""
+    from PyQt5.QtWidgets import QScrollArea
+    diag = _ConnectionDiagram(chain)
+    area = QScrollArea(); area.setWidgetResizable(True); area.setFrameShape(QFrame.NoFrame)
+    area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+    area.setFixedHeight(diag.height() + 16)     # room for a horizontal scrollbar if shown
+    area.setWidget(diag)
+    return area
 
 
 # ── the painted pin map: net colour (fill) + switch class (border) + marks + zoom ─

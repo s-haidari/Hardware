@@ -1457,6 +1457,17 @@ def audit_bench_styled():
                 fitted += 1
         if fitted == 0:
             _fail("Bench/Analysis: no multi-row table was fit to its content rows")
+        # BENCH v2.11: the Connection Diagram moved here as a REAL painted diagram with a
+        # pin picker (owner: "make it a real, clean diagram" + "live on the Analysis page").
+        # Assert it renders and that changing the pin repaints it without a crash.
+        from ui.features import bench_visuals as _BV
+        if p.findChild(_BV._ConnectionDiagram) is None:
+            _fail("Bench/Analysis: painted Connection Diagram did not render")
+        pincombo = next((c for c in p.findChildren(QComboBox) if c.count() > 3), None)
+        if pincombo is not None:
+            pincombo.setCurrentIndex(min(3, pincombo.count() - 1)); _pump()
+            if p.findChild(_BV._ConnectionDiagram) is None:
+                _fail("Bench/Analysis: Connection Diagram vanished after changing the pin")
         lint_btn = next((b for b in p.findChildren(QPushButton)
                          if b.text().startswith("Lint Claim File")), None)
         if lint_btn is None:
