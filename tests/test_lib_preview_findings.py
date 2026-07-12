@@ -524,3 +524,39 @@ def test_enrich_library_surfaces_daily_cap(tmp_path, monkeypatch):
     assert out["reset_seconds"] == 3600
     assert out["looked_up"] == 1          # the blank field forced one (empty) lookup
     assert out["changes"] == []           # nothing filled while capped
+
+
+def test_enrich_library_does_not_false_flag_cap_on_a_successful_run(tmp_path, monkeypatch):
+    """SRC-04 false-positive lock (adversarial-review fix): the day-scoped marker is never
+    cleared until midnight, so an unconditional check reported EVERY run capped for the
+    rest of the day. A run whose lookups all SUCCEED must NOT flag rate_limited even while
+    the marker is positive — the flag is gated on this run actually seeing an empty lookup."""
+    def sym(name, mpn):
+        return (f'  (symbol "{name}" (in_bom yes)\n'
+                f'    (property "Value" "{mpn}" (at 0 0 0))\n  )')
+
+    target = tmp_path / "MySymbols.kicad_sym"
+    target.write_text(
+        '(kicad_symbol_lib (version 20211014) (generator "LibraryManager.py")\n'
+        f'{sym("AAA", "MPN1")}\n)\n', encoding="utf-8")
+
+    # marker positive (capped earlier today) BUT this run's lookup succeeds (e.g. via LCSC)
+    monkeypatch.setattr(LM, "mouser_reset_seconds_remaining", lambda *a, **k: 3600)
+
+    out = LM.enrich_library({"SymbolLib": str(target)},
+                            lambda mpn: {"manufacturer": "ACME", "source": "LCSC"},
+                            fields=("manufacturer",), dry_run=True)
+    assert out["looked_up"] == 1
+    assert out["changes"], "the successful lookup should have filled the blank"
+    assert out["rate_limited"] is False, "a fully-successful run must not report the cap"
+
+    # and a zero-lookup run (nothing to fill) must also not flag the cap
+    target.write_text(
+        '(kicad_symbol_lib (version 20211014) (generator "LibraryManager.py")\n'
+        '  (symbol "BBB" (in_bom yes)\n'
+        '    (property "Value" "MPN2" (at 0 0 0))\n'
+        '    (property "MANUFACTURER" "Already" (at 0 0 0))\n  )\n)\n', encoding="utf-8")
+    out2 = LM.enrich_library({"SymbolLib": str(target)}, lambda mpn: None,
+                             fields=("manufacturer",), dry_run=True)
+    assert out2["looked_up"] == 0
+    assert out2["rate_limited"] is False, "a zero-lookup run must not report the cap"

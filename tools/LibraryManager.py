@@ -1190,7 +1190,7 @@ def enrich_library(cfg: Dict[str, str], lookup, log: UILog = None,
         text = read_text(sym_path)
         blocks = extract_symbol_blocks(text)
         new_blocks = list(blocks)                     # positional rewrite (no text.replace)
-        changes, looked_up, any_edit = [], 0, False
+        changes, looked_up, any_edit, misses = [], 0, False, 0
         for idx, b in enumerate(blocks):
             name = extract_symbol_name(b)
             props = extract_symbol_properties(b)
@@ -1207,6 +1207,7 @@ def enrich_library(cfg: Dict[str, str], lookup, log: UILog = None,
             looked_up += 1
             res = lookup(mpn)
             if not res:
+                misses += 1                       # this part came back empty this run
                 continue
             nb, filled = enrich_symbol(b, res, fields)
             if filled:
@@ -1224,9 +1225,15 @@ def enrich_library(cfg: Dict[str, str], lookup, log: UILog = None,
             _snapshot_then_write(sym_path, new_text, log or _NullLog())
             written = True
         reset_seconds = mouser_reset_seconds_remaining()
+        # SRC-04: flag the cap only when THIS run actually saw an empty lookup (a miss)
+        # AND the shared-key marker is positive — mirroring the single-part path, which
+        # surfaces the cap only inside `if not res:`. An unconditional marker check
+        # reported EVERY run (even fully-successful or zero-lookup ones) capped for the
+        # rest of the day, because the day-scoped marker is never cleared until midnight.
+        rate_limited = bool(reset_seconds) and misses > 0
         return {"changes": changes, "written": written, "symbols": len(blocks),
                 "looked_up": looked_up,
-                "rate_limited": bool(reset_seconds), "reset_seconds": reset_seconds}
+                "rate_limited": rate_limited, "reset_seconds": reset_seconds}
 
 
 class _NullLog:
@@ -6278,4 +6285,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # sys.exit so a non-zero return (e.g. the --selftest DM Sans font-load failure) reaches
+    # the process exit code and fails CI — a bare main() call discards it and always exits 0
+    # (this is the frozen-exe entry point that CI's --selftest smoke test runs).
+    sys.exit(main())
