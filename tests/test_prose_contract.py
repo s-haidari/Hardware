@@ -102,6 +102,35 @@ def test_no_lazy_plural_tell_in_rendered_ui_strings():
         "ui.prose.plural(n, noun):\n" + "\n".join(problems))
 
 
+# Interactive labels (buttons / eyebrows / section headers / tags / menu entries) are
+# Title Case — they never start lowercase (design-rules §Casing: "Title Case → structural
+# labels, titles, buttons"). Body prose stays sentence case; that is not machine-checkable, so
+# this gate covers only the label builders, whose first positional arg is the human label.
+_LABEL_BUILDERS = {"btn", "eyebrow", "section_header", "menu_button", "toggle_chip", "tag", "action"}
+
+
+def test_interactive_labels_are_not_lowercase():
+    problems = []
+    for p in _ui_py_files():
+        tree = ast.parse(p.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and node.args):
+                continue
+            fn = node.func
+            name = (fn.attr if isinstance(fn, ast.Attribute)
+                    else fn.id if isinstance(fn, ast.Name) else None)
+            if name not in _LABEL_BUILDERS:
+                continue
+            first = node.args[0]
+            if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                s = first.value.strip()
+                if s and s[0].isalpha() and s[0].islower():
+                    problems.append(f"{p.name}:{node.lineno}  {name}({s[:40]!r})")
+    assert not problems, (
+        "interactive label starts lowercase — labels / titles / buttons are Title Case "
+        "(design-rules §Casing):\n" + "\n".join(problems))
+
+
 def test_plural_agrees_in_number():
     assert plural(1, "error") == "1 error"
     assert plural(0, "error") == "0 errors"
