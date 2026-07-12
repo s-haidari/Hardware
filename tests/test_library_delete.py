@@ -70,7 +70,8 @@ def test_part_missing_complete_part_reports_nothing():
         "name": "U1", "symbols": ["U1"], "footprint": "FP_A", "model": "m.step",
         "has_symbol": True, "has_footprint": True, "has_model": True,
         "dangling": False, "has_real_mpn": True,
-        "mpn": "REAL-1", "manufacturer": "Acme", "datasheet": "http://d", "description": "A part",
+        "mpn": "REAL-1", "manufacturer": "Acme", "datasheet": "http://d",
+        "description": "A part", "category": "Misc",
     }
     assert L.part_missing(row) == []
 
@@ -127,7 +128,8 @@ def test_part_missing_integrates_with_scan_library_grouped(tmp_path):
         tmp_path,
         _symbol("U1", footprint="FP_A", **{"Manufacturer Part Number": "REAL-1",
                                            "MANUFACTURER": "Acme", "Datasheet": "http://d",
-                                           "Description": "A complete part"}),
+                                           "Description": "A complete part",
+                                           "Category": "Misc"}),
         {"FP_A": "m.step"}, ["m.step"])
     row = {r["name"]: r for r in L.scan_library_grouped(cfg)}["U1"]
     assert L.part_missing(row) == []       # fully complete -> nothing missing

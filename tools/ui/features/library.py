@@ -1098,13 +1098,22 @@ def _mk_health_verdict(rep):
                               subtitle="Import parts on the Maintenance tab to begin.")
     if complete == parts:
         return W.VerdictState(kind="ok", title="All Parts Complete",
-                              subtitle=f"{plural(parts, 'part')} · symbol, "
-                                       "footprint and 3D model all present")
+                              subtitle=f"{plural(parts, 'part')} · every completion "
+                                       "field present")
+    # All eight passport dimensions are chip candidates; the band shows the three
+    # LARGEST real gaps (dangling first — it is the hard disqualifier), so a big
+    # "No Part Number" gap can never hide behind a tiny structural one.
     cand = [("Dangling", int(c.get("dangling", 0)), "err"),
             ("No Footprint", int(c.get("missing_footprint", 0)), "warn"),
             ("No 3D Model", int(c.get("missing_model", 0)), "warn"),
-            ("No Manufacturer", int(c.get("no_manufacturer", 0)), "mut")]
-    chips = [(lab, str(n), kind) for lab, n, kind in cand if n][:3]
+            ("No Part Number", int(c.get("no_mpn", 0)), "warn"),
+            ("No Manufacturer", int(c.get("no_manufacturer", 0)), "mut"),
+            ("No Datasheet", int(c.get("no_datasheet", 0)), "mut"),
+            ("No Description", int(c.get("no_description", 0)), "mut"),
+            ("No Category", int(c.get("no_category", 0)), "mut")]
+    nonzero = [(lab, n, kind) for lab, n, kind in cand if n]
+    nonzero.sort(key=lambda t: (t[2] != "err", -t[1]))   # dangling leads, then by count
+    chips = [(lab, str(n), kind) for lab, n, kind in nonzero][:3]
     return W.VerdictState(kind="warn", title=f"{parts - complete} Incomplete",
                           subtitle=f"{complete} of {parts} parts complete", chips=chips)
 
@@ -1206,7 +1215,11 @@ def _health_workbench(ctx) -> QWidget:
     _FINDING_SECTIONS = (("Dangling Links", "dangling"),
                          ("Missing Footprint", "missing_footprint"),
                          ("Missing 3D Model", "missing_model"),
-                         ("No Manufacturer", "no_manufacturer"))
+                         ("No Part Number", "no_mpn"),
+                         ("No Manufacturer", "no_manufacturer"),
+                         ("No Datasheet", "no_datasheet"),
+                         ("No Description", "no_description"),
+                         ("No Category", "no_category"))
 
     def detail(snap, handle):
         body = QWidget()
@@ -1250,7 +1263,8 @@ def _health_workbench(ctx) -> QWidget:
                     findings.body.addWidget(W.static_label(f"+{len(names) - 8} more", "dim"))
             if not any_gap:
                 findings.body.addWidget(W.static_label(
-                    "Every part has its symbol, footprint and 3D model.", "dim"))
+                    "Every part is fully specified: symbol, footprint, 3D model and "
+                    "identity.", "dim"))
 
         def fill(s):
             if ui.pop("pending_changed", False):

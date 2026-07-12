@@ -97,21 +97,35 @@ def test_workbench_builds_without_touching_the_network(tmp_path, monkeypatch):
 
 def test_verdict_counts_incomplete_parts(tmp_path):
     host = LIB._health_workbench(_ctx(_libcfg(tmp_path)))
-    # The fixture scans as 3 logical parts, 1 complete (U1) → 2 incomplete.
+    # Under the strict 8-item passport NONE of the fixture parts is complete — even U1
+    # (it has the three assets + a manufacturer but no MPN/datasheet/description/category),
+    # which the old loose count wrongly called complete. So all three read incomplete.
     assert not host._verdict.isHidden()
-    assert host._verdict._title.text() == "2 Incomplete"
+    assert host._verdict._title.text() == "3 Incomplete"
 
 
 def test_verdict_all_complete_is_ok(tmp_path):
-    cfg = _libcfg(tmp_path)
-    # Make SOT_PART whole: link the footprint + give it a manufacturer.
-    txt = Path(cfg["SymbolLib"]).read_text(encoding="utf-8")
-    txt = txt.replace(
-        '(symbol "SOT_PART" (property "Value" "SOT_PART" (id 1)) (pin 1))',
-        '(symbol "SOT_PART" (property "Value" "SOT_PART" (id 1))'
-        ' (property "Footprint" "MyFootprints:SOT_PART" (id 2))'
-        ' (property "MANUFACTURER" "ACME" (id 3)) (pin 1))')
-    Path(cfg["SymbolLib"]).write_text(txt, encoding="utf-8")
+    # A library whose every part is 8/8 under the strict passport (symbol, footprint, 3D
+    # model, MPN, manufacturer, datasheet, description, category) reads all-complete —
+    # the three assets alone no longer qualify.
+    sym = tmp_path / "MySymbols.kicad_sym"
+    sym.write_text(
+        '(kicad_symbol_lib\n'
+        '  (symbol "U1" (property "Value" "U1" (id 1))'
+        ' (property "Footprint" "MyFootprints:FP_A" (id 2))'
+        ' (property "MANUFACTURER" "ACME" (id 3))'
+        ' (property "Manufacturer Part Number" "MPN-1" (id 4))'
+        ' (property "Datasheet" "http://x/1.pdf" (id 5))'
+        ' (property "Description" "a part" (id 6))'
+        ' (property "Category" "Misc" (id 7)) (pin 1))\n'
+        ')\n', encoding="utf-8")
+    fp = tmp_path / "fps"; fp.mkdir()
+    (fp / "FP_A.kicad_mod").write_text(
+        '(footprint "FP_A" (model ${MY3DMODELS}/FP_A.step))', encoding="utf-8")
+    mdl = tmp_path / "models"; mdl.mkdir()
+    (mdl / "FP_A.step").write_bytes(b"ISO-10303-21;")
+    cfg = {"SymbolLib": str(sym), "FootprintLib": str(fp), "ModelLib": str(mdl),
+           "Libs": str(tmp_path), "RepoRoot": str(tmp_path)}
     host = LIB._health_workbench(_ctx(cfg))
     assert not host._verdict.isHidden()
     assert host._verdict._title.text() == "All Parts Complete"

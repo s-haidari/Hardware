@@ -2376,6 +2376,18 @@ def part_missing(row: Dict) -> List[Dict[str, str]]:
                                   "Complete This Part to autofill it from a "
                                   "distributor lookup.",
                 })
+        # Category is one of the eight passport items, so it must appear here too or a
+        # part reads Incomplete (missing Category) while Complete This Part shows nothing
+        # to fix. It is not a distributor field, so its fix is a manual identity edit.
+        if not (row.get("category") or "").strip():
+            missing.append({
+                "item": "Category",
+                "why": "The Category field is blank, so the part is uncategorised in "
+                       "the library.",
+                "how_to_fix": "Set Category in the identity editor (for example MCU, "
+                              "Regulator or Passive) so grouping and filtering can "
+                              "place it.",
+            })
     return missing
 
 
@@ -4795,12 +4807,25 @@ def library_health_report(cfg: Dict[str, str], overrides: Optional[dict] = None)
     dangling = [r for r in rows if r.get("dangling")]
     miss_fp = [r for r in rows if r.get("has_symbol") and not r.get("has_footprint")]
     miss_mdl = [r for r in rows if r.get("has_footprint") and not r.get("has_model")]
-    no_mfr = [r for r in rows if not r.get("manufacturer")]
-    complete = [r for r in rows if r.get("has_symbol") and r.get("has_footprint")
-                and r.get("has_model") and not r.get("dangling")]
+    # Identity gaps are only actionable on a symbol-bearing part — a footprint-only
+    # orphan's fix is "give it a symbol first" (miss #1 in part_missing), so it is not
+    # double-counted here as also missing an MPN/manufacturer/etc.
+    def _blank(r, key):
+        return r.get("has_symbol") and not (r.get(key) or "").strip()
+    no_mfr = [r for r in rows if _blank(r, "manufacturer")]
+    no_mpn = [r for r in rows if r.get("has_symbol") and not has_real_mpn(r)]
+    no_ds = [r for r in rows if _blank(r, "datasheet")]
+    no_desc = [r for r in rows if _blank(r, "description")]
+    no_cat = [r for r in rows if _blank(r, "category")]
+    # Complete = the tightened 8-item passport (part_completion), the SINGLE source of
+    # truth shared with the per-part N/8 badge and the picker "Complete" facet — never
+    # the old "three assets, no dangling" test that called an identity-less part complete.
+    complete = [r for r in rows if part_completion(r)["is_complete"]]
     counts = {"parts": total, "complete": len(complete), "dangling": len(dangling),
               "missing_footprint": len(miss_fp), "missing_model": len(miss_mdl),
-              "no_manufacturer": len(no_mfr)}
+              "no_manufacturer": len(no_mfr), "no_mpn": len(no_mpn),
+              "no_datasheet": len(no_ds), "no_description": len(no_desc),
+              "no_category": len(no_cat)}
 
     def _names(rs, limit=40):
         out = [r.get("mpn") or r.get("name") or r.get("footprint") or "?" for r in rs[:limit]]
@@ -4810,19 +4835,29 @@ def library_health_report(cfg: Dict[str, str], overrides: Optional[dict] = None)
 
     pct = (100 * len(complete) // total) if total else 0
     L = ["# Library Health", "",
-         f"**{len(complete)} / {total} parts complete** ({pct}%) — symbol + footprint + 3D model, no dangling links.",
+         f"**{len(complete)} / {total} parts complete** ({pct}%) — symbol, footprint, "
+         "3D model, part number, manufacturer, datasheet, description and category, no "
+         "dangling links.",
          "", "## Counts", ""]
     L += [f"- {k.replace('_', ' ').title()}: {v}" for k, v in counts.items()]
     for title, rs in (("Dangling (symbol/footprint points at a missing file)", dangling),
                       ("Missing footprint on disk", miss_fp),
                       ("Missing 3D model on disk", miss_mdl),
-                      ("No manufacturer identity", no_mfr)):
+                      ("No part number", no_mpn),
+                      ("No manufacturer identity", no_mfr),
+                      ("No datasheet", no_ds),
+                      ("No description", no_desc),
+                      ("No category", no_cat)):
         if rs:
             L += ["", f"## {title} ({len(rs)})", ""] + [f"- {n}" for n in _names(rs)]
     return {"counts": counts, "dangling": _names(dangling, 10_000),
             "missing_footprint": _names(miss_fp, 10_000),
             "missing_model": _names(miss_mdl, 10_000),
             "no_manufacturer": _names(no_mfr, 10_000),
+            "no_mpn": _names(no_mpn, 10_000),
+            "no_datasheet": _names(no_ds, 10_000),
+            "no_description": _names(no_desc, 10_000),
+            "no_category": _names(no_cat, 10_000),
             "markdown": "\n".join(L) + "\n"}
 
 

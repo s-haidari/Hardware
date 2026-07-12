@@ -2810,11 +2810,11 @@ class _ElideLabel(QLabel):
 
 # LIB-02 taxonomy: a two-level health filter. The PRIMARY axis is the verdict
 # (Complete vs Missing); the MISSING axis breaks a Missing part down by WHAT it
-# lacks. A part is Complete only when it has all three assets, a manufacturer,
-# and no dangling reference — so Missing == "needs attention for some reason".
+# lacks. A part is Complete only under the strict 8-item passport (part_completion) —
+# the SAME predicate the per-part N/8 badge and the Sourcing Health count use — so a
+# part filtered "Complete" can never badge N/8 < 8, and Missing == "needs attention".
 def _is_complete(r) -> bool:
-    return bool(r.get("has_symbol") and r.get("has_footprint") and r.get("has_model")
-                and r.get("manufacturer") and not r.get("dangling"))
+    return bool(LM.part_completion(r)["is_complete"])
 
 
 def _is_unlinked_footprint(r) -> bool:

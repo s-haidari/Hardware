@@ -297,9 +297,12 @@ def test_set_facet_preserves_selected_part_when_it_survives(tmp_path):
     """Toggling a health facet must keep the currently-open part focused when it
     survives the new filter — not snap the detail back to row 0."""
     def _complete(mpn):
+        # Genuinely 8/8 under the strict passport: the three assets AND full identity
+        # (real MPN + manufacturer + datasheet + description + category).
         return {"mpn": mpn, "name": mpn, "symbols": ["s" + mpn], "has_symbol": True,
                 "has_footprint": True, "has_model": True, "footprint": "fp" + mpn,
-                "manufacturer": "ACME"}
+                "has_real_mpn": True, "manufacturer": "ACME", "datasheet": "http://d",
+                "description": "d", "category": "Misc"}
 
     selected = []
     # Two complete parts either side of an incomplete one. Selecting the SECOND
@@ -331,7 +334,8 @@ def test_set_facet_falls_back_to_first_when_selection_filtered_out(tmp_path):
     rows = [
         {"mpn": "COMPLETE", "name": "COMPLETE", "symbols": ["sA"], "has_symbol": True,
          "has_footprint": True, "has_model": True, "footprint": "fpA",
-         "manufacturer": "ACME"},
+         "has_real_mpn": True, "manufacturer": "ACME", "datasheet": "http://d",
+         "description": "d", "category": "Misc"},
         {"mpn": "INCOMPLETE", "name": "INCOMPLETE", "symbols": ["sB"], "has_symbol": True,
          "has_footprint": False, "has_model": False, "manufacturer": "ACME"},
     ]
@@ -414,8 +418,12 @@ def test_symbol_dropin_no_misleading_rescan_and_reshows(tmp_path, monkeypatch):
 # ── PartsList perf: build row widgets ONCE, hide/show on filter (lib_preview:1175) ──
 def _perf_rows():
     def _r(mpn, complete):
+        # A "complete" row is genuinely 8/8 (assets + full identity); the incomplete
+        # one drops only the 3D model, so a Complete facet hides exactly it.
         base = {"mpn": mpn, "name": mpn, "symbols": ["s" + mpn], "has_symbol": True,
-                "has_footprint": True, "footprint": "fp" + mpn, "manufacturer": "ACME"}
+                "has_footprint": True, "footprint": "fp" + mpn, "has_real_mpn": True,
+                "manufacturer": "ACME", "datasheet": "http://d", "description": "d",
+                "category": "Misc"}
         base["has_model"] = complete
         return base
     # Two complete parts and one missing-model part, so a facet toggle both hides

@@ -108,7 +108,9 @@ def test_partslist_facets_narrow_and_count():
     from ui.features.library_preview import PartsList
     rows = [
         {"name": "A", "mpn": "A", "manufacturer": "M", "has_symbol": True,
-         "has_footprint": True, "has_model": True, "dangling": False},          # Complete
+         "has_footprint": True, "has_model": True, "dangling": False,
+         "has_real_mpn": True, "datasheet": "http://d", "description": "d",
+         "category": "Misc"},                                                   # Complete (8/8)
         {"name": "B", "mpn": "B", "manufacturer": "M", "has_symbol": True,
          "has_footprint": True, "has_model": False, "dangling": False},         # Missing Model
         {"name": "C", "mpn": "C", "manufacturer": None, "has_symbol": True,
@@ -120,7 +122,7 @@ def test_partslist_facets_narrow_and_count():
     counts = lst.facet_counts()
     # LIB-02 taxonomy: primary Complete-vs-Missing, with a Missing breakdown.
     assert counts["All"] == 4
-    assert counts["Complete"] == 1               # only A has every asset + a manufacturer
+    assert counts["Complete"] == 1               # only A is 8/8 (assets + full identity)
     assert counts["Missing"] == 3                # everything not complete
     assert counts["Missing 3D Model"] == 1
     assert counts["Missing Footprint"] == 1
