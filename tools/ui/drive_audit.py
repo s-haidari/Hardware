@@ -1517,6 +1517,17 @@ def audit_bench_styled():
         pm.reset_view()
         if abs(pm._zoom - 1.0) > 1e-6:
             _fail("Bench/Overview: reset_view did not restore zoom 1")
+        # BENCH v2.11: the Overview is now the scrollable HOME — it absorbed the detailed
+        # All-Pins table AND the Profiles ladder (owner: "Overview should absorb All Pins +
+        # Profiles"). Assert both landed in the one panel.
+        from PyQt5.QtWidgets import QComboBox as _QC
+        allpins = next((t for t in p.findChildren(QTableWidget)
+                        if t.columnCount() == len(BENCH._PIN_COLS)), None)
+        if allpins is None or allpins.rowCount() < 2:
+            _fail(f"Bench/Overview: detailed All-Pins table ({len(BENCH._PIN_COLS)} cols) not absorbed")
+        if not any(BENCH._ALL_FAMILIES in {c.itemText(i) for i in range(c.count())}
+                   for c in p.findChildren(_QC)):
+            _fail("Bench/Overview: Profiles ladder (family combo) not absorbed into the home")
 
     def _mcu(p):
         # BENCH v2.11: the MCU viewer is a browsable LIST now (owner: "give a searchable

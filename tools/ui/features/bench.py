@@ -149,11 +149,15 @@ def _authority_panel(ctx, state: BenchState) -> QWidget:
     grid.addWidget(insp_card, 1)
     outer.addLayout(grid)
 
-    outer.addStretch(1)
-
-    # The per-pin Connection Diagram moved to the Analysis tab (owner v2.11: "it should
-    # live more on the Analysis page"), rebuilt there as a real painted diagram. The
-    # Overview stays the map + inspector.
+    # Below the map + inspector, the Overview is the long scrollable HOME: the detailed
+    # All-Pins table and the Profiles ladder, absorbed from their old standalone tabs
+    # (owner v2.11 "Overview should absorb All Pins + Profiles"). Each is a reusable
+    # section builder; the Overview owns the section headers. No trailing stretch — a
+    # scrollable home lets its sections flow. (The per-pin Connection Diagram moved to
+    # the Analysis tab, repainted there as a real diagram.)
+    outer.addWidget(_allpins_section(ctx, state))
+    outer.addWidget(W.section_header("Profiles"))
+    outer.addWidget(_profiles_section(ctx, state))
 
     def _clear_layout(lay):
         while lay.count():
@@ -467,10 +471,13 @@ def _outputs_panel(ctx, state: BenchState) -> QWidget:
         except Exception as e:  # noqa: BLE001
             ctx.services.log(f"Write failed: {e}")
 
+    positions = authority["positions"]
     bar = QHBoxLayout(); bar.setSpacing(8)
     bar.addWidget(W.subhead(f"Exports   {pkg}")); bar.addStretch(1)
-    # The three single-file saves collapse into one "Save File ▾" menu (progressive
-    # disclosure); the full bundle stays the focal primary export.
+    # Owner v2.11: "only a far-more-detailed All-Pins export is worth keeping" — so the
+    # detailed 13-column pin CSV is the ONE accent primary. The bundle drops to a default
+    # (secondary) button and the small single-file saves collapse into a "Save File ▾" menu
+    # (progressive disclosure). Same _write_allpins_csv the Overview All-Pins button uses.
     save_menu = W.menu_button("Save File", [
         ("Card Bill Of Materials (CSV)", lambda: save_text(
             "Save Card Bill Of Materials", f"card_bom_{pkg}.csv", "CSV Files (*.csv)", sauth.to_card_bom_csv),
@@ -482,10 +489,33 @@ def _outputs_panel(ctx, state: BenchState) -> QWidget:
             "Save Pin-Map SVG", f"pinmap_{pkg}.svg", "SVG Files (*.svg)", pins.pin_map_svg),
          "Render the pin-map geometry to an SVG file"),
     ], kind="ghost", tip="Save one export file for this package")
-    b_bundle = W.btn("Write Authority Bundle", "primary",
+    b_bundle = W.btn("Write Authority Bundle", "default",
                      "Write the full bundle (YAML, JSON, TSV, CSV, socket symbol) to a folder")
-    bar.addWidget(save_menu); bar.addWidget(b_bundle)
+    b_allpins = W.btn("Export All Pins (CSV)", "primary",
+                      "Write every socket position with full detail (13 columns) to a CSV file")
+    bar.addWidget(save_menu); bar.addWidget(b_bundle); bar.addWidget(b_allpins)
     lay.addLayout(bar)
+    lay.addWidget(W.body(
+        f"The detailed All-Pins CSV is the focal export: all {len(positions)} socket positions "
+        "with pin names, roles, peripherals, breakout, tags, supply range, rail conflicts and "
+        "5 V tolerance. The bundle and single-file saves remain for KiCad hand-off.",
+        dim=True, wrap=True))
+
+    def export_allpins():
+        if _headless():                      # offscreen drive / CI: no picker, no modal
+            ctx.services.log("Export All Pins: no file (headless).")
+            return
+        fn, _ = QFileDialog.getSaveFileName(root, "Export All Pins",
+                                            str(Path(base) / f"pins_{pkg}.csv"), "CSV Files (*.csv)")
+        if not fn:
+            return
+        try:
+            _write_allpins_csv(positions, fn)
+            ctx.services.log(f"Wrote {Path(fn).name}.")
+        except Exception as e:  # noqa: BLE001
+            ctx.services.log(f"Export failed: {e}")
+
+    b_allpins.clicked.connect(export_allpins)
 
     findings = sauth.validate_socket_symbol(authority)
     passed = sauth.validate_socket_symbol_ok(findings)
@@ -562,57 +592,111 @@ def _five_v_short(p) -> str:
     return "No"
 
 
+def _breakout_text(p) -> str:
+    """The pin's breakout signal(s): service nets it fans out to, plus a Trace marker."""
+    bk = p.get("breakout") or {}
+    parts = [pins.expandNet(n) for n in (bk.get("service_nets") or [])]
+    if bk.get("trace"):
+        parts.append("Trace")
+    return " · ".join(parts)
+
+
 def _pin_row(p) -> list:
-    """One flat row of a position's data, shared by the table and the CSV export."""
+    """One flat row of a position's FULL detail (13 columns of real authority data),
+    shared by the table and the CSV export. The on-screen table elides the wide cells to
+    their column width; the CSV keeps the whole string. Every value is a plain string so
+    csv.writer accepts the row."""
     dest = p["assignment"].get("destination") or p["assignment"].get("net") or ""
     cat = pins._CAT_WORD.get(sauth._NET_CATEGORY.get(dest, "lane"), "Card Lane")
-    return [str(p["position"]), pins._names(p["pin_names"]), pins._names(p["role_set"]),
-            cat, pins._SWITCH_LABEL.get(p["switch_class"], p["switch_class"]),
-            pins.expandNet(dest), _five_v_short(p)]
+    el = p.get("electrical") or {}
+    conflicts = ", ".join(pins.expandNet(c.get("net", "")) for c in (p.get("rail_conflicts") or [])
+                          if c.get("net"))
+    return [str(p["position"]),
+            str(p.get("side", "")).title(),
+            pins._names(p["pin_names"]),
+            pins._names(p["role_set"]),
+            cat,
+            pins._SWITCH_LABEL.get(p["switch_class"], p["switch_class"]),
+            pins.expandNet(dest),
+            ", ".join(str(x) for x in (p.get("peripherals") or [])),
+            _breakout_text(p),
+            pins._tag_summary(p.get("tags") or {}),
+            pins._fmt_rng(el.get("vdd_range_v")),
+            conflicts,
+            _five_v_short(p)]
 
 
-_PIN_COLS = ["Pin", "Pin Names", "Roles", "Category", "Switch Class", "Destination", "5 V Tolerant"]
+_PIN_COLS = ["Pin", "Side", "Pin Names", "Roles", "Category", "Switch Class", "Destination",
+             "Peripherals", "Breakout", "Tags", "Supply (V)", "Rail Conflicts", "5 V Tolerant"]
 
 
-def _allpins_panel(ctx, state: BenchState) -> QWidget:
-    root = QWidget()
-    lay = QVBoxLayout(root); lay.setContentsMargins(24, 16, 24, 24); lay.setSpacing(12)
+def _write_allpins_csv(positions, path) -> None:
+    """Write the detailed all-pins table (full 13 columns, complete peripheral lists) to a
+    CSV — the focal Bench export. utf-8 + newline="" so the `·`/`→` glyphs survive Windows
+    and rows don't double-space."""
+    import csv, io
+    buf = io.StringIO(); writer = csv.writer(buf); writer.writerow(_PIN_COLS)
+    for p in positions:
+        writer.writerow(_pin_row(p))
+    Path(path).write_text(buf.getvalue(), encoding="utf-8", newline="")
+
+
+def _allpins_section(ctx, state: BenchState) -> QWidget:
+    """The detailed All-Pins table as a REUSABLE section (the Overview home embeds it and
+    the standalone _allpins_panel wraps it): a section header, a description + inline
+    Export-CSV primary, then the full 13-column table bounded so it scrolls inside its own
+    height rather than making the page kilometres long."""
+    w = QWidget(); lay = QVBoxLayout(w); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(8)
     if state.package is None:
-        lay.addWidget(kit.state("empty", "No Package Loaded", glyph="bench")); return root
+        lay.addWidget(W.body("No package loaded.", dim=True)); return w
     pkg = state.package
     positions = state.authority()["positions"]
-
+    lay.addWidget(W.section_header(f"All Pins   {pkg}   {len(positions)} Positions"))
     bar = QHBoxLayout(); bar.setSpacing(8)
-    bar.addWidget(W.eyebrow(f"All Pins   {pkg}   {len(positions)} Positions")); bar.addStretch(1)
-    b_csv = W.btn("Export All Pins", "primary", "Write every pin and its data to a CSV file")
-    bar.addWidget(b_csv); lay.addLayout(bar)
-    lay.addWidget(W.body(
+    bar.addWidget(W.body(
         "Every socket position across all supported STM32 parts in this package, with its "
-        "functions, category, switch class and delivered net.", dim=True))
-
+        "functions, peripherals, breakout, tags, supply range and delivered net.", dim=True))
+    bar.addStretch(1)
+    b_csv = W.btn("Export All Pins (CSV)", "primary",
+                  "Write every socket position with full detail to a CSV file")
+    bar.addWidget(b_csv, 0, Qt.AlignVCenter)
+    lay.addLayout(bar)
+    # 13 columns is more than the width holds, so single-line rows + a horizontal
+    # scrollbar keep EVERY column reachable (wrap=True would hide the h-scrollbar and clip
+    # the right-hand columns). The full peripheral lists live in the CSV export.
     rows = [_pin_row(p) for p in positions]
-    lay.addWidget(W.data_table(_PIN_COLS, rows, stretch_col=(1, 2, 5), mono_cols={0, 5}), 1)
+    tbl = W.data_table(_PIN_COLS, rows, stretch_col=(2, 3, 7), mono_cols={0, 6, 11})
+    tbl.setMinimumHeight(360); tbl.setMaximumHeight(560)
+    tbl.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+    lay.addWidget(tbl)
 
     def export():
-        base = str(Path(ctx.cfg.get("RepoRoot") or "."))
         if _headless():                      # offscreen drive / CI: no picker, no modal
             ctx.services.log("Export All Pins: no file (headless).")
             return
-        fn, _ = QFileDialog.getSaveFileName(root, "Export All Pins", str(Path(base) / f"pins_{pkg}.csv"),
+        base = str(Path(ctx.cfg.get("RepoRoot") or "."))
+        fn, _ = QFileDialog.getSaveFileName(w, "Export All Pins", str(Path(base) / f"pins_{pkg}.csv"),
                                             "CSV Files (*.csv)")
         if not fn:
             return
-        import csv, io
-        buf = io.StringIO(); writer = csv.writer(buf); writer.writerow(_PIN_COLS)
-        for p in positions:
-            writer.writerow(_pin_row(p))
         try:
-            Path(fn).write_text(buf.getvalue(), encoding="utf-8", newline="")
+            _write_allpins_csv(positions, fn)
             ctx.services.log(f"Wrote {Path(fn).name}.")
         except Exception as e:  # noqa: BLE001
             ctx.services.log(f"Export failed: {e}")
 
     b_csv.clicked.connect(export)
+    return w
+
+
+def _allpins_panel(ctx, state: BenchState) -> QWidget:
+    """Standalone page wrapper (kept for direct callers); the Overview embeds the section."""
+    root = QWidget()
+    lay = QVBoxLayout(root); lay.setContentsMargins(24, 16, 24, 24); lay.setSpacing(12)
+    if state.package is None:
+        lay.addWidget(kit.state("empty", "No Package Loaded", glyph="bench")); return root
+    lay.addWidget(_allpins_section(ctx, state))
+    lay.addStretch(1)
     return root
 
 
@@ -632,17 +716,19 @@ def _chip_grid(items, make, cols: int = 5) -> QWidget:
     return w
 
 
-def _profiles_panel(ctx, state: BenchState) -> QWidget:
-    root = QWidget()
-    lay = QVBoxLayout(root); lay.setContentsMargins(24, 16, 24, 24); lay.setSpacing(14)
+def _profiles_section(ctx, state: BenchState) -> QWidget:
+    """The Profiles content as a REUSABLE section (the Overview home embeds it; the
+    standalone _profiles_panel wraps it): the family filter, the baseline switch-fabric
+    card, the switching-pin pills, the supported-families line, and the off-thread,
+    memoised chips-by-profile grouping."""
+    w = QWidget()
+    lay = QVBoxLayout(w); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(14)
     if state.error or state.package is None:
-        lay.addWidget(kit.state("empty", "No Package Loaded", glyph="bench")); return root
+        lay.addWidget(W.body("No package loaded.", dim=True)); return w
     try:
         a = state.authority()
     except Exception as e:  # noqa: BLE001
-        lay.addWidget(kit.state(
-            "error", "Authority Unavailable", glyph="alert",
-            sub=f"Could not build the authority: {e}")); return root
+        lay.addWidget(W.body(f"Authority unavailable: {e}", dim=True)); return w
     man = a.get("manifest", {}); roll = a.get("rollup", {})
     all_parts = man.get("supported_parts", []) or []   # every part (grouped once, family-independent)
     parts = list(all_parts)
@@ -801,6 +887,17 @@ def _profiles_panel(ctx, state: BenchState) -> QWidget:
     if state._profile_tiers.get(pkg) is None:
         prof_box.addWidget(W.skeleton_rows(3, 4))
     run_populate(ctx, compute, populate, busy="Grouping supported chips by profile...")
+    return w
+
+
+def _profiles_panel(ctx, state: BenchState) -> QWidget:
+    """Standalone page wrapper (kept for direct callers/tests); the Overview embeds the
+    section directly."""
+    root = QWidget()
+    lay = QVBoxLayout(root); lay.setContentsMargins(24, 16, 24, 24); lay.setSpacing(14)
+    if state.error or state.package is None:
+        lay.addWidget(kit.state("empty", "No Package Loaded", glyph="bench")); return root
+    lay.addWidget(_profiles_section(ctx, state))
     lay.addStretch(1)
     return root
 
@@ -1005,10 +1102,12 @@ class BenchFeature(F.Feature):
             # family combo, defaulting to All) fresh.
             header = W.hstack(W.eyebrow("STM32F Package"), combo, spacing=8)
             combo.currentTextChanged.connect(state.set_package)
+        # Overview is now the scrollable home: it absorbs the All Pins table + the Profiles
+        # ladder as sections (owner v2.11), so those two standalone tabs are gone. The
+        # `_allpins_panel`/`_profiles_panel` wrappers remain as functions for direct
+        # callers/tests. Connection Diagram lives on Analysis now.
         panels = [
             ("Overview", lambda c: W.scroll_body(_authority_panel(c, state))),
-            ("Profiles", lambda c: W.scroll_body(_profiles_panel(c, state))),
-            ("All Pins", lambda c: _allpins_panel(c, state)),
             ("Analysis", lambda c: W.scroll_body(_analysis_panel(c, state))),
             ("MCU Pinout Viewer", lambda c: W.scroll_body(_resolver_panel(c, state))),
             ("Exports", lambda c: W.scroll_body(_outputs_panel(c, state))),

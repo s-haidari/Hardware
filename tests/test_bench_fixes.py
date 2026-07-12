@@ -174,17 +174,23 @@ class ProfilesFamilyFilterLocationTests(_DBTestBase):
         self.assertEqual(fam.itemText(0), bench._ALL_FAMILIES)
         self.assertGreater(fam.count(), 1, "family combo lists no families")
 
-        # The global header must NOT carry a family combo: no combo anywhere in the built
-        # feature (before any Profiles panel is lazily shown) may list "All Families". The
-        # only header control is the package combo, whose items are the buildable packages.
-        pkgs = set(state.packages)
-        header_combos = [c for c in ws.findChildren(QComboBox)
-                         if {c.itemText(i) for i in range(c.count())} <= pkgs]
-        self.assertTrue(header_combos, "no package combo on the header")
-        for c in ws.findChildren(QComboBox):
+        # The global HEADER (the package-selector chrome shown above every tab) must NOT
+        # carry the family combo — that was the BENCH-06 incoherence. The family combo now
+        # lives in the Overview's Profiles SECTION (a home-tab control, not global chrome).
+        # Locate the header row via its "STM32F Package" eyebrow and assert only the package
+        # combo sits there, never a family combo.
+        pkg_labels = [l for l in ws.findChildren(QLabel) if l.text() == "STM32F Package"]
+        self.assertTrue(pkg_labels, "no 'STM32F Package' header label")
+        header_row = pkg_labels[0].parent()
+        header_combos = header_row.findChildren(QComboBox)
+        for c in header_combos:
             items = {c.itemText(i) for i in range(c.count())}
             self.assertNotIn(bench._ALL_FAMILIES, items,
-                             "family filter still lives on the global header / feature chrome")
+                             "family filter still lives on the global package header")
+        pkgs = set(state.packages)
+        self.assertTrue(
+            any({c.itemText(i) for i in range(c.count())} <= pkgs for c in header_combos),
+            "no package combo on the header")
 
     def test_selecting_family_narrows_profiles(self):
         # The in-body combo actually filters: selecting a family sets state.family and,
