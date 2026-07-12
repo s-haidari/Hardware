@@ -723,6 +723,26 @@ def test_link_placed_component_writes_lib_id_footprint_and_identity(tmp_path):
     assert 'MCU' in txt
 
 
+def test_register_libraries_no_config_is_surfaced_in_errors(tmp_path, monkeypatch):
+    """A non-fatal register_libraries miss (no KiCad config) is RETURNED, not raised, so
+    it must be captured into errors — Prepare never reports 'linked' while KiCad still
+    cannot resolve the part."""
+    cfg = _lib_dir(tmp_path)
+    sch = tmp_path / "b.kicad_sch"
+    sch.write_text(
+        '(kicad_sch (version 20230121) (generator eeschema)\n'
+        '  (symbol (lib_id "Device:R") (at 10 10 0) (unit 1)\n'
+        '    (property "Reference" "R1" (at 10 5 0))\n'
+        '    (property "Footprint" "" (at 10 10 0))) )\n',
+        encoding="utf-8")
+    monkeypatch.setattr(F.LM, "register_libraries",
+                        lambda *a, **k: {"ok": False, "reason": "no_config",
+                                         "message": "KiCad config not found; run Set Up This Machine."})
+    lib_part = {"name": "STM32F103C8T6", "footprint": "LQFP-48_7x7mm_P0.5mm"}
+    res = F.link_placed_component(cfg, str(sch), "R1", lib_part, backup=False)
+    assert any("KiCad config" in e for e in res["errors"])
+
+
 def test_ensure_model_link_persists_model_line(tmp_path):
     cfg = _lib_dir(tmp_path)
     # USB_C_Recept footprint has a name-matching model file -> line is persisted.

@@ -681,7 +681,12 @@ def link_placed_component(cfg: dict, sheet_path, ref: str, lib_part: dict,
             result["errors"].append(f"model link ({fp_stem}): {m['reason']}")
     if n:
         try:
-            LM.register_libraries(cfg, log)
+            reg = LM.register_libraries(cfg, log)
+            # register_libraries RETURNS {ok, reason, message} on a non-fatal miss (e.g.
+            # no_config = KiCad's config dir was not found) instead of raising. Surface it
+            # so Prepare never reports "linked" while KiCad still can't resolve the part.
+            if isinstance(reg, dict) and reg.get("ok") is False:
+                result["errors"].append(reg.get("message") or "KiCad libraries not registered")
         except Exception as e:  # noqa: BLE001
             result["errors"].append(f"register_libraries: {e}")
     return result
@@ -795,7 +800,9 @@ def apply_fill_plan(plan: dict, selected, cfg: dict, log=None,
 
     if footprint_written and written_files:
         try:
-            LM.register_libraries(cfg, log)
+            reg = LM.register_libraries(cfg, log)
+            if isinstance(reg, dict) and reg.get("ok") is False:
+                errors.append(reg.get("message") or "KiCad libraries not registered")
         except Exception as e:  # noqa: BLE001
             errors.append(f"register_libraries: {e}")
 
