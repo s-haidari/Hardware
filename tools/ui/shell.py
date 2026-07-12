@@ -1006,12 +1006,12 @@ class NetdeckShell(QMainWindow):
         return f"{size:.1f} GB"
 
     def _info(self, title: str, msg: str):
-        from PyQt5.QtWidgets import QMessageBox
-        QMessageBox.information(self, title, msg)
+        from .util import info
+        info(self, title, msg)
 
     def _warn(self, title: str, msg: str):
-        from PyQt5.QtWidgets import QMessageBox
-        QMessageBox.warning(self, title, msg)
+        from .util import info
+        info(self, title, msg)
 
     def _log(self, msg: str):
         # The Activity console is the DURABLE record (▶/✓/✗ stream + errors); the

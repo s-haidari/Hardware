@@ -107,6 +107,11 @@ def test_offer_relaunch_reexecs_on_relaunch_and_not_on_later(monkeypatch):
 
     called = {"n": 0}
     monkeypatch.setattr(S, "_relaunch", lambda: called.__setitem__("n", called["n"] + 1))
+    # _offer_relaunch no-ops under headless; exercise the GUI path (parent=None → the native
+    # QMessageBox fallback the mock below drives). The inline `from ..util import _headless`
+    # in _offer_relaunch picks up this patch.
+    from ui import util
+    monkeypatch.setattr(util, "_headless", lambda: False)
 
     # Simulate the user clicking "Relaunch Now": clickedButton() returns the
     # AcceptRole button (the first one added).

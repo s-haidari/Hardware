@@ -3797,11 +3797,8 @@ class FabPresetManagerDialog(QDialog):
 
 
 def _warn_dialog(parent, msg):
-    from ..util import _headless
-    if _headless():
-        return
-    from PyQt5.QtWidgets import QMessageBox
-    QMessageBox.information(parent, "Fabrication Presets", msg)
+    from ..util import info
+    info(parent, "Fabrication Presets", msg)
 
 
 def _pcb_setup_panel(ctx, state) -> QWidget:

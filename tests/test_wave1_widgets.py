@@ -240,7 +240,9 @@ def test_restyle_all_drops_restyler_of_deleted_widget():
     """restyle_all drops a dead restyler two ways, neither of which raises: an OWNED one
     whose widget is gone is pruned by the weakref check (never called); an OWNERLESS one
     that touches a deleted widget raises RuntimeError, which restyle_all swallows + drops."""
-    base = len(W._RESTYLERS)
+    W.restyle_all()                                         # prune any dead restylers earlier tests
+    base = len(W._RESTYLERS)                                 #   left (module-global list), so base is
+    #                                                         live-only and stable under any test order.
     lab = QWidget()
     W.register_restyle(lambda: lab.setStyleSheet(""), lab)   # owned toucher (weakref-pruned path)
     dead = QWidget()

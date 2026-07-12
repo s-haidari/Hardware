@@ -281,8 +281,8 @@ def test_enrich_cancel_writes_nothing(tmp_path, monkeypatch):
     monkeypatch.setattr(LM, "enrich_library",
                         lambda cfg, lookup, dry_run=True, log=None:
                         seen.append(dry_run) or {"changes": [{"symbol": "U1"}]})
-    monkeypatch.setattr(QMessageBox, "question",
-                        staticmethod(lambda *a, **k: QMessageBox.No))
+    from ui import util
+    monkeypatch.setattr(util, "confirm", lambda *a, **k: False)   # confirm now routes via util.confirm
     host = LIB._health_workbench(_ctx(_libcfg(tmp_path)))
     host._enrich_blanks()
     assert seen == [True]                             # never re-ran with dry_run=False

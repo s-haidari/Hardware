@@ -833,14 +833,12 @@ class DedupReviewDialog(QDialog):
         stems = [s for s, cb in self._checks.items() if cb.isChecked()]
         if not stems:
             return
-        from PyQt5.QtWidgets import QMessageBox
-        ans = QMessageBox.question(
-            self, "Delete Footprints",
-            f"Delete {len(stems)} duplicate footprint file"
-            f"{'' if len(stems) == 1 else 's'}? This is undo-safe (files go to the "
-            "library trash) and commits the result.",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-        if ans != QMessageBox.Yes:
+        from ..util import confirm as _confirm_dlg
+        if not _confirm_dlg(
+                self, "Delete Footprints",
+                f"Delete {len(stems)} duplicate footprint file"
+                f"{'' if len(stems) == 1 else 's'}? This is undo-safe (files go to the "
+                "library trash) and commits the result."):
             return
         self._busy = True
         self._update_counter()
@@ -993,17 +991,15 @@ class DuplicateManagerDialog(QDialog):
             if not confirm(targets):
                 return
         elif not _headless():
-            from PyQt5.QtWidgets import QMessageBox
             extra = ""
             if del_fp or del_md:
                 bits = [b for b, on in (("footprint", del_fp), ("3D model", del_md)) if on]
                 extra = f" Their {' and '.join(bits)} files are deleted too, when not shared."
-            ans = QMessageBox.question(
-                self, "Delete Parts",
-                f"Delete {plural(len(targets), 'part')}? Their symbols are removed."
-                f"{extra} This is undo-safe (snapshot to the library trash) and commits once.",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-            if ans != QMessageBox.Yes:
+            from ..util import confirm as _confirm_dlg
+            if not _confirm_dlg(
+                    self, "Delete Parts",
+                    f"Delete {plural(len(targets), 'part')}? Their symbols are removed."
+                    f"{extra} This is undo-safe (snapshot to the library trash) and commits once."):
                 return
         else:
             return                       # headless with no explicit confirm never deletes
@@ -1132,9 +1128,8 @@ class LibraryToolsDialog(QDialog):
         if self._busy:
             return
         if confirm:
-            from PyQt5.QtWidgets import QMessageBox
-            if QMessageBox.question(self, name, confirm,
-                                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            from ..util import confirm as _confirm_dlg
+            if not _confirm_dlg(self, name, confirm):
                 return
         self._busy = True
         self._set_status(name, "Running…")
@@ -1386,14 +1381,12 @@ class PartDetail(QWidget):
         """Revert the uncommitted inline edits, after a confirm."""
         if not self._unsaved:
             return
-        from PyQt5.QtWidgets import QMessageBox
+        from ..util import confirm as _confirm_dlg
         n = len(self._unsaved_edits)
-        ans = QMessageBox.question(
-            self, "Discard Unsaved Edits",
-            f"Discard {n} unsaved edit{'' if n == 1 else 's'}? "
-            "The library files revert to the last saved version.",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-        if ans == QMessageBox.Yes:
+        if _confirm_dlg(
+                self, "Discard Unsaved Edits",
+                f"Discard {n} unsaved edit{'' if n == 1 else 's'}? "
+                "The library files revert to the last saved version."):
             self._apply_discard()
 
     def _apply_discard(self):
@@ -1901,9 +1894,8 @@ class PartDetail(QWidget):
             msg += (f"\n\n{plural(len(refs), dangles)} reference it and will be left "
                     f"dangling: {shown}{more}")
         msg += "\n\nThis is undo-safe. A snapshot is kept (Maintenance › Undo Last Change)."
-        ans = QMessageBox.question(self, title, msg,
-                                   QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-        return ans == QMessageBox.Yes
+        from ..util import confirm as _confirm_dlg
+        return _confirm_dlg(self, title, msg)
 
     def _confirm_rename(self, confirm, projects, old, new) -> bool:
         """Confirm a symbol rename, naming the projects that reference it. `confirm` is a
@@ -1923,9 +1915,8 @@ class PartDetail(QWidget):
                "This is safe: each project keeps its own cached copy of the symbol, so the "
                "rename won't break them. They pick up the new name the next time KiCad "
                "updates from the library. No manual fix needed.")
-        ans = QMessageBox.question(self, "Rename Symbol", msg,
-                                   QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
-        return ans == QMessageBox.Yes
+        from ..util import confirm as _confirm_dlg
+        return _confirm_dlg(self, "Rename Symbol", msg, default_no=False)
 
     def _rename_symbol(self, new_name=None, confirm=None):
         row = self._current

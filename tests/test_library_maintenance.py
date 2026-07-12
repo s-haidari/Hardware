@@ -61,11 +61,14 @@ def _workbench(ctx):
 
 
 def _yes(monkeypatch, counter=None):
-    def q(*_a, **_k):
+    # Confirmations now route through the in-app overlay via ui.util.confirm; patch that
+    # (an inline `from ..util import confirm` at each call site picks up the patch).
+    from ui import util
+    def c(*_a, **_k):
         if counter is not None:
             counter["n"] += 1
-        return QMessageBox.Yes
-    monkeypatch.setattr(QMessageBox, "question", staticmethod(q))
+        return True
+    monkeypatch.setattr(util, "confirm", c)
 
 
 # ── build + verdict ────────────────────────────────────────────────────────────
@@ -182,8 +185,8 @@ def test_destructive_cancel_writes_nothing(tmp_path, monkeypatch):
                         lambda c, log, msg: commits.append(msg) or True)
     monkeypatch.setattr(LM, "dedupe_symbol_library",
                         lambda *a, **k: ran.__setitem__("n", ran["n"] + 1) or 0)
-    monkeypatch.setattr(QMessageBox, "question",
-                        staticmethod(lambda *a, **k: QMessageBox.No))
+    from ui import util
+    monkeypatch.setattr(util, "confirm", lambda *a, **k: False)
     host = _workbench(ctx)
     host._btn("Dedupe Symbol Library").click()
     assert ran["n"] == 0

@@ -28,6 +28,22 @@ def confirm(parent, title: str, text: str, default_no: bool = True) -> bool:
     return K.confirm_overlay(win, title, text, default_no=default_no)
 
 
+def info(parent, title: str, text: str) -> None:
+    """An informational message, shown as an in-app modal overlay (a scrim + card over the app
+    window) rather than a separate OS window — the "no new windows" standard. Headless
+    (offscreen tests / render_gate): a no-op (no user, and a modal loop would block). With no
+    window context (rare) it falls back to a native QMessageBox."""
+    if _headless():
+        return
+    win = parent.window() if parent is not None else None
+    if win is None:
+        from PyQt5.QtWidgets import QMessageBox
+        QMessageBox.information(parent, title, text)
+        return
+    from . import kit as K
+    K.info_overlay(win, title, text)
+
+
 class LogSink:
     """A UILog-compatible sink (`.write`) that forwards to the shell status line.
     The pure LibraryManager / nd_* helpers accept any object with `.write`."""

@@ -361,12 +361,9 @@ def _parts_panel(ctx, _state) -> QWidget:
             n = len(res.get("changes", [])) if res else 0
             if not n:
                 ctx.services.log("Enrich: nothing to fill."); return
-            from PyQt5.QtWidgets import QMessageBox
-            ans = QMessageBox.question(
-                root, "Apply Enrichment",
-                f"{plural(n, 'blank field')} can be filled from Mouser. Apply?",
-                QMessageBox.Yes | QMessageBox.No)
-            if ans != QMessageBox.Yes:
+            from ..util import confirm
+            if not confirm(root, "Apply Enrichment",
+                           f"{plural(n, 'blank field')} can be filled from Mouser. Apply?"):
                 return
 
             def applied(r, ok):
@@ -736,10 +733,8 @@ def _maintenance_workbench(ctx) -> QWidget:
 
     # ── op runners (busy-gated, off-thread, then refresh) ──────────────────────────────
     def _confirm(text) -> bool:
-        from PyQt5.QtWidgets import QMessageBox
-        ans = QMessageBox.question(host, "Confirm Maintenance", text,
-                                   QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-        if ans != QMessageBox.Yes:
+        from ..util import confirm
+        if not confirm(host, "Confirm Maintenance", text):
             _log("Cancelled.")
             return False
         return True
@@ -1486,12 +1481,9 @@ def _health_workbench(ctx) -> QWidget:
             if not n:
                 _log("Enrich: nothing to fill.")
                 return
-            from PyQt5.QtWidgets import QMessageBox
-            ans = QMessageBox.question(
-                host, "Apply Enrichment",
-                f"{plural(n, 'blank field')} can be filled from the distributor. Apply?",
-                QMessageBox.Yes | QMessageBox.No)
-            if ans != QMessageBox.Yes:
+            from ..util import confirm
+            if not confirm(host, "Apply Enrichment",
+                           f"{plural(n, 'blank field')} can be filled from the distributor. Apply?"):
                 _log("Cancelled.")
                 return
             busy["on"] = True

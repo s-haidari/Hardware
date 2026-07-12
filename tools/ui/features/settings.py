@@ -66,13 +66,21 @@ def _offer_relaunch(parent, title, body_text) -> None:
     """Confirm a change with an actionable "Relaunch Now" instead of a passive
     "please restart." Choosing Relaunch re-execs; Later keeps working on the old
     library until the next launch."""
-    box = QMessageBox(parent)
-    box.setWindowTitle(title)
-    box.setText(body_text)
-    relaunch_btn = box.addButton("Relaunch Now", QMessageBox.AcceptRole)
-    box.addButton("Later", QMessageBox.RejectRole)
-    box.exec_()
-    if box.clickedButton() is relaunch_btn:
+    from ..util import _headless
+    if _headless():
+        return
+    win = parent.window() if parent is not None else None
+    if win is None:                              # no app window (rare) → native fallback
+        box = QMessageBox(parent)
+        box.setWindowTitle(title); box.setText(body_text)
+        relaunch_btn = box.addButton("Relaunch Now", QMessageBox.AcceptRole)
+        box.addButton("Later", QMessageBox.RejectRole)
+        box.exec_()
+        if box.clickedButton() is relaunch_btn:
+            _relaunch()
+        return
+    if kit.confirm_overlay(win, title, body_text,
+                           confirm_label="Relaunch Now", cancel_label="Later"):
         _relaunch()
 
 
@@ -91,10 +99,9 @@ def _change_location(parent=None):
 def _reset_snapshot(parent=None):
     import LibraryManager as LM
     loc = _current_location()
-    if QMessageBox.warning(
-            parent, "Reset to Bundled Snapshot",
-            f"This overwrites the library in\n{loc}\nwith the bundled snapshot. Continue?",
-            QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel) != QMessageBox.Yes:
+    from ..util import confirm
+    if not confirm(parent, "Reset to Bundled Snapshot",
+                   f"This overwrites the library in\n{loc}\nwith the bundled snapshot. Continue?"):
         return
     LM.seed_library(loc, force=True)
     _offer_relaunch(parent, "Reset to Bundled Snapshot",
