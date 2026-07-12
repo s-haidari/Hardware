@@ -1223,8 +1223,10 @@ def enrich_library(cfg: Dict[str, str], lookup, log: UILog = None,
                 new_blocks)
             _snapshot_then_write(sym_path, new_text, log or _NullLog())
             written = True
+        reset_seconds = mouser_reset_seconds_remaining()
         return {"changes": changes, "written": written, "symbols": len(blocks),
-                "looked_up": looked_up}
+                "looked_up": looked_up,
+                "rate_limited": bool(reset_seconds), "reset_seconds": reset_seconds}
 
 
 class _NullLog:

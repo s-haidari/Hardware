@@ -23,7 +23,7 @@ from .. import theme as T
 from .. import widgets as W
 from .. import kit as K
 from .. import icons
-from ..util import LogSink, run_populate, _headless, clear_layout
+from ..util import LogSink, run_populate, _headless, clear_layout, mouser_cap_message
 from .. import feature as F
 from ..prose import plural
 from . import library_preview as P
@@ -357,6 +357,8 @@ def _parts_panel(ctx, _state) -> QWidget:
             ctx.services.log("Add a Mouser API key in Settings to enrich parts."); return
 
         def dry(res, ok):
+            if res and res.get("rate_limited"):
+                ctx.services.log(mouser_cap_message(res.get("reset_seconds")))
             n = len(res.get("changes", [])) if res else 0
             if not n:
                 ctx.services.log("Enrich: nothing to fill."); return
@@ -371,6 +373,8 @@ def _parts_panel(ctx, _state) -> QWidget:
             def applied(r, ok):
                 ctx.services.log(f"Enrich: wrote {len(r.get('changes', []))} fields."
                                  if r else "Enrich failed.")
+                if r and r.get("rate_limited"):
+                    ctx.services.log(mouser_cap_message(r.get("reset_seconds")))
                 rescan()
             run_populate(ctx, lambda: _enrich_from_mpn(ctx, lookup, apply=True), applied,
                          busy="Applying enrichment...")
@@ -1476,6 +1480,8 @@ def _health_workbench(ctx) -> QWidget:
             if not ok:
                 _log("Enrich scan failed, see status.")
                 return
+            if res and res.get("rate_limited"):
+                _log(mouser_cap_message(res.get("reset_seconds")))
             n = len((res or {}).get("changes", []))
             if not n:
                 _log("Enrich: nothing to fill.")
@@ -1497,6 +1503,8 @@ def _health_workbench(ctx) -> QWidget:
                     _log(f"Enrich: wrote {plural(len((r or {}).get('changes', [])), 'field')}.")
                 else:
                     _log("Enrich failed, see status.")
+                if r and r.get("rate_limited"):
+                    _log(mouser_cap_message(r.get("reset_seconds")))
                 host._region.handle.refresh()
 
             run_populate(ctx, lambda: _enrich_from_mpn(ctx, prov, apply=True), applied,

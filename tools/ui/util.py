@@ -113,6 +113,18 @@ def fmt_countdown(secs: int) -> str:
     return f"{m}m"
 
 
+def mouser_cap_message(reset_seconds) -> str:
+    """The shared 'Mouser daily cap hit' line, worded identically everywhere it
+    surfaces (SRC-04). The app ships ONE free Mouser key; when it is capped, tell the
+    user when it frees up and that LCSC still works, rather than a dead-end error."""
+    if reset_seconds:
+        return (f"Mouser is rate-limited. The built-in key is shared (1000 "
+                f"lookups/day) and frees up in ~{fmt_countdown(reset_seconds)}. "
+                f"LCSC still works in the meantime.")
+    return ("Mouser is rate-limited. The built-in key is shared and capped at 1000 "
+            "lookups/day. LCSC still works in the meantime.")
+
+
 def sentence(text: str) -> str:
     """Format backend detail text as a real sentence: spelled-out words, a leading
     capital, and a trailing period. Applied to audit / ERC / DRC detail strings."""

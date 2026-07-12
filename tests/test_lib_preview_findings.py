@@ -499,3 +499,28 @@ def test_set_rows_preserves_selection_across_widget_rebuild(tmp_path):
     sip.delete(pl)
 
 
+
+
+def test_enrich_library_surfaces_daily_cap(tmp_path, monkeypatch):
+    """SRC-04 bulk path: enrich_library must flag a shared-key daily-cap hit in its
+    result so the bulk enrich handlers can log the countdown (single-part surfaces
+    already do). A capped scan reports rate_limited + reset_seconds; the lookup came
+    back empty because the key is exhausted, and the post-loop marker check catches it."""
+    def sym(name, mpn):
+        return (f'  (symbol "{name}" (in_bom yes)\n'
+                f'    (property "Value" "{mpn}" (at 0 0 0))\n  )')
+
+    target = tmp_path / "MySymbols.kicad_sym"
+    target.write_text(
+        '(kicad_symbol_lib (version 20211014) (generator "LibraryManager.py")\n'
+        f'{sym("AAA", "MPN1")}\n)\n', encoding="utf-8")
+
+    # capped: the lookup returns nothing and the cap marker reads a fixed positive TTL
+    monkeypatch.setattr(LM, "mouser_reset_seconds_remaining", lambda *a, **k: 3600)
+
+    out = LM.enrich_library({"SymbolLib": str(target)}, lambda mpn: None,
+                            fields=("manufacturer",), dry_run=True)
+    assert out["rate_limited"] is True
+    assert out["reset_seconds"] == 3600
+    assert out["looked_up"] == 1          # the blank field forced one (empty) lookup
+    assert out["changes"] == []           # nothing filled while capped
