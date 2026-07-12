@@ -33,8 +33,8 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
 from PyQt5 import sip  # noqa: E402
-from PyQt5.QtWidgets import (QApplication, QLabel, QTableWidget,  # noqa: E402
-                             QScrollArea)
+from PyQt5.QtCore import Qt, QPoint, QPointF  # noqa: E402
+from PyQt5.QtWidgets import QApplication, QLabel, QTableWidget  # noqa: E402
 
 import stm32_db as db  # noqa: E402
 import stm32_authority as sauth  # noqa: E402
@@ -230,7 +230,7 @@ class ResolverMapAffordancesTests(_DBTestBase):
         ctx.bus.emit("bench.resolve", mpn)
         return panel
 
-    def test_resolved_map_has_legend_zoom_and_a_scroll_area(self):
+    def test_resolved_map_has_legend_and_zoom_controls(self):
         panel = self._resolved_panel()
         # legend(): the resolved map now decodes its colours (a "Net Colour" eyebrow).
         self.assertIn("NET COLOUR", _all_labels(panel).upper(),
@@ -242,8 +242,13 @@ class ResolverMapAffordancesTests(_DBTestBase):
         self.assertTrue({"−", "+"} <= btn_texts, "resolved map has no −/+ zoom control")
         # the segmented control is actually wired (a real W.Segmented, not decoration)
         self.assertTrue(panel.findChildren(W.Segmented), "resolved map zoom is not a Segmented")
-        # the map lives in a scroll area so an enlarged map can pan.
-        self.assertTrue(panel.findChildren(QScrollArea), "resolved map has no scroll area")
+        # the map IS its own pan/zoom viewport now (owner v2.11: the old inert
+        # QScrollArea wrapper could neither zoom toward the pointer nor pan). The
+        # PinMap carries the camera state itself.
+        pm = panel.findChild(bench_visuals.PinMap)
+        self.assertIsNotNone(pm, "resolved PinMap did not render")
+        self.assertTrue(hasattr(pm, "_pan") and callable(getattr(pm, "reset_view", None)),
+                        "resolved map is not the self-panning PinMap")
 
     def test_map_is_interactive_and_click_highlights_the_table_row(self):
         panel = self._resolved_panel()
@@ -262,6 +267,128 @@ class ResolverMapAffordancesTests(_DBTestBase):
         self.assertTrue(sel, "map click selected no table row")
         self.assertEqual(sel[0].row(), target_row,
                          "map click highlighted the wrong table row")
+
+
+def _synthetic_positions(n=16):
+    """A fixture package geometry for the pure-widget camera tests (no DB needed)."""
+    return [{"position": i, "switch_class": "fixed", "pin_names": {f"P{i}": 1},
+             "breakout": {}} for i in range(1, n + 1)]
+
+
+class _FakeMouse:
+    """A minimal stand-in for QMouseEvent — the handlers only read pos/button/buttons,
+    so this avoids the Qt-version-specific QMouseEvent constructor overloads."""
+    def __init__(self, pos, button=Qt.LeftButton, buttons=Qt.LeftButton):
+        self._pos, self._button, self._buttons = pos, button, buttons
+
+    def pos(self):
+        return self._pos
+
+    def button(self):
+        return self._button
+
+    def buttons(self):
+        return self._buttons
+
+
+class _FakeWheel:
+    """A minimal stand-in for QWheelEvent (reads angleDelta/pos, calls accept)."""
+    def __init__(self, pos, dy):
+        self._pos, self._dy = pos, dy
+
+    def angleDelta(self):
+        return QPoint(0, self._dy)
+
+    def pos(self):
+        return self._pos
+
+    def accept(self):
+        pass
+
+
+class PinMapCameraTests(unittest.TestCase):
+    """The pan/zoom camera — owner v2.11 bug: "zoom doesn't zoom toward the pointer, and
+    you can't drag/pan". The map lays out once at the base size and paints through a
+    translate+scale transform: the wheel zooms toward the cursor, a left-drag pans, and a
+    click with no drag selects the pad under the pointer."""
+    def setUp(self):
+        self._picked = []
+
+    def _map(self, base=380):
+        pm = bench_visuals.PinMap(on_select=lambda pos: self._picked.append(pos), base=base)
+        pm.set_positions(_synthetic_positions(16),
+                         {i: {"cat": "lane", "fivev": False} for i in range(1, 17)})
+        return pm
+
+    def test_zoom_to_pointer_keeps_the_point_under_the_cursor_fixed(self):
+        pm = self._map()
+        anchor = QPointF(250.0, 250.0)           # an interior viewport point
+        before = pm._to_content(anchor)
+        pm.set_zoom(2.0, anchor=anchor)
+        self.assertAlmostEqual(pm._zoom, 2.0, places=6)
+        after = pm._to_content(anchor)
+        # the SAME content point sits under the cursor after the zoom (within rounding)
+        self.assertAlmostEqual(before.x(), after.x(), places=3)
+        self.assertAlmostEqual(before.y(), after.y(), places=3)
+
+    def test_wheel_up_zooms_in_anchored_to_the_cursor(self):
+        pm = self._map()
+        anchor = QPoint(120, 300)
+        before = pm._to_content(QPointF(anchor))
+        pm.wheelEvent(_FakeWheel(anchor, 120))
+        self.assertGreater(pm._zoom, 1.0, "wheel up did not zoom in")
+        after = pm._to_content(QPointF(anchor))
+        self.assertAlmostEqual(before.x(), after.x(), places=2)
+        self.assertAlmostEqual(before.y(), after.y(), places=2)
+
+    def test_left_drag_pans_the_map(self):
+        pm = self._map()
+        pm.set_zoom(2.0)                          # content (760) > viewport (380) => pannable
+        pan0 = QPointF(pm._pan)
+        pm.mousePressEvent(_FakeMouse(QPoint(190, 190)))
+        pm.mouseMoveEvent(_FakeMouse(QPoint(150, 170), button=Qt.NoButton, buttons=Qt.LeftButton))
+        self.assertTrue(pm._dragging, "a >slop drag did not enter pan mode")
+        self.assertNotEqual((pm._pan.x(), pm._pan.y()), (pan0.x(), pan0.y()),
+                            "left-drag did not pan the map")
+        pm.mouseReleaseEvent(_FakeMouse(QPoint(150, 170), buttons=Qt.NoButton))
+        self.assertFalse(pm._dragging)
+        self.assertEqual(self._picked, [], "a drag must not also select a pad")
+
+    def test_click_without_drag_selects_the_pad_under_the_pointer(self):
+        pm = self._map()
+        pin = pm._geo["pins"][0]                  # zoom 1: viewport == content coords
+        x, y, w, h = pin["rect"]
+        pt = QPoint(int(x + w / 2), int(y + h / 2))
+        pm.mousePressEvent(_FakeMouse(pt))
+        pm.mouseReleaseEvent(_FakeMouse(pt, buttons=Qt.NoButton))
+        self.assertEqual(self._picked, [pin["pos"]], "a click did not select the pad under it")
+        self.assertEqual(pm._selected, pin["pos"])
+
+    def test_reset_view_restores_zoom_and_centres(self):
+        pm = self._map()
+        pm.set_zoom(3.0, anchor=QPointF(50.0, 50.0))
+        pm.reset_view()
+        self.assertAlmostEqual(pm._zoom, 1.0, places=6)
+        # at zoom 1 the content equals the viewport, so pan centres back to (0, 0)
+        self.assertAlmostEqual(pm._pan.x(), 0.0, places=3)
+        self.assertAlmostEqual(pm._pan.y(), 0.0, places=3)
+
+    def test_zoom_clamps_to_bounds(self):
+        pm = self._map()
+        pm.set_zoom(999.0)
+        self.assertLessEqual(pm._zoom, pm._MAX_ZOOM)
+        pm.set_zoom(0.001)
+        self.assertGreaterEqual(pm._zoom, pm._MIN_ZOOM)
+
+    def test_pan_is_clamped_so_the_map_cannot_be_dragged_out_of_view(self):
+        pm = self._map()
+        pm.set_zoom(2.0)
+        # yank far past the edge; the clamp must keep the content spanning the viewport
+        pm.mousePressEvent(_FakeMouse(QPoint(190, 190)))
+        pm.mouseMoveEvent(_FakeMouse(QPoint(9000, 9000), button=Qt.NoButton, buttons=Qt.LeftButton))
+        c = pm._content()
+        self.assertLessEqual(pm._pan.x(), 0.0 + 1e-6)
+        self.assertGreaterEqual(pm._pan.x(), pm.width() - c - 1e-6)
 
 
 class ProfilesPerfMemoTests(_DBTestBase):

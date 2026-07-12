@@ -1481,8 +1481,34 @@ def audit_bench_styled():
         if not any(b.text() == "Write Authority Bundle" for b in p.findChildren(QPushButton)):
             _fail("Bench/Exports: Write Authority Bundle primary action missing")
 
+    def _overview(p):
+        # BENCH v2.11 regression lock: the pin map is now its OWN pan/zoom viewport
+        # (owner: "zoom doesn't zoom toward the pointer, and you can't drag/pan around").
+        # Drive zoom-to-pointer, a real left-drag pan, then Reset — asserting the camera
+        # actually moves and the real event handlers never crash.
+        from PyQt5.QtCore import Qt as _Qt, QPointF, QEvent
+        from PyQt5.QtGui import QMouseEvent
+        pm = p.findChild(BENCH.PinMap)
+        if pm is None:
+            _fail("Bench/Overview: pin map did not render"); return
+        pm.set_zoom(2.0, anchor=QPointF(120.0, 120.0))       # zoom toward a point
+        if abs(pm._zoom - 2.0) > 1e-6:
+            _fail("Bench/Overview: zoom-to-pointer did not set the zoom"); return
+        pan_after_zoom = (pm._pan.x(), pm._pan.y())
+
+        def _m(et, x, y, btn, btns):
+            return QMouseEvent(et, QPointF(x, y), btn, btns, _Qt.NoModifier)
+        pm.mousePressEvent(_m(QEvent.MouseButtonPress, 190, 190, _Qt.LeftButton, _Qt.LeftButton))
+        pm.mouseMoveEvent(_m(QEvent.MouseMove, 150, 168, _Qt.NoButton, _Qt.LeftButton))
+        pm.mouseReleaseEvent(_m(QEvent.MouseButtonRelease, 150, 168, _Qt.LeftButton, _Qt.NoButton))
+        if (pm._pan.x(), pm._pan.y()) == pan_after_zoom:
+            _fail("Bench/Overview: left-drag did not pan the map"); return
+        pm.reset_view()
+        if abs(pm._zoom - 1.0) > 1e-6:
+            _fail("Bench/Overview: reset_view did not restore zoom 1")
+
     for builder, label, drive in (
-        (BENCH._authority_panel, "Overview", lambda p: None),
+        (BENCH._authority_panel, "Overview", _overview),
         (BENCH._profiles_panel, "Profiles", lambda p: None),
         (BENCH._allpins_panel, "All Pins", lambda p: None),
         (BENCH._analysis_panel, "Analysis", _analysis),

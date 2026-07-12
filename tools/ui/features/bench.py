@@ -17,7 +17,7 @@ from pathlib import Path
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-                             QSizePolicy, QComboBox, QGridLayout, QFrame, QScrollArea,
+                             QSizePolicy, QComboBox, QGridLayout,
                              QFileDialog, QAbstractItemView)
 
 from .. import widgets as W
@@ -116,18 +116,20 @@ def _authority_panel(ctx, state: BenchState) -> QWidget:
     map_card = W.Card(pad=20)
     # smaller default map (scroll-wheel zoom enlarges it) so the inspector gets more width
     pin_map = PinMap(on_select=lambda pos: _show_pin(pos), base=380)
-    # Zoom is a secondary control (the map is the focal element, §5): a tight −/+
-    # segmented pair plus a quiet ghost Reset, not three equal-weight buttons.
-    zrow = QHBoxLayout(); zrow.setSpacing(6); zrow.addStretch(1)
+    # Zoom/pan are secondary controls (the map is the focal element, §5): a quiet hint
+    # on the left, then a tight −/+ segmented pair plus a ghost Reset on the right. The
+    # map itself is the pan/zoom viewport now — wheel zooms toward the cursor and drag
+    # pans (owner v2.11: the old scroll-area wrapper could do neither).
+    zrow = QHBoxLayout(); zrow.setSpacing(6)
+    zrow.addWidget(W.body("Scroll to zoom · drag to pan", dim=True)); zrow.addStretch(1)
     zrow.addWidget(W.eyebrow("Zoom"))
     zseg = W.Segmented(["−", "+"], tip="Zoom the pin map out / in")
     zseg.on_change(lambda t: pin_map.zoom_by(1 / 1.15 if t == "−" else 1.15))
     zrow.addWidget(zseg)
-    zrow.addWidget(W.btn("Reset", "ghost", "Reset the zoom", lambda: pin_map.set_zoom(1.0)))
+    zrow.addWidget(W.btn("Reset", "ghost", "Reset the zoom and recentre the map",
+                         lambda: pin_map.reset_view()))
     map_card.body.addLayout(zrow)
-    _area = QScrollArea(); _area.setWidgetResizable(False); _area.setFrameShape(QFrame.NoFrame)
-    _area.setFixedHeight(400); _area.setAlignment(Qt.AlignCenter); _area.setWidget(pin_map)
-    map_card.body.addWidget(_area)
+    map_card.body.addWidget(pin_map, 0, Qt.AlignHCenter)
     map_card.body.addWidget(legend())
     strip = QHBoxLayout(); strip.setSpacing(24); strip.setContentsMargins(0, 12, 0, 0)
     strip.addStretch(1)
@@ -337,16 +339,16 @@ def _resolver_panel(ctx, state: BenchState) -> QWidget:
                 "pin_names": {p.get("name", ""): 1}, "breakout": {}} for p in res["pins"]]
         pm.set_positions(geo, {p["pin"]: {"cat": _resolved_cat(p), "fivev": _resolved_is_five_v(p)}
                                for p in res["pins"]})
-        zrow = QHBoxLayout(); zrow.setSpacing(6); zrow.addStretch(1)
+        zrow = QHBoxLayout(); zrow.setSpacing(6)
+        zrow.addWidget(W.body("Scroll to zoom · drag to pan", dim=True)); zrow.addStretch(1)
         zrow.addWidget(W.eyebrow("Zoom"))
         zseg = W.Segmented(["−", "+"], tip="Zoom the pin map out / in")
         zseg.on_change(lambda t, m=pm: m.zoom_by(1 / 1.15 if t == "−" else 1.15))
         zrow.addWidget(zseg)
-        zrow.addWidget(W.btn("Reset", "ghost", "Reset the zoom", lambda m=pm: m.set_zoom(1.0)))
+        zrow.addWidget(W.btn("Reset", "ghost", "Reset the zoom and recentre the map",
+                             lambda m=pm: m.reset_view()))
         map_card.body.addLayout(zrow)
-        area = QScrollArea(); area.setWidgetResizable(False); area.setFrameShape(QFrame.NoFrame)
-        area.setFixedHeight(360); area.setAlignment(Qt.AlignCenter); area.setWidget(pm)
-        map_card.body.addWidget(area)
+        map_card.body.addWidget(pm, 0, Qt.AlignHCenter)
         map_card.body.addWidget(legend())
         map_card.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Maximum)
         split.addWidget(map_card, 0, Qt.AlignTop)

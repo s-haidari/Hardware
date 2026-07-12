@@ -18,7 +18,7 @@ self-contained; bench.py re-exports `_pin_category` for callers/tests.
 """
 from __future__ import annotations
 
-from PyQt5.QtCore import Qt, QRectF
+from PyQt5.QtCore import Qt, QRectF, QPointF
 from PyQt5.QtGui import QPainter, QColor, QPen
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSizePolicy,
                              QFrame)
@@ -167,48 +167,98 @@ def connection_blocks(chain, cfg=None) -> QWidget:
 
 # ── the painted pin map: net colour (fill) + switch class (border) + marks + zoom ─
 class PinMap(QWidget):
+    """A pan/zoom pin-map viewport. The map content is laid out ONCE at the natural
+    base size; the widget is a fixed viewport window that paints the content through a
+    camera transform — translate by the pan offset, then scale by the zoom. So:
+      * the scroll wheel zooms toward the cursor (the pad under the pointer stays put),
+      * a left-button drag pans the map, and
+      * a press → release with no movement selects the pad under the pointer.
+    This replaces the old resize-the-widget-inside-a-QScrollArea scheme, which could
+    neither zoom toward the pointer nor be dragged (owner v2.11: "zoom doesn't zoom
+    toward the pointer, and you can't drag/pan around")."""
+    _MIN_ZOOM = 0.7
+    _MAX_ZOOM = 4.0
+    _DRAG_SLOP = 4          # px of motion before a press becomes a pan (below it = a click)
+
     def __init__(self, on_select, base=380, parent=None):
         super().__init__(parent)
         self._on_select = on_select
         self._base = base
         self._zoom = 1.0
-        self._size = base
+        self._pan = QPointF(0.0, 0.0)
         self._positions = []
         self._geo = {"body": (0, 0, 0, 0), "pins": []}
         self._attr = {}
         self._selected = None
+        self._press = None          # (start QPoint, pan-at-press QPointF) while dragging
+        self._dragging = False
         self.setFixedSize(base, base)
-        self.setCursor(Qt.PointingHandCursor)
+        self.setCursor(Qt.OpenHandCursor)
 
-    def _relayout(self):
+    # ── content geometry: laid out once at the base size; zoom is a paint transform ──
+    def _compute_geo(self):
         import stm32_pins_tab as pins
-        self._size = max(120, int(self._base * self._zoom))
-        self.setFixedSize(self._size, self._size)
-        self._geo = pins.pin_map_geometry(self._positions, self._size, self._size)
-        self.update()
+        self._geo = pins.pin_map_geometry(self._positions, self._base, self._base)
 
     def set_positions(self, geo_positions, attrof):
         self._positions = list(geo_positions)
         self._attr = dict(attrof)
         if self._selected not in self._attr:
             self._selected = None
-        self._relayout()
+        self._compute_geo()
+        self._clamp_pan()
+        self.update()
 
     def set_authority(self, authority):
         positions = authority["positions"] if authority else []
         self.set_positions(positions, {p["position"]: {"cat": _pin_category(p), "fivev": _is_5v(p)}
                                        for p in positions})
 
-    def set_zoom(self, z):
-        self._zoom = max(0.7, min(2.6, z)); self._relayout()
+    # ── the zoom / pan camera ─────────────────────────────────────────────────
+    def _content(self) -> float:
+        """Side length of the map content at the current zoom (the base map scaled)."""
+        return self._base * self._zoom
+
+    def _clamp_pan(self):
+        """Anchor the content inside the viewport: centre it while it is smaller than
+        the window, else clamp so an edge can't be dragged past the frame — no empty
+        gutters, and every pad stays reachable."""
+        c = self._content()
+        w, h = self.width(), self.height()
+        self._pan.setX((w - c) / 2.0 if c <= w else max(w - c, min(0.0, self._pan.x())))
+        self._pan.setY((h - c) / 2.0 if c <= h else max(h - c, min(0.0, self._pan.y())))
+
+    def set_zoom(self, z, anchor=None):
+        """Set the zoom, keeping the content point under `anchor` (a viewport QPointF,
+        default the viewport centre) fixed on screen."""
+        z = max(self._MIN_ZOOM, min(self._MAX_ZOOM, z))
+        if anchor is None:
+            anchor = QPointF(self.width() / 2.0, self.height() / 2.0)
+        if z != self._zoom:
+            # pan' = anchor - (anchor - pan) * z/z0  keeps (anchor - pan)/content fixed,
+            # i.e. the same content point stays under the anchor after the zoom.
+            ratio = z / self._zoom
+            self._pan = anchor - (anchor - self._pan) * ratio
+            self._zoom = z
+        self._clamp_pan()
+        self.update()
 
     def zoom_by(self, f):
         self.set_zoom(self._zoom * f)
 
+    def reset_view(self):
+        """Back to zoom 1, centred — Reset clears the pan as well as the zoom."""
+        self._zoom = 1.0
+        self._pan = QPointF(0.0, 0.0)
+        self._clamp_pan()
+        self.update()
+
     def wheelEvent(self, e):
-        # plain wheel zooms the map (the pane is fixed-height, so there is nothing to
-        # scroll here anyway); accepting stops it bubbling to the page scroll area
-        self.zoom_by(1.12 if e.angleDelta().y() > 0 else 1 / 1.12); e.accept()
+        # Wheel zooms toward the cursor (the pad under the pointer stays under it);
+        # accepting stops the gesture bubbling to the page scroll area behind the map.
+        self.set_zoom(self._zoom * (1.12 if e.angleDelta().y() > 0 else 1 / 1.12),
+                      QPointF(e.pos()))
+        e.accept()
 
     def select(self, pos):
         self._selected = pos; self.update()
@@ -221,10 +271,33 @@ class PinMap(QWidget):
                 return p["side"]
         return ""
 
+    # ── viewport ↔ content mapping + hit test ─────────────────────────────────
+    def _to_content(self, pt) -> QPointF:
+        """A viewport point → base-geometry coordinates (undo the pan, then the zoom)."""
+        return QPointF((pt.x() - self._pan.x()) / self._zoom,
+                       (pt.y() - self._pan.y()) / self._zoom)
+
+    def _pin_at(self, pt):
+        """The pad position under a viewport point, or None (hit-tested in content
+        coordinates so it stays correct at any pan/zoom)."""
+        m = self._to_content(pt)
+        for pin in self._geo["pins"]:
+            x, y, w, h = pin["rect"]
+            if (x - 4) <= m.x() <= (x + w + 4) and (y - 4) <= m.y() <= (y + h + 4):
+                return pin["pos"]
+        return None
+
     def paintEvent(self, _e):
         qp = QPainter(self); qp.setRenderHint(QPainter.Antialiasing, True)
+        # camera transform: everything below is drawn in base-geometry coordinates and
+        # mapped through the pan+zoom, so the map fills the window at zoom 1 and enlarges
+        # about the cursor/centre as it zooms. Structural strokes stay cosmetic (constant
+        # 1-device-pixel weight) so lines don't bloat with zoom; pads and pin numbers DO
+        # scale — the whole point of zooming is to read tiny multi-digit numbers.
+        qp.translate(self._pan)
+        qp.scale(self._zoom, self._zoom)
         bx, by, bw, bh = self._geo["body"]
-        pen = QPen(T.qcolor("txt3")); pen.setWidthF(1.3)
+        pen = QPen(T.qcolor("txt3")); pen.setWidthF(1.3); pen.setCosmetic(True)
         qp.setPen(pen); qp.setBrush(Qt.NoBrush)
         qp.drawRoundedRect(QRectF(bx, by, bw, bh), 10, 10)
         qp.setBrush(T.qcolor("txt3")); qp.setPen(Qt.NoPen)
@@ -238,13 +311,14 @@ class PinMap(QWidget):
             # 2) border = switch class (solid coral = must-switch, dashed orange = oscillator)
             sw = pin.get("sw")
             if sw in ("must_switch", "osc_optional"):
-                bp = QPen(T.qcolor(T.category("must" if sw == "must_switch" else "osc"))); bp.setWidthF(2.0)
+                bp = QPen(T.qcolor(T.category("must" if sw == "must_switch" else "osc")))
+                bp.setWidthF(2.0); bp.setCosmetic(True)
                 if sw == "osc_optional":
                     bp.setStyle(Qt.DashLine)
                 qp.setPen(bp); qp.setBrush(Qt.NoBrush); qp.drawRoundedRect(rect, 2, 2)
             # 3) breakout mark = a thin inner notch
             if pin.get("breakout"):
-                op = QPen(T.qcolor("txt1")); op.setWidthF(1.0)
+                op = QPen(T.qcolor("txt1")); op.setWidthF(1.0); op.setCosmetic(True)
                 qp.setPen(op); qp.setBrush(Qt.NoBrush)
                 qp.drawRoundedRect(QRectF(x + 1.5, y + 1.5, w - 3, h - 3), 1, 1)
             # 4) 5 V-tolerant badge = a small dot at the pad's outer end
@@ -290,15 +364,38 @@ class PinMap(QWidget):
                 qp.restore()
         qp.end()
 
+    # ── mouse: left-drag pans; a click (no drag) selects the pad under the pointer ──
     def mousePressEvent(self, e):
-        pt = e.pos()
-        for pin in self._geo["pins"]:
-            x, y, w, h = pin["rect"]
-            if (x - 4) <= pt.x() <= (x + w + 4) and (y - 4) <= pt.y() <= (y + h + 4):
-                self.select(pin["pos"])
+        if e.button() == Qt.LeftButton:
+            self._press = (e.pos(), QPointF(self._pan))
+            self._dragging = False
+            self.setCursor(Qt.ClosedHandCursor)
+
+    def mouseMoveEvent(self, e):
+        if self._press is None or not (e.buttons() & Qt.LeftButton):
+            return
+        start, pan0 = self._press
+        dx = e.pos().x() - start.x(); dy = e.pos().y() - start.y()
+        if not self._dragging and (abs(dx) + abs(dy)) > self._DRAG_SLOP:
+            self._dragging = True
+        if self._dragging:
+            self._pan = QPointF(pan0.x() + dx, pan0.y() + dy)
+            self._clamp_pan()
+            self.update()
+
+    def mouseReleaseEvent(self, e):
+        if e.button() != Qt.LeftButton:
+            return
+        was_drag = self._dragging
+        self._press = None
+        self._dragging = False
+        self.setCursor(Qt.OpenHandCursor)
+        if not was_drag:                       # a click, not a pan → select the pad
+            pos = self._pin_at(e.pos())
+            if pos is not None:
+                self.select(pos)
                 if self._on_select:
-                    self._on_select(pin["pos"])
-                return
+                    self._on_select(pos)
 
 
 # ── the three-dimension legend (fill / border / mark) ────────────────────────
