@@ -74,6 +74,7 @@ def _state(tmp_path, n=1):
         def __init__(self):
             self.projects = projects
             self.project = proj
+            self._checks = {}
         def boards(self):
             import nd_wizard
             return nd_wizard.list_boards(self.project)
@@ -82,6 +83,18 @@ def _state(tmp_path, n=1):
             return nd_wizard.list_schematics(self.project)
         def root_schematic(self):
             return None
+        # Mirror ProjectsState's shared per-project ERC/DRC cache (the panels read/write it).
+        def _proj_key(self):
+            return str(self.project) if self.project else ""
+        def checks(self):
+            return self._checks.setdefault(self._proj_key(), {"erc": None, "drc": None})
+        def set_check(self, kind, summary):
+            self.checks()[kind] = summary
+        def invalidate_checks(self):
+            c = self._checks.get(self._proj_key())
+            if c is not None:
+                c["erc"] = None
+                c["drc"] = None
     return _S()
 
 

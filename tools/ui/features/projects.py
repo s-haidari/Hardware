@@ -9,6 +9,7 @@ feature — see ui/features/git.py.)
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from PyQt5.QtCore import Qt
@@ -55,6 +56,74 @@ _KIND_LABEL = {
     "pin_pad_mismatch": "Pin / Pad Mismatch", "no_mpn": "No Manufacturer Part Number",
     "unannotated": "Unannotated", "no_3d_model": "No 3D Model", "missing_3d_model": "No 3D Model",
 }
+# Short labels + colour tint for the Health verdict breakdown chips (one per finding
+# kind present, each clickable to filter the findings table). Both 3D-model kinds fold
+# into a single "Missing Model" bucket so the user sees one gap, not two.
+_KIND_SHORT = {
+    "no_footprint": "No Footprint", "no_mpn": "No MPN", "unannotated": "Unannotated",
+    "duplicate_ref": "Duplicate Ref", "pin_pad_mismatch": "Pin/Pad",
+    "no_3d_model": "Missing Model", "missing_3d_model": "Missing Model",
+}
+_KIND_CHIP_TINT = {
+    "no_footprint": "warn", "no_mpn": "mut", "unannotated": "err",
+    "duplicate_ref": "err", "pin_pad_mismatch": "err",
+    "no_3d_model": "mut", "missing_3d_model": "mut",
+}
+
+
+def _kind_breakdown(findings):
+    """Group findings for the breakdown chips: one bucket per short label (the two
+    3D-model kinds collapse into "Missing Model"), most-common first. Each bucket is
+    ``{"label", "tint", "count", "kinds": {raw_kind, ...}}`` — the ``kinds`` set is
+    what the findings-table filter matches on so the collapsed bucket still filters
+    both underlying kinds."""
+    buckets = {}
+    for f in findings or []:
+        raw = str(f.get("kind", ""))
+        short = _KIND_SHORT.get(raw, raw.replace("_", " ").title())
+        b = buckets.setdefault(short, {"label": short, "tint": _KIND_CHIP_TINT.get(raw, "mut"),
+                                       "count": 0, "kinds": set()})
+        b["count"] += 1
+        b["kinds"].add(raw)
+    return sorted(buckets.values(), key=lambda b: (-b["count"], b["label"]))
+
+
+def _refs_by_kind(res) -> dict:
+    """{raw_kind: {ref, ...}} from an audit result — the per-kind reference sets the
+    before/after itemization diffs to name exactly which refs a Prepare fixed."""
+    out: dict = {}
+    for f in (res or {}).get("findings", []):
+        out.setdefault(str(f.get("kind", "")), set()).add(str(f.get("ref", "")))
+    return out
+
+
+def _ref_sort_key(ref: str):
+    """Natural order for a reference designator (R2 before R10): split the letter
+    prefix from the trailing number so a column of refs reads the way KiCad numbers."""
+    s = str(ref)
+    m = re.match(r"^([A-Za-z_]*)(\d*)", s)
+    prefix = m.group(1) if m else s
+    num = int(m.group(2)) if (m and m.group(2)) else -1
+    return (prefix, num, s)
+
+
+def _audit_diff(before, after) -> dict:
+    """The before/after Prepare itemization: per finding-kind counts before + after +
+    Δ, plus the set of refs FIXED (present before, gone after) for that kind. Kinds
+    that appear in either audit are included; a kind only in `after` (a newly-surfaced
+    finding) shows a positive Δ. Pure — takes two audit result dicts."""
+    b_kind = (before or {}).get("counts", {}).get("by_kind", {})
+    a_kind = (after or {}).get("counts", {}).get("by_kind", {})
+    b_refs, a_refs = _refs_by_kind(before), _refs_by_kind(after)
+    rows = []
+    for raw in sorted(set(b_kind) | set(a_kind)):
+        bn, an = int(b_kind.get(raw, 0)), int(a_kind.get(raw, 0))
+        fixed = sorted(b_refs.get(raw, set()) - a_refs.get(raw, set()), key=_ref_sort_key)
+        rows.append({"kind": raw, "label": _KIND_LABEL.get(raw, raw.replace("_", " ").title()),
+                     "before": bn, "after": an, "delta": an - bn, "fixed": fixed})
+    b_tot = sum(int(v) for v in b_kind.values())
+    a_tot = sum(int(v) for v in a_kind.values())
+    return {"rows": rows, "before_total": b_tot, "after_total": a_tot}
 
 
 # ── shared project state ─────────────────────────────────────────────────────
@@ -76,6 +145,34 @@ class ProjectsState:
         self.project = next((p for p in self.projects if p.name.lower() == "master"),
                             self.projects[0] if self.projects else None)
         self._refreshers = []
+        # SHARED ERC/DRC check cache, keyed per project so a project switch never shows
+        # another project's result. It lives HERE (not on a panel) because switching the
+        # project rebuilds every panel wholesale — a panel-local dict would be discarded,
+        # and Overview + Health need to see the SAME cache so a Prepare in Health can
+        # invalidate the ERC/DRC that Overview's readiness verdict reads.
+        self._checks = {}
+
+    def _proj_key(self):
+        return str(self.project) if self.project else ""
+
+    def checks(self) -> dict:
+        """The live per-project ERC/DRC cache dict (``{"erc": summary|None, "drc":
+        summary|None}``). Both Overview and Health read/write THIS object, so an
+        invalidation in one is seen by the other. A summary is the raw
+        ``{"errors", "warnings", ...}`` (or ``{"error": msg}``); ``None`` = not run."""
+        return self._checks.setdefault(self._proj_key(), {"erc": None, "drc": None})
+
+    def set_check(self, kind, summary):
+        self.checks()[kind] = summary
+
+    def invalidate_checks(self):
+        """Drop the current project's cached ERC/DRC — IN PLACE so any panel holding a
+        reference to this dict sees the reset. Called on every Prepare/Restore/Undo
+        write, since those change the schematic/board and make a prior check stale."""
+        c = self._checks.get(self._proj_key())
+        if c is not None:
+            c["erc"] = None
+            c["drc"] = None
 
     def names(self):
         return [p.name for p in self.projects]
@@ -189,6 +286,12 @@ class FillPreviewDialog(QDialog):
         self._sheet_of = dict(sheet_of or {})
         self._boxes = []                    # (checkbox, ref, prop) for the fill fields
         self._annotate_box = None
+        # Triage filter (M-triage): [(card_widget, {refs}, is_passive)] so a prefix / passives
+        # filter can hide non-matching cards on a big board, and Select-All + Only-Exact act
+        # only on the VISIBLE rows. _filter_prefix / _passives_only hold the live filter.
+        self._filter_cards = []
+        self._filter_prefix = ""
+        self._passives_only = False
         # M3/M4: user-typed fills. _group_edits = [(group, checkbox, {prop: QLineEdit})];
         # _manual_edits = [(ref, {prop: QLineEdit})]. _extra_selected is filled on apply().
         self._group_edits = []
@@ -237,6 +340,26 @@ class FillPreviewDialog(QDialog):
         bulk.addStretch(1)
         outer.addLayout(bulk)
 
+        # Triage filter row: a big board must not force scrolling past irrelevant refs.
+        # A reference-prefix box ("C" or "C12") + a Passives-only toggle hide non-matching
+        # cards; Select All / Only Exact then act on the VISIBLE rows only.
+        self._filter_sections = []          # (header_widget, {refs in this section})
+        trow = QHBoxLayout(); trow.setSpacing(8)
+        self._filter_edit = QLineEdit()
+        self._filter_edit.setPlaceholderText("Filter by reference (e.g. C or C12)")
+        self._filter_edit.setMinimumHeight(30)
+        self._filter_edit.setClearButtonEnabled(True)
+        self._filter_edit.textChanged.connect(self._on_filter_changed)
+        self._passives_box = QCheckBox("Passives only")
+        self._passives_box.setToolTip("Show only R / C / L / FB references (the fill-once groups).")
+        self._passives_box.stateChanged.connect(self._on_filter_changed)
+        self._filter_count = W.body("", dim=True)
+        trow.addWidget(W.body("Filter", dim=True))
+        trow.addWidget(self._filter_edit, 1)
+        trow.addWidget(self._passives_box)
+        trow.addWidget(self._filter_count)
+        outer.addLayout(trow)
+
         # Scrollable body so a long plan never overflows the modal. `W.scroll_body`
         # owns the transparent-viewport chrome (no direct styling here).
         body = QWidget()
@@ -252,33 +375,47 @@ class FillPreviewDialog(QDialog):
                 continue
             by_sheet.setdefault(item.get("sheet") or "", []).append(item)
         for sheet, items in by_sheet.items():
-            bl.addWidget(W.section_header(_sheet_label(sheet)))
+            hdr = W.section_header(_sheet_label(sheet))
+            bl.addWidget(hdr)
+            self._filter_sections.append((hdr, {it["ref"] for it in items}))
             for item in items:
-                bl.addWidget(self._component_card(item))
+                card = self._component_card(item)
+                bl.addWidget(card)
+                self._filter_cards.append((card, {item["ref"]}, _is_passive_ref(item["ref"])))
 
         # Passive groups (mockup ask: "group them so we use the data of one"): one card
         # per value+footprint, filled once and applied to every ref.
         if self._groups:
-            bl.addWidget(W.section_header("Passive Groups"))
+            hdr = W.section_header("Passive Groups")
+            bl.addWidget(hdr)
             bl.addWidget(W.body("Enter the part number once per group; it fills every "
                                 "component in that group.", dim=True))
+            self._filter_sections.append((hdr, {r for g in self._groups for r in g["refs"]}))
             for group in self._groups:
-                bl.addWidget(self._group_card(group))
+                card = self._group_card(group)
+                bl.addWidget(card)
+                self._filter_cards.append((card, set(group["refs"]), True))   # groups are passives
 
         # Still needs your input: components with no library match / distributor data —
         # type the fields directly so every component ends fully filled.
         if self._manual_components:
-            bl.addWidget(W.section_header("Still Needs Your Input"))
+            hdr = W.section_header("Still Needs Your Input")
+            bl.addWidget(hdr)
             bl.addWidget(W.body("These components have no library match. Fill what you "
                                 "can; blanks are left untouched.", dim=True))
+            self._filter_sections.append((hdr, {c.get("ref", "") for c, _ in self._manual_components}))
             for comp, passport in self._manual_components:
-                bl.addWidget(self._manual_card(comp, passport))
+                card = self._manual_card(comp, passport)
+                bl.addWidget(card)
+                ref = comp.get("ref", "")
+                self._filter_cards.append((card, {ref}, _is_passive_ref(ref)))
 
         if not self._boxes and not self.annotate_n and not self._groups \
                 and not self._manual_components:
             bl.addWidget(W.body("Every component is already complete.", dim=True))
 
         outer.addWidget(W.scroll_body(body), 1)
+        self._apply_card_filter()               # seed the "N of M" count
 
         # Footer: primary Apply + secondary Cancel (one primary only).
         footer = QHBoxLayout(); footer.setSpacing(8); footer.addStretch(1)
@@ -399,24 +536,71 @@ class FillPreviewDialog(QDialog):
         return card
 
     def _collect_manual(self):
-        """Gather the user-typed group + manual values into {(ref, prop): value}."""
+        """Gather the user-typed group + manual values into {(ref, prop): value}. Scoped
+        to visible cards (mirrors selected()): a group/manual card hidden by the filter is
+        not collected, so the filter stays honest for typed fills too."""
         out = {}
         for group, cb, edits in self._group_edits:
-            if not cb.isChecked():
+            if not cb.isChecked() or not any(self._ref_visible(r) for r in group["refs"]):
                 continue
             fv = {prop: e.text().strip() for prop, e in edits.items() if e.text().strip()}
             if fv:
                 out.update(libfill.expand_group_fill(group, fv))
         for ref, edits in self._manual_edits:
+            if not self._ref_visible(ref):
+                continue
             for prop, e in edits.items():
                 v = e.text().strip()
                 if v:
                     out[(ref, prop)] = v
         return out
 
+    # ── triage filter ─────────────────────────────────────────────────────────
+    def _on_filter_changed(self, *_):
+        self._filter_prefix = self._filter_edit.text().strip()
+        self._passives_only = self._passives_box.isChecked()
+        self._apply_card_filter()
+        self._sync_apply_enabled()          # header + Apply reflect the now-visible selection
+
+    def _ref_visible(self, ref: str) -> bool:
+        """Does `ref` pass the live filter (prefix match + passives toggle)?"""
+        if self._passives_only and not _is_passive_ref(ref):
+            return False
+        pref = self._filter_prefix
+        if pref and not str(ref).upper().startswith(pref.upper()):
+            return False
+        return True
+
+    def _apply_card_filter(self):
+        """Show/hide each card by the live filter, hide a section header whose cards are
+        all hidden, and update the 'N of M shown' count. Select All / Only Exact honour
+        the same predicate so a bulk action on a filtered board touches only what's shown."""
+        shown = 0
+        for card, refs, is_passive in self._filter_cards:
+            vis = any(self._ref_visible(r) for r in refs) if refs else True
+            if self._passives_only and not is_passive:
+                vis = False
+            try:
+                card.setVisible(vis)
+            except RuntimeError:
+                continue
+            if vis:
+                shown += 1
+        for hdr, refs in self._filter_sections:
+            try:
+                hdr.setVisible(any(self._ref_visible(r) for r in refs))
+            except RuntimeError:
+                pass
+        total = len(self._filter_cards)
+        if hasattr(self, "_filter_count"):
+            self._filter_count.setText(f"{shown} of {total} shown"
+                                       if (self._filter_prefix or self._passives_only) else "")
+
     # ── selection ────────────────────────────────────────────────────────────
     def _bulk(self, mode):
-        for cb, _ref, _prop, kind, conf in self._boxes:
+        for cb, ref, _prop, kind, conf in self._boxes:
+            if not self._ref_visible(ref):
+                continue                       # a filtered-out row is never bulk-toggled
             if mode == "all":
                 cb.setChecked(True)
             elif mode == "clear":
@@ -431,8 +615,11 @@ class FillPreviewDialog(QDialog):
 
     def selected(self):
         """The set of (ref, prop) field pairs to write: the checked library/distributor
-        boxes plus the user-typed group/manual fills recorded on apply()."""
-        base = {(ref, prop) for cb, ref, prop, _k, _c in self._boxes if cb.isChecked()}
+        boxes plus the user-typed group/manual fills recorded on apply(). Scoped to the
+        VISIBLE rows so the triage filter is honest — a row hidden by the filter (even an
+        auto-pre-checked exact fill) does NOT apply; un-filter to bring it back."""
+        base = {(ref, prop) for cb, ref, prop, _k, _c in self._boxes
+                if cb.isChecked() and self._ref_visible(ref)}
         return base | self._extra_selected
 
     def annotate_selected(self):
@@ -476,6 +663,19 @@ class FillPreviewDialog(QDialog):
         self.accept()
 
 
+_PASSIVE_PREFIXES = ("R", "C", "L", "FB")
+
+
+def _is_passive_ref(ref: str) -> bool:
+    """A passive reference (R/C/L/FB…) by its letter prefix — the 'Passives only' filter
+    and the fill-once groups treat these as the bulk-passive class. FB is checked before
+    the single letters so 'FB3' isn't misread as an 'F' part."""
+    s = str(ref or "").strip().upper()
+    if s.startswith("FB"):
+        return True
+    return bool(s) and s[0] in ("R", "C", "L")
+
+
 def _sheet_label(sheet: str) -> str:
     """A sheet path as a short, posix, human label for a group header."""
     if not sheet:
@@ -513,7 +713,10 @@ def _overview_panel(ctx, state) -> QWidget:
 
     host = None                        # bound after kit.workbench(); None-safe reads before then
     memo: dict = {}                    # audit memo, keyed by sheet mtime (mirror Health)
-    checks: dict = {"erc": None, "drc": None}   # last ERC/DRC summary (or {"error": ...})
+    # The ERC/DRC cache is SHARED on state (per project), so a Prepare in Health
+    # invalidates the very dict this readiness verdict reads. Bound once per build;
+    # a project switch rebuilds this panel, re-binding to the new project's dict.
+    checks: dict = state.checks()
     busy = kit.BusyDict()
 
     def snapshot() -> dict:
@@ -530,7 +733,8 @@ def _overview_panel(ctx, state) -> QWidget:
         schs = snap["schs"]
         try:
             sig = (tuple((s, Path(s).stat().st_mtime_ns) for s in schs),
-                   tuple(snap["fp_dirs"] or ()), tuple(snap["mdl_dirs"] or ()))
+                   tuple(snap["fp_dirs"] or ()), tuple(snap["mdl_dirs"] or ()),
+                   libfill.library_index_signature(ctx.cfg))   # swap/edit the library -> re-audit
         except OSError:
             sig = None
         if sig is not None and memo.get("sig") == sig:
@@ -888,7 +1092,11 @@ def _health_panel(ctx, state) -> QWidget:
     # backups from the last Prepare (for Restore), and an mtime-keyed audit memo so the
     # verdict and the detail don't each re-read every sheet on the same refresh.
     prep: dict = {}
-    last_prepare: dict = {"originals": {}}
+    # Restore/Undo holder. `originals` = each sheet's PRE-Prepare text; `prepared` = its
+    # POST-Prepare text; `state` toggles "prepared" <-> "restored" so Restore and Undo
+    # Restore are exact inverses (write originals / write prepared) without re-running
+    # Prepare. `diff` carries the before/after audit itemization for the Last Prepare view.
+    last_prepare: dict = {"originals": {}, "prepared": {}, "state": None, "diff": None}
     memo: dict = {}
     busy = kit.BusyDict()
 
@@ -916,7 +1124,8 @@ def _health_panel(ctx, state) -> QWidget:
         schs = snap["schs"]
         try:
             sig = (tuple((s, Path(s).stat().st_mtime_ns) for s in schs),
-                   tuple(snap["fp_dirs"] or ()), tuple(snap["mdl_dirs"] or ()))
+                   tuple(snap["fp_dirs"] or ()), tuple(snap["mdl_dirs"] or ()),
+                   libfill.library_index_signature(ctx.cfg))   # swap/edit the library -> re-audit
         except OSError:
             sig = None
         if sig is not None and memo.get("sig") == sig:
@@ -931,11 +1140,13 @@ def _health_panel(ctx, state) -> QWidget:
 
     def _completion(snap):
         """Roll up the schematic-scoped completion passport (nd_library_fill.
-        project_completion) over every placed component, memoised on the same
-        sheet-mtime signature as _audit so a refresh reads each sheet once."""
+        project_completion) over every placed component, memoised on the SAME
+        signature as _audit (sheet mtimes PLUS the Library index signature) so a
+        library swap/edit re-derives the passport instead of reusing a stale fill."""
         schs = snap["schs"]
         try:
-            sig = tuple((s, Path(s).stat().st_mtime_ns) for s in schs)
+            sig = (tuple((s, Path(s).stat().st_mtime_ns) for s in schs),
+                   libfill.library_index_signature(ctx.cfg))
         except OSError:
             sig = None
         if sig is not None and cmemo.get("sig") == sig:
@@ -988,6 +1199,12 @@ def _health_panel(ctx, state) -> QWidget:
                               subtitle=sub, chips=chips)
 
     # ── detail: the findings table, built once, repopulated on refresh ──────────────────
+    # The active breakdown filter (a bucket label from _kind_breakdown, or None = show all)
+    # persists across fills so a re-audit doesn't drop the user's chosen focus. Panel-scoped
+    # so it survives a fill(); a project switch rebuilds the whole panel and resets it.
+    fstate = {"bucket": None, "buckets": [], "findings": []}
+    _filter_api = {}                                       # detail() drops _on_chip here for the host seam
+
     def detail(snap, handle):
         body = QWidget()
         col = QVBoxLayout(body)
@@ -1003,12 +1220,94 @@ def _health_panel(ctx, state) -> QWidget:
         summary_w = QWidget()
         summary_w.setLayout(summary)
         col.addWidget(summary_w)
+        # Breakdown chips (one per finding kind present) — clickable to filter the table.
+        chips_row = QHBoxLayout()
+        chips_row.setContentsMargins(0, 0, 0, 0)
+        chips_row.setSpacing(6)
+        chips_host = QWidget()
+        chips_host.setLayout(chips_row)
+        col.addWidget(chips_host)
         table_box = QVBoxLayout()
         table_box.setContentsMargins(0, 0, 0, 0)
         table_box.setSpacing(0)
         table_host = QWidget()
         table_host.setLayout(table_box)
         col.addWidget(table_host, 1)
+        # The "Last Prepare" before/after itemization — hidden until a Prepare has run.
+        prep_box = QVBoxLayout()
+        prep_box.setContentsMargins(0, 0, 0, 0)
+        prep_box.setSpacing(8)
+        prep_host = QWidget()
+        prep_host.setLayout(prep_box)
+        col.addWidget(prep_host)
+
+        def _render_table():
+            """Repaint the findings table from the cached audit, honouring the active
+            breakdown filter. Called by fill() and by a chip click (no re-audit)."""
+            clear_layout(table_box)
+            findings = fstate["findings"]
+            bucket = fstate["bucket"]
+            match_kinds = None
+            if bucket is not None:
+                match_kinds = next((b["kinds"] for b in fstate["buckets"] if b["label"] == bucket), set())
+            rows = []
+            for f in findings:
+                raw = str(f.get("kind", ""))
+                if match_kinds is not None and raw not in match_kinds:
+                    continue
+                kind = _KIND_LABEL.get(raw, raw.replace("_", " ").title())
+                sev = f.get("severity", "info")
+                rows.append([W.body(str(f.get("ref", "")), mono=True), W.body(kind),
+                             W.body(sentence(f.get("detail", ""))),
+                             W.tag(sev.title(), _SEV.get(sev, "mut"))])
+            if not findings:
+                table_box.addWidget(W.empty_state("No Issues Found", glyph=icons.GLYPHS["check"],
+                                                  sub="Every component is healthy."))
+            elif not rows:
+                table_box.addWidget(W.empty_state("No Matches", glyph=icons.GLYPHS.get("search", ""),
+                                                  sub=f"No findings under {bucket}. Click the chip again to clear."))
+            else:
+                table_box.addWidget(W.data_table(["Reference", "Kind", "Detail", "Severity"], rows,
+                                                 stretch_col=2, wrap=True), 1)
+
+        def _on_chip(bucket_label):
+            fstate["bucket"] = None if fstate["bucket"] == bucket_label else bucket_label
+            _render_chips()
+            _render_table()
+
+        def _render_chips():
+            clear_layout(chips_row)
+            buckets = fstate["buckets"]
+            if not buckets:
+                chips_host.setVisible(False)
+                return
+            chips_host.setVisible(True)
+            for b in buckets:
+                active = fstate["bucket"] == b["label"]
+                chips_row.addWidget(W.toggle_chip(
+                    f"{b['label']}: {b['count']}", b["tint"], active=active,
+                    on_click=(lambda lbl=b["label"]: _on_chip(lbl)),
+                    tip=f"Show only the {b['label']} findings ({b['count']}). Click again to clear."))
+            chips_row.addStretch(1)
+
+        def _render_prepare_diff():
+            """Show the before/after itemization of the last Prepare (per-kind counts +
+            click a row to reveal the exact refs fixed). Hidden until a Prepare runs."""
+            clear_layout(prep_box)
+            diff = last_prepare.get("diff")
+            if not diff or not diff.get("rows"):
+                prep_host.setVisible(False)
+                return
+            prep_host.setVisible(True)
+            head = QHBoxLayout(); head.setSpacing(8)
+            head.addWidget(W.eyebrow("Last Prepare"))
+            delta = diff["after_total"] - diff["before_total"]
+            head.addWidget(W.tag(f"{diff['before_total']} → {diff['after_total']} ({delta:+d})",
+                                 "ok" if delta < 0 else "mut"))
+            head.addStretch(1)
+            hw = QWidget(); hw.setLayout(head); prep_box.addWidget(hw)
+            for r in diff["rows"]:
+                prep_box.addWidget(_prepare_diff_row(r))
 
         def fill(s):
             res = _audit(s)
@@ -1030,23 +1329,44 @@ def _health_panel(ctx, state) -> QWidget:
             for txt, kind in tags:
                 summary.addWidget(W.tag(txt, kind))
             summary.addStretch(1)
-            clear_layout(table_box)
-            rows = []
-            for f in findings:
-                raw = str(f.get("kind", ""))
-                kind = _KIND_LABEL.get(raw, raw.replace("_", " ").title())
-                sev = f.get("severity", "info")
-                rows.append([W.body(str(f.get("ref", "")), mono=True), W.body(kind),
-                             W.body(sentence(f.get("detail", ""))),
-                             W.tag(sev.title(), _SEV.get(sev, "mut"))])
-            if not rows:
-                table_box.addWidget(W.empty_state("No Issues Found", glyph=icons.GLYPHS["check"],
-                                                  sub="Every component is healthy."))
-            else:
-                table_box.addWidget(W.data_table(["Reference", "Kind", "Detail", "Severity"], rows,
-                                                 stretch_col=2, wrap=True), 1)
+            # Recompute the breakdown; drop a stale active filter whose bucket vanished.
+            fstate["findings"] = findings
+            fstate["buckets"] = _kind_breakdown(findings)
+            if fstate["bucket"] not in {b["label"] for b in fstate["buckets"]}:
+                fstate["bucket"] = None
+            _render_chips()
+            _render_table()
+            _render_prepare_diff()
 
+        _filter_api["apply"] = _on_chip                   # drive/test seam: click a chip by label
         return body, fill
+
+    def _prepare_diff_row(r):
+        """One before/after row (kind → before/after/Δ) that toggles a dim sub-line naming
+        the exact refs fixed. A no-op click when nothing was fixed for that kind."""
+        card = QWidget()
+        cv = QVBoxLayout(card); cv.setContentsMargins(0, 0, 0, 0); cv.setSpacing(2)
+        line = QHBoxLayout(); line.setSpacing(8)
+        fixed = r["fixed"]
+        n_fixed = len(fixed)
+        head = W.toggle_chip(r["label"], "ok" if r["delta"] < 0 else "mut",
+                             on_click=None,
+                             tip=(f"{plural(n_fixed, 'reference')} fixed. Click to list them."
+                                  if n_fixed else "No references fixed for this kind."))
+        line.addWidget(head)
+        line.addWidget(W.body(f"{r['before']} → {r['after']}  ({r['delta']:+d})", dim=True))
+        line.addStretch(1)
+        lw = QWidget(); lw.setLayout(line); cv.addWidget(lw)
+        refs_lab = W.body("Fixed: " + ", ".join(fixed), dim=True, mono=True) if fixed else None
+        if refs_lab is not None:
+            refs_lab.setVisible(False)
+            refs_lab.setWordWrap(True)
+            cv.addWidget(refs_lab)
+
+            def _toggle(_=False):
+                refs_lab.setVisible(not refs_lab.isVisible())
+            head.clicked.connect(_toggle)
+        return card
 
     # ── the ▶ Prepare This Project flow (audit → rich preview → apply → re-audit) ────────
     def _build_fill_plan(schs):
@@ -1144,6 +1464,11 @@ def _health_panel(ctx, state) -> QWidget:
             else:
                 ref, _, prop = k.partition("\x1f")
                 selected.add((ref, prop))
+        # ERC/DRC before-state: the cached result the user last ran (if any). We prove the
+        # fix by re-running below only when there WAS a prior check + kicad-cli is present,
+        # so Prepare never surprise-runs a subprocess the user never asked for.
+        erc_before = (state.checks() or {}).get("erc")
+        drc_before = (state.checks() or {}).get("drc")
         before = _audit(snap)
         b0 = before.get("counts", {}).get("by_severity", {})
         # Snapshot each sheet's ORIGINAL text BEFORE any writer runs. Fill and annotate each write
@@ -1167,10 +1492,57 @@ def _health_panel(ctx, state) -> QWidget:
             bak = sch + ".bak"
             if do_annotate and bak not in baks and Path(bak).exists():
                 baks.append(bak)
-        last_prepare["originals"] = originals
         memo.pop("sig", None)                              # files changed → fresh audit
         after = _audit(snap)
         b1 = after.get("counts", {}).get("by_severity", {})
+        # Capture each sheet's POST-Prepare ("prepared") text so Restore is reversible:
+        # Undo Restore re-writes THIS without re-running Prepare. Read after every writer.
+        prepared = {}
+        for sch in snap["schs"]:
+            try:
+                prepared[sch] = Path(sch).read_text(encoding="utf-8")
+            except OSError:
+                pass
+        wrote = bool(res.get("fields_written", 0) or annotated)
+        # Update the reversibility holder as ONE unit, only on a real write. A later Prepare
+        # that writes nothing must NOT overwrite originals/prepared with the current on-disk
+        # state (that would be the already-prepared text, collapsing the round-trip so Restore
+        # becomes a no-op and the true pre-Prepare original is lost).
+        if wrote:
+            last_prepare["originals"] = originals
+            last_prepare["prepared"] = prepared
+            last_prepare["state"] = "prepared"
+            last_prepare["diff"] = _audit_diff(before, after)
+        # Only a real write makes the cached ERC/DRC stale — if nothing was written the
+        # schematic is unchanged, so a prior check still stands (don't drop it needlessly).
+        check_lines = []
+        if wrote:
+            # Invalidate the SHARED cache (Overview's readiness reads it); then, only if the
+            # user had already run a check and kicad-cli is present, RE-RUN it here (we are
+            # off-thread) for real before→after proof and re-cache the fresh result.
+            state.invalidate_checks()
+            cli = _kicad_cli()
+            for kind, prior in (("erc", erc_before), ("drc", drc_before)):
+                if not prior or prior.get("error") or not cli:
+                    if prior and not prior.get("error"):
+                        nm = _CHECK_NAME.get(kind, kind)
+                        check_lines.append(f"{nm} was {plural(prior.get('errors', 0), 'error')} / "
+                                           f"{plural(prior.get('warnings', 0), 'warning')} before Prepare. "
+                                           f"Re-run {nm} to confirm the fix.")
+                    continue
+                target = snap["root_sch"] if kind == "erc" else (snap["boards"][0] if snap["boards"] else None)
+                if not target:
+                    continue
+                fn = kchecks.run_erc if kind == "erc" else kchecks.run_drc
+                r = fn(target, cli)
+                nm = _CHECK_NAME.get(kind, kind)
+                if r and not r.get("error") and not r.get("returncode"):
+                    s = r.get("summary", {})
+                    state.set_check(kind, s)                # fresh result -> readiness reflects the fix
+                    check_lines.append(f"{nm}: {plural(prior.get('errors', 0), 'error')} → "
+                                       f"{plural(s.get('errors', 0), 'error')} "
+                                       f"({plural(s.get('warnings', 0), 'warning')} now).")
+
         filled = res.get("fields_written", 0)
         comps = res.get("components_changed", 0)
         done, errors = [], list(res.get("errors", []))
@@ -1178,15 +1550,21 @@ def _health_panel(ctx, state) -> QWidget:
             done.append(f"Filled {plural(filled, 'field')} across {plural(comps, 'component')}.")
         if annotated:
             done.append(f"Annotated {plural(annotated, 'reference')}.")
+        if wrote and last_prepare["diff"] and last_prepare["diff"]["rows"]:
+            d = last_prepare["diff"]
+            done.append(f"Findings: {d['before_total']} → {d['after_total']} "
+                        f"(see the Last Prepare breakdown below for the per-kind before/after).")
+        done.extend(check_lines)
         if baks:
             done.append(f"Backups written for {plural(len(baks), 'sheet')}. Restore Last Prepare "
-                        "rolls every changed sheet back to its pre-Prepare state.")
+                        "rolls every changed sheet back to its pre-Prepare state; Undo Restore "
+                        "re-applies it.")
 
         def _fmt(b):
             return f"{b.get('error', 0)} errors / {b.get('warning', 0)} warnings / {b.get('info', 0)} notes"
 
         summary = (f"Prepared {snap['name']}: {_fmt(b0)} → {_fmt(b1)}."
-                   if (filled or annotated) else "Nothing was written.")
+                   if wrote else "Nothing was written.")
         return {"summary": summary, "done": done, "errors": errors}
 
     prepare_flow = kit.PrimaryFlow(
@@ -1239,6 +1617,8 @@ def _health_panel(ctx, state) -> QWidget:
                 msg = str(res.get("error") or f"kicad-cli exited {res.get('returncode')}")
                 return {"errors": [f"{name} could not run: {sentence(msg)}"]}
             s = res.get("summary", {})
+            state.set_check(kind, s)                        # SHARED cache: folds into Overview
+            # readiness AND gives the next Prepare a real before->after baseline to diff against.
             findings = res.get("findings", [])
             missing = [{"item": str(f.get("rule", "")), "why": sentence(f.get("message", "")),
                         "how_to_fix": str(f.get("where", "")) or "See this location in the design."}
@@ -1249,32 +1629,105 @@ def _health_panel(ctx, state) -> QWidget:
 
         _report_op(name, work)
 
+    def _rewrite_sheets(mapping, label):
+        """Write each sheet in `mapping` (path -> desired text) only where it differs from
+        disk (idempotent, and a no-op sheet isn't backed up needlessly). Returns (restored
+        names, errors). Shared by Restore and Undo Restore so they are exact inverses."""
+        restored, errors = [], []
+        for sch, text in mapping.items():
+            p = Path(sch)
+            try:
+                if p.read_text(encoding="utf-8") == text:
+                    continue                               # already at the target — nothing to write
+                p.write_text(text, encoding="utf-8")
+                restored.append(p.name)
+            except OSError as e:  # noqa: BLE001
+                errors.append(f"{p.name}: {e}")
+        return restored, errors
+
     def _restore_prepare():
+        """Roll every changed sheet back to its PRE-Prepare text. Reversible: it does NOT
+        discard the prepared text, it flips the holder to "restored" so Undo Restore can
+        re-apply the prepared state without re-running Prepare."""
+        if last_prepare.get("state") != "prepared":
+            _log("No prepare to restore. Run Prepare Components first."
+                 if last_prepare.get("state") is None else "Already restored. Use Undo Restore to re-apply.")
+            return
         originals = dict(last_prepare.get("originals") or {})
         if not originals:
             _log("No prepare to restore. Run Prepare Components first.")
             return
 
         def work():
-            restored, errors = [], []
-            for sch, text in originals.items():
-                p = Path(sch)
-                try:
-                    if p.read_text(encoding="utf-8") == text:
-                        continue                           # sheet unchanged — nothing to roll back
-                    p.write_text(text, encoding="utf-8")
-                    restored.append(p.name)
-                except OSError as e:  # noqa: BLE001
-                    errors.append(f"{p.name}: {e}")
-            last_prepare["originals"] = {}                 # consumed
+            restored, errors = _rewrite_sheets(originals, "restore")
             memo.pop("sig", None)
-            msg = (f"Restored {plural(len(restored), 'sheet')} to their pre-Prepare state."
-                   if restored else "Nothing to restore. The sheets are unchanged.")
+            state.invalidate_checks()                      # sheets changed → ERC/DRC stale
+            # Flip to "restored" ONLY on a clean pass. A partial multi-sheet failure leaves the
+            # holder in "prepared" so the state never claims a rollback the disk didn't fully
+            # get — the user sees the error and can retry (Undo stays disabled).
+            if not errors:
+                last_prepare["state"] = "restored"         # reversible: prepared text is kept
+            msg = (f"Restored {plural(len(restored), 'sheet')} to the pre-Prepare state. "
+                   "Undo Restore re-applies the Prepare."
+                   if restored else "Nothing to restore. The sheets already match the pre-Prepare state.")
             if errors:
-                msg += " Errors: " + "; ".join(errors)
+                msg += " Some sheets could not be restored: " + "; ".join(errors)
             return msg
 
         _run_op("Restore Last Prepare", work)
+
+    def _undo_restore():
+        """Re-apply the last Prepare after a Restore — write the captured POST-Prepare text
+        back, without re-running the whole flow. The inverse of Restore; flips back to
+        "prepared" so the pair can toggle."""
+        if last_prepare.get("state") != "restored":
+            _log("Nothing to undo. Run Restore Last Prepare first." if last_prepare.get("state") != "prepared"
+                 else "Already at the prepared state. Use Restore Last Prepare to roll back.")
+            return
+        prepared = dict(last_prepare.get("prepared") or {})
+        if not prepared:
+            _log("No prepared state captured to re-apply.")
+            return
+
+        def work():
+            restored, errors = _rewrite_sheets(prepared, "undo")
+            memo.pop("sig", None)
+            state.invalidate_checks()
+            # Flip back to "prepared" ONLY on a clean pass (mirror Restore); a partial failure
+            # keeps the holder in "restored" so state never over-claims the re-apply.
+            if not errors:
+                last_prepare["state"] = "prepared"
+            msg = (f"Re-applied the Prepare to {plural(len(restored), 'sheet')}. "
+                   "Restore Last Prepare rolls it back again."
+                   if restored else "Nothing to re-apply. The sheets already match the prepared state.")
+            if errors:
+                msg += " Some sheets could not be re-applied: " + "; ".join(errors)
+            return msg
+
+        _run_op("Undo Restore", work)
+
+    def _prepare_diff_markdown(snap):
+        """A shareable before/after Markdown of the last Prepare: a per-kind count table
+        (before / after / Δ) plus the exact references fixed under each kind. Honest when
+        no Prepare has run yet."""
+        diff = last_prepare.get("diff")
+        name = (snap or {}).get("name", "project")
+        if not diff or not diff.get("rows"):
+            return (f"# Prepare Diff: {name}\n\n"
+                    "No Prepare has been run in this session yet, so there is no before/after to "
+                    "report. Run the Prepare Components flow, then export this again.\n")
+        lines = [f"# Prepare Diff: {name}", "",
+                 f"Findings: **{diff['before_total']} → {diff['after_total']}** "
+                 f"({diff['after_total'] - diff['before_total']:+d}).", "",
+                 "| Finding | Before | After | Δ |", "| --- | ---: | ---: | ---: |"]
+        for r in diff["rows"]:
+            lines.append(f"| {r['label']} | {r['before']} | {r['after']} | {r['delta']:+d} |")
+        fixed_any = [r for r in diff["rows"] if r["fixed"]]
+        if fixed_any:
+            lines += ["", "## References fixed", ""]
+            for r in fixed_any:
+                lines.append(f"- **{r['label']}** ({len(r['fixed'])}): {', '.join(r['fixed'])}")
+        return "\n".join(lines) + "\n"
 
     exports = [
         kit.export_action("Audit Report (Markdown)...",
@@ -1283,13 +1736,22 @@ def _health_panel(ctx, state) -> QWidget:
                           filt="Markdown (*.md)",
                           tip="A shareable Markdown report of the current audit findings"),
     ]
+    exports.append(
+        kit.export_action("Prepare Diff (Markdown)...",
+                          lambda snap: _prepare_diff_markdown(snap),
+                          lambda snap: f"{snap['name']}-prepare-diff.md",
+                          filt="Markdown (*.md)",
+                          tip="A before/after Markdown of the last Prepare: per-kind counts and "
+                              "the exact references it fixed"))
     secondary = [
         kit.action("Run Electrical Rules Check", lambda: _run_check("erc"),
-                   tip="Run KiCad's ERC on the root schematic (via kicad-cli)"),
+                   tip="Run KiCad's ERC on the root schematic (via kicad-cli); the result folds into readiness"),
         kit.action("Run Design Rules Check", lambda: _run_check("drc"),
-                   tip="Run KiCad's DRC on the board (via kicad-cli)"),
+                   tip="Run KiCad's DRC on the board (via kicad-cli); the result folds into readiness"),
         kit.action("Restore Last Prepare", _restore_prepare,
-                   tip="Undo the last Prepare by restoring the .bak backups it wrote"),
+                   tip="Roll every changed sheet back to its pre-Prepare state (reversible)"),
+        kit.action("Undo Restore", _undo_restore,
+                   tip="Re-apply the last Prepare after a Restore, without re-running the flow"),
     ]
 
     host = kit.workbench(ctx, title="Health", snapshot=snapshot, verdict=verdict, detail=detail,
@@ -1299,6 +1761,24 @@ def _health_panel(ctx, state) -> QWidget:
     # collapsible chevrons are skipped (the busy gate never disables them).
     from PyQt5.QtWidgets import QPushButton
     _buttons = [b for b in host.findChildren(QPushButton) if not b.text().startswith(("▸", "▾"))]
+    _btn_restore = next((b for b in _buttons if b.text() == "Restore Last Prepare"), None)
+    _btn_undo = next((b for b in _buttons if b.text() == "Undo Restore"), None)
+
+    def _sync_restore_buttons():
+        """Restore is live only in the "prepared" state; Undo Restore only in "restored".
+        Both are additionally gated off while any op runs (the busy sweep below)."""
+        on = not busy["on"]
+        st = last_prepare.get("state")
+        if _btn_restore is not None:
+            try:
+                _btn_restore.setEnabled(on and st == "prepared")
+            except RuntimeError:
+                pass
+        if _btn_undo is not None:
+            try:
+                _btn_undo.setEnabled(on and st == "restored")
+            except RuntimeError:
+                pass
 
     def _apply_enablement():
         on = not busy["on"]
@@ -1307,8 +1787,10 @@ def _health_panel(ctx, state) -> QWidget:
                 b.setEnabled(on)
             except RuntimeError:                           # a button deleted by a rebuild
                 pass
+        _sync_restore_buttons()                            # Restore/Undo also honour the holder state
 
     busy.on_change = _apply_enablement
+    _sync_restore_buttons()                                # initial: neither is live until a Prepare
 
     # A guarded ▶ so a re-drive / a click during a secondary op can't start a second flow.
     _raw_run = host._run_primary
@@ -1329,10 +1811,17 @@ def _health_panel(ctx, state) -> QWidget:
     host._prep = prep                                      # {plan, annotate_n} after _prepare_audit
     host._run_check = _run_check
     host._restore_prepare = _restore_prepare
+    host._undo_restore = _undo_restore
+    host._prepare_diff_markdown = _prepare_diff_markdown
+    host._sync_restore_buttons = _sync_restore_buttons
+    host._btn_restore = _btn_restore
+    host._btn_undo = _btn_undo
     host._fill_dialog = None
     host._fix_all = _guarded_run                           # legacy alias (drives ▶ Prepare)
     host._verdict_of = verdict                             # test seam (readiness classification)
     host._last_prepare = last_prepare                      # test seam (captured originals)
+    host._apply_findings_filter = lambda bucket: (_filter_api.get("apply") or (lambda _b: None))(bucket)
+    host._findings_filter = fstate                         # {"bucket": str|None, "buckets": [...], ...}
     return host
 
 

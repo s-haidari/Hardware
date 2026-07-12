@@ -374,6 +374,42 @@ def btn(text: str, kind: str = "default", tip: str = "", on_click: Optional[Call
     return b
 
 
+def toggle_chip(text: str, kind: str = "mut", active: bool = False,
+                on_click: Optional[Callable] = None, tip: str = "") -> QPushButton:
+    """A small clickable FILTER pill: a leading category dot (skipped for ``mut``) +
+    label, with a selected (``active``) state. Quiet-Instrument idiom — colour rides
+    the dot + text, the surface only lifts to a faint token fill when active, never a
+    loud pill. Reusable chrome, so it lives here (not in a feature file, which may not
+    call setStyleSheet). ``kind`` in {ok, warn, err, info, mut}. Clicking calls
+    ``on_click()``. Radius is the shared 6px control radius (design-rules compliant)."""
+    disp = text if kind == "mut" else f"● {text}"
+    b = QPushButton(disp)
+    b.setFont(T.ui_font(9, semibold=True))
+    b.setCursor(Qt.PointingHandCursor)
+    b.setCheckable(True)
+    b.setChecked(bool(active))
+    b.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+    if tip:
+        b.setToolTip(tip)
+
+    def style():
+        fg = T.t("txt2") if kind == "mut" else T.t(kind)
+        if b.isChecked():
+            b.setStyleSheet(
+                f"QPushButton{{background:{T.t('tok')};color:{fg};border:1px solid {T.t('ln1')};"
+                f"border-radius:{T.RADIUS_CONTROL}px;padding:3px 9px;}}")
+        else:
+            b.setStyleSheet(
+                f"QPushButton{{background:transparent;color:{fg};border:1px solid transparent;"
+                f"border-radius:{T.RADIUS_CONTROL}px;padding:3px 9px;}}"
+                f"QPushButton:hover{{background:{T.t('tok')};}}")
+    register_restyle(style, b)
+    style()
+    if on_click:
+        b.clicked.connect(lambda _=False: on_click())
+    return b
+
+
 def menu_button(label: str, items, *, tip: str = "", kind: str = "default") -> QPushButton:
     """One button that opens a menu of related actions — progressive disclosure for a
     family of secondary actions (design-rules §2: when in doubt, remove; one focal

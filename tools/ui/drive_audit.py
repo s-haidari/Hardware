@@ -755,9 +755,92 @@ def audit_projects_styled():
         sub = getattr(getattr(p, "_verdict", None), "_sub", None)
         if sub is not None and "fully filled" not in sub.text():
             _fail(f"Projects/Health: verdict missing the completion line, got {sub.text()!r}")
+        # Seed the SHARED ERC cache so the Prepare write below has something to invalidate
+        # (Overview's readiness reads this very dict). Gamma has no kicad-cli, so a fix can't
+        # be re-run — the stale entry must be dropped.
+        state.set_check("erc", {"errors": 2, "warnings": 0})
         p._run_primary(); _pump()                         # ▶ Prepare Components (headless auto-accepts safe)
         if getattr(p, "_prep", None) is None:
             _fail("Projects/Health: ▶ Prepare Components left no _prep holder")
+        # (health-overview) The Prepare write must clear the STALE ERC cache — dropped to
+        # None when kicad-cli is absent, or replaced by a fresh re-run when it is present.
+        # Either way the stale {"errors": 2} we seeded must be gone.
+        if state.checks()["erc"] == {"errors": 2, "warnings": 0}:
+            _fail("Projects/Health: Prepare left the stale ERC cache in place")
+        # (health-overview) A write happened (Gamma's C? annotates), so Restore is armed.
+        if p._last_prepare.get("state") == "prepared":
+            # Breakdown chips: refresh the detail, then click a bucket and assert the filter
+            # takes (and toggles back). Gamma keeps No-Footprint findings after annotate.
+            p._region.handle.refresh(); _pump()
+            fstate = p._findings_filter
+            if fstate and fstate.get("buckets"):
+                first = fstate["buckets"][0]["label"]
+                p._apply_findings_filter(first); _pump()
+                if fstate["bucket"] != first:
+                    _fail(f"Projects/Health: breakdown chip {first!r} did not filter the table")
+                p._apply_findings_filter(first); _pump()   # re-click clears
+                if fstate["bucket"] is not None:
+                    _fail("Projects/Health: re-clicking the breakdown chip did not clear the filter")
+            # The before/after itemization is available for export after a Prepare.
+            md = p._prepare_diff_markdown(p._snapshot())
+            if "Prepare Diff" not in md:
+                _fail("Projects/Health: Prepare diff markdown not produced after a write")
+            # Restore -> Undo Restore symmetry on the REAL Gamma sheet (state must round-trip).
+            sch = Path(state.root_schematic())
+            p._restore_prepare(); _pump()
+            if p._last_prepare.get("state") != "restored" or "C?" not in sch.read_text(encoding="utf-8"):
+                _fail("Projects/Health: Restore did not roll the sheet back to pre-Prepare")
+            p._undo_restore(); _pump()
+            if p._last_prepare.get("state") != "prepared" or "C?" in sch.read_text(encoding="utf-8"):
+                _fail("Projects/Health: Undo Restore did not re-apply the prepared sheet")
+        # (health-overview) FillPreview triage: a reference-prefix filter scopes Select All.
+        try:
+            def _fitem(ref):
+                return {"ref": ref, "sheet": "s.kicad_sch",
+                        "match": {"confidence": "exact", "lib_part": {"name": ref}},
+                        "changes": [{"prop": "MPN", "old": "", "new": f"M-{ref}", "kind": "fill",
+                                     "source": "library"}]}
+            fplan = {"items": [_fitem("C1"), _fitem("C2"), _fitem("J1")], "summary": {}}
+            fcomps = [{"ref": r, "value": "x", "footprint": "L:F", "props": {"Reference": r}}
+                      for r in ("C1", "C2", "J1")]
+            fdlg = PROJ.FillPreviewDialog(fplan, 0, cfg={}, components=fcomps,
+                                          sheet_of={c["ref"]: "s.kicad_sch" for c in fcomps})
+            fdlg._filter_edit.setText("C"); _pump()
+            fdlg.select_all(); _pump()
+            if fdlg.selected() != {("C1", "MPN"), ("C2", "MPN")}:
+                _fail(f"Projects/Health: FillPreview prefix filter did not scope Select All, got {fdlg.selected()!r}")
+            fdlg.deleteLater()
+        except Exception as e:  # noqa: BLE001
+            _fail("Projects/Health: FillPreview triage filter", e)
+        # (health-overview) Before->after ERC line: a deterministic temp project (no cli),
+        # seed the cache, apply an annotate write, and assert the report carries the line.
+        try:
+            hd = Path(tempfile.mkdtemp(prefix="drive_prep_")) / "H"
+            hd.mkdir()
+            (hd / "H.kicad_pro").write_text('{"meta":{"version":1}}', encoding="utf-8", newline="\n")
+            hsch = hd / "H.kicad_sch"
+            hsch.write_text(
+                '(kicad_sch (version 20230121) (generator eeschema)\n'
+                '  (symbol (lib_id "Device:R") (at 10 10 0) (unit 1)\n'
+                '    (property "Reference" "R?" (at 10 5 0))\n'
+                '    (property "Value" "1k" (at 10 15 0)) )\n)\n',
+                encoding="utf-8", newline="\n")
+            hcfg = dict(cfg); hcfg["RepoRoot"] = str(hd)
+            hstate = PROJ.ProjectsState(hcfg)
+            hp = PROJ._health_panel(_styled_ctx(hcfg), hstate)
+            hstate.set_check("erc", {"errors": 3, "warnings": 1})
+            hsnap = hp._snapshot()
+            hp._prepare_audit(hsnap)                       # builds the plan (annotate R?)
+            rep = hp._prepare_apply(hsnap, ["\x00annotate"])
+            line = " ".join(rep.get("done", []))
+            # With cli present the line reads "ERC: 3 errors -> N errors"; without, "ERC was
+            # 3 errors ... Re-run". Both name ERC and reflect the pre-Prepare count.
+            if "ERC" not in line:
+                _fail(f"Projects/Health: Prepare report missing the ERC before/after line, got {line!r}")
+            if hstate.checks()["erc"] == {"errors": 3, "warnings": 1}:
+                _fail("Projects/Health: temp Prepare left its stale ERC cache in place")
+        except Exception as e:  # noqa: BLE001
+            _fail("Projects/Health: ERC before/after report line", e)
         # M3/M4: the preview dialog groups identical passives (fill-once) and prompts for
         # unmatched components; typed values merge into the plan and apply. Drive it on a
         # synthetic plan so the assertion is deterministic (headless skips exec_).

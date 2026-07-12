@@ -606,3 +606,37 @@ def test_component_completion_adds_model_dimension_only_with_cfg(tmp_path):
     # with cfg -> 6 fields incl the (missing) 3D model, so NOT complete
     c = F.component_completion(comp, cfg)
     assert c["total"] == 6 and "3D Model" in c["missing"] and c["is_complete"] is False
+
+
+def test_library_index_signature_changes_on_path_or_content_swap(tmp_path):
+    """The memo-invalidation lock (subsystem projects-health-overview): a memoized
+    audit/completion/fill match must NOT be reused after the Library symbol path is
+    swapped or the file is edited. library_index_signature() is the value the memo
+    keys on, so proving it changes on a path swap and a content edit proves the
+    invalidation."""
+    sym_a = tmp_path / "a.kicad_sym"
+    sym_a.write_text('(kicad_symbol_lib (symbol "R_10k"))\n', encoding="utf-8")
+    sym_b = tmp_path / "b.kicad_sym"
+    sym_b.write_text('(kicad_symbol_lib (symbol "R_10k"))\n', encoding="utf-8")
+
+    sig_a = F.library_index_signature({"SymbolLib": str(sym_a)})
+    # (1) path swap to a different library file -> different signature.
+    sig_b = F.library_index_signature({"SymbolLib": str(sym_b)})
+    assert sig_a != sig_b, "swapping the SymbolLib path must change the signature"
+
+    # (2) editing the SAME file's contents (grows size) -> different signature.
+    sym_a.write_text('(kicad_symbol_lib (symbol "R_10k") (symbol "C_1u"))\n', encoding="utf-8")
+    sig_a2 = F.library_index_signature({"SymbolLib": str(sym_a)})
+    assert sig_a != sig_a2, "editing the SymbolLib file must change the signature"
+
+    # (3) unset / missing inputs are stable and comparable (no crash, equal to self).
+    assert F.library_index_signature({}) == F.library_index_signature({})
+    assert F.library_index_signature(None) == F.library_index_signature({})
+
+    # (4) adding a footprint file to the footprint dir moves the dir mtime -> new sig.
+    fp = tmp_path / "fp.pretty"; fp.mkdir()
+    cfg = {"SymbolLib": str(sym_a), "FootprintLib": str(fp)}
+    before = F.library_index_signature(cfg)
+    (fp / "R_0402.kicad_mod").write_text('(footprint "R_0402")\n', encoding="utf-8")
+    after = F.library_index_signature(cfg)
+    assert before != after, "adding a footprint must change the signature"

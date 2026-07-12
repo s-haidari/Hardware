@@ -68,6 +68,51 @@ def library_parts(cfg: dict) -> List[dict]:
     return out
 
 
+def library_index_signature(cfg: dict) -> tuple:
+    """A cheap signature of the Library inputs that feed matching + completion — the
+    symbol library file plus the footprint/model directories. It changes when a PATH
+    is swapped OR when the target is edited, so a memoized audit / completion / fill
+    match is never reused against a swapped or edited library (that is what produced
+    stale fills). For the symbol FILE, mtime + size catch a content edit. For a
+    DIRECTORY, one non-recursive scandir yields a sorted per-child (name, mtime_ns,
+    size) tuple, so add / remove / rename / resize / in-place edit all change the
+    signature (a directory's own ``st_mtime`` is unreliable on some filesystems, e.g.
+    WSL, and a bare count + newest-mtime would miss a same-count same-mtime content
+    swap). No file contents are read. Missing / unset inputs contribute a stable
+    ``None`` marker so the signature stays comparable."""
+    cfg = cfg or {}
+    out = []
+    for key in ("SymbolLib", "FootprintLib", "ModelLib"):
+        raw = cfg.get(key)
+        if not raw:
+            out.append((key, None))
+            continue
+        p = Path(raw)
+        try:
+            st = p.stat()
+        except OSError:
+            out.append((key, p.as_posix(), None))       # path set but absent
+            continue
+        if p.is_dir():
+            children = []
+            try:
+                with os.scandir(p) as it:
+                    for e in it:
+                        try:
+                            cst = e.stat()
+                            children.append((e.name, int(cst.st_mtime_ns), int(cst.st_size)))
+                        except OSError:
+                            children.append((e.name, None, None))
+            except OSError:
+                pass
+            # Sorted per-child (name, mtime, size): add/remove/rename/resize/edit all move
+            # it — a bare count+newest-mtime would miss a same-count same-mtime content swap.
+            out.append((key, p.as_posix(), "dir", tuple(sorted(children))))
+        else:
+            out.append((key, p.as_posix(), int(st.st_mtime_ns), int(st.st_size)))
+    return tuple(out)
+
+
 # ── Task 2: matching ─────────────────────────────────────────────────────────
 def _norm(s: Optional[str]) -> str:
     """Normalize a value/footprint stem for fuzzy comparison: strip + lowercase."""
