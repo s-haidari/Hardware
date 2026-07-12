@@ -172,6 +172,17 @@ Sourcing-Health subtabs); Phase B adds faster, mockup-faithful front doors and c
 | Category symbol property (`set_library_symbol_property` "Category") | **Component Fields ▸ Edit ▸ Category** (now an editable field; previously only read by grouping) |
 | `part_identity`-shape fields (mpn/mfr/category/datasheet/description) + footprint-derived Package | **Component Fields read-only #idview** (view/edit toggle) |
 
+### Library Part detail + per-part sourcing (2026-07-12, gen [5])
+
+| Capability (LM unless noted) | Now reachable as |
+|-----------|--------------|
+| `completion_tooltip` (+ `COMPLETION_CHECK`/`COMPLETION_CROSS`) | the **per-dimension ✓/✗ passport** shown on hovering the canvas warn glyph AND every still-needs state (built off `part_completion` so it never drifts) |
+| `snapshot_refresh_policy` (+ `MOUSER_REFRESH_MIN_AGE_S`, `snapshot_age_seconds`) | the **Mouser ▾ ▸ Refresh** gate — disabled while a Mouser snapshot is <4h old (shared-cap), LCSC always; reason on hover |
+| `sourcing_snapshot_for` + extended `_SNAPSHOT_FIELDS` (source/url/datasheet/category/rohs/price_breaks) | the **cached Sourcing view** restored after relaunch (freshness headline 'Cached Nh ago', full price-break ladder, provider-aware refresh, hyperlinked Mouser P/N) |
+| provider `datasheet` field (via `providers_from_config` lookup) | the identity **Datasheet ▸ Find** button (fetch the datasheet link from the distributor, write it through the field seam) |
+| `projects_referencing_symbol` | the **Rename heads-up** — the confirm dialog names the projects that instantiate the symbol (informational; they keep a cached copy and won't break) |
+| `nav.open` bus event (shell `_open_feature`) | the no-provider Sourcing empty-state's **Open Settings** CTA (cross-feature navigation) |
+
 ### capability_audit accounting (run 2026-07-11)
 `capability_audit.py` flags **60 LibraryManager publics not literally named in the UI**.
 Judged: **all 60 are internal helpers or plumbing wrappers**, not unsurfaced user

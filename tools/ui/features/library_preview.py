@@ -44,6 +44,18 @@ def _headless() -> bool:
     return os.environ.get("QT_QPA_PLATFORM", "").startswith("offscreen")
 
 
+def _missing_label() -> QLabel:
+    """The ONE muted placeholder for an empty identity field. txt3 (a quiet null), NOT
+    err — the loud 'this part is incomplete' signal lives once in the still-needs pills,
+    so a per-field red 'Missing' would double-signal the same gap (design-rules: nulls
+    are dim, never alarming). One spelling, one tone, everywhere identity is shown."""
+    lab = QLabel("Missing")
+    lab.setFont(T.ui_font(10))
+    W.register_restyle(lambda: lab.setStyleSheet(
+        f"color:{T.t('txt3')};background:transparent;"), lab)
+    return lab
+
+
 class FlowLayout(QLayout):
     """A left-to-right layout that wraps to a new line when it runs out of width —
     the Qt equivalent of CSS flex-wrap (the mockup's .pills). Qt ships no wrapping
@@ -1449,8 +1461,10 @@ class PartDetail(QWidget):
         if not comp["is_complete"]:
             self._title_warn.setPixmap(
                 W.svg_icon(icons.GLYPHS["alert"], 17, T.t("err")).pixmap(17, 17))
-            self._title_warn.setToolTip("Has a broken link, needs a fix" if comp["dangling"]
-                                        else f"Incomplete, {comp['score']} of {comp['total']}")
+            # Self-documenting: hovering the glyph shows the full per-dimension passport
+            # (✓/✗ per Symbol/Footprint/3D/…), straight off part_completion so it can
+            # never disagree with the still-needs pills below.
+            self._title_warn.setToolTip(LM.completion_tooltip(comp))
             self._title_warn.show()
         else:
             self._title_warn.hide()
@@ -1513,14 +1527,9 @@ class PartDetail(QWidget):
     def _build_idview(self, row):
         """The read-only #idview: Part Number, Manufacturer, Category, (Mouser P/N if
         set), the footprint-derived Package, Description, Datasheet. An empty field
-        reads 'Missing' in the error tone (mockup .iv.ph); Package reads 'None'."""
+        reads a quiet 'Missing' (txt3, via _missing_label); Package reads 'None'."""
         def val(v, mono=False):
-            if v:
-                return W.body(v, mono=mono)
-            lab = QLabel("Missing"); lab.setFont(T.ui_font(10))
-            W.register_restyle(lambda: lab.setStyleSheet(
-                f"color:{T.t('err')};background:transparent;"), lab)
-            return lab
+            return W.body(v, mono=mono) if v else _missing_label()
         pkg = W.body((row.get("footprint") or "").strip() or "None")
         pkg.setToolTip("Derived from the footprint, not editable")
         pairs = [
@@ -1529,29 +1538,81 @@ class PartDetail(QWidget):
             ("Category", val(row.get("category"))),
         ]
         if (row.get("mouser_pn") or "").strip():
-            pairs.append(("Mouser Part Number", val(row.get("mouser_pn"), mono=True)))
+            pairs.append(("Mouser Part Number", self._mouser_pn_value(row)))
         pairs += [
             ("Package", pkg),
             ("Description", val(row.get("description"))),
-            ("Datasheet", self._datasheet_view_value(row.get("datasheet"))),
+            ("Datasheet", self._datasheet_view_value(row)),
         ]
-        self._fields.addWidget(W.dl(pairs, key_width=128))
+        self._fields.addWidget(W.dl(pairs, key_width=128, row_gap=10))
 
-    def _datasheet_view_value(self, url) -> QWidget:
-        """The read-only Datasheet value: the URL (mono, elided) with an Open button
-        right beside it so the link is never detached from its field. Empty → Missing."""
-        url = (url or "").strip()
-        if not url:
-            lab = QLabel("Missing"); lab.setFont(T.ui_font(10))
-            W.register_restyle(lambda: lab.setStyleSheet(
-                f"color:{T.t('err')};background:transparent;"), lab)
-            return lab
+    def _mouser_pn_value(self, row) -> QWidget:
+        """The read-only Mouser P/N value. When a cached snapshot / live lookup carries
+        the product-page URL, hyperlink the number to it (so the identity number is
+        one click from the live listing); otherwise a plain mono value."""
+        pn = (row.get("mouser_pn") or "").strip()
+        src = self._sourcing_for(row)
+        url = (src or {}).get("url") if src else None
+        prov = ((src or {}).get("source") or "").strip() if src else ""
+        if pn and url and prov == "Mouser":
+            safe = escape(str(url), quote=True)      # distributor URLs carry &, = query params
+            link = QLabel(f'<a href="{safe}" style="color:{T.t("txt2")};">{escape(pn)}</a>')
+            link.setFont(T.mono_font(10)); link.setOpenExternalLinks(True)
+            link.setTextInteractionFlags(Qt.TextBrowserInteraction)
+            link.setToolTip("Open this part's Mouser product page")
+            return link
+        return W.body(pn, mono=True) if pn else _missing_label()
+
+    def _datasheet_view_value(self, row) -> QWidget:
+        """The read-only Datasheet value. When set: the URL (mono) with an Open button,
+        plus a Find button (when the part has an MPN + a configured provider) to fetch a
+        fresh datasheet link from the distributor. When empty: a quiet 'Missing' with the
+        same Find beside it, so the link is always one click away from its own field."""
+        url = (row.get("datasheet") or "").strip()
+        can_find = bool((row.get("mpn") or "").strip()) and bool(self._lookup)
         w = QWidget(); h = QHBoxLayout(w); h.setContentsMargins(0, 0, 0, 0); h.setSpacing(8)
-        link = W.body(url, mono=True); link.setWordWrap(True); link.setToolTip(url)
-        h.addWidget(link, 1)
-        h.addWidget(W.btn("Open", "ghost", "Open the datasheet in your browser",
-                          lambda u=url: self._open_datasheet(u)), 0)
+        if url:
+            link = W.body(url, mono=True); link.setWordWrap(True); link.setToolTip(url)
+            h.addWidget(link, 1)
+            h.addWidget(W.btn("Open", "ghost", "Open the datasheet in your browser",
+                              lambda u=url: self._open_datasheet(u)), 0)
+        else:
+            h.addWidget(_missing_label(), 1)
+        if can_find:
+            h.addWidget(W.btn("Find", "ghost",
+                              "Fetch this part's datasheet link from its distributor",
+                              lambda r=row: self._find_datasheet(r)), 0)
         return w
+
+    def _find_datasheet(self, row):
+        """Fetch the datasheet URL for this part from its distributor (exact-MPN lookup),
+        then write it to the Datasheet field (batched behind Save like any inline edit).
+        When several candidates carry links, let the user pick; a lone hit applies."""
+        mpn = (row.get("mpn") or "").strip()
+        if not (mpn and self._lookup):
+            return
+
+        def done(res, _ok):
+            if not res:
+                self._ctx.services.log(self._no_match_message(mpn)); return
+            self._remember_sourcing(res.get("mpn") or mpn, res)
+            # The lookup is async: if the user selected a different part while it was in
+            # flight, self._current is no longer this part. Never write the fetched
+            # datasheet onto whatever happens to be selected now — _commit_field writes to
+            # self._current, so both branches gate on 'still this part' (matches _lookup_one).
+            still_here = self._current is row or (self._current or {}).get("mpn") == mpn
+            ds = (res.get("datasheet") or "").strip()
+            if not ds:
+                self._ctx.services.log(f"No datasheet on file at the distributor for {mpn}.")
+                if still_here:
+                    self.show(self._current or row)
+                return
+            if not still_here:                       # moved on — cache it, but don't write
+                return
+            # Write it through the same field seam as a manual edit (disk now, commit on Save).
+            self._commit_field("Datasheet", "Datasheet", "datasheet", ds)
+        run_populate(self._ctx, lambda: self._lookup(mpn), done,
+                     busy=f"Finding a datasheet for {mpn}...")
 
     def _open_datasheet(self, url: str):
         if _headless() or not url:
@@ -1596,7 +1657,7 @@ class PartDetail(QWidget):
                                       placeholder="Add Mouser part number")),
             ("Datasheet", self._datasheet_field(row)),
         ]
-        v.addWidget(W.dl(pairs, key_width=128))
+        v.addWidget(W.dl(pairs, key_width=128, row_gap=10))
         self._fields.addWidget(box)
 
     def _datasheet_field(self, row) -> QWidget:
@@ -1713,22 +1774,27 @@ class PartDetail(QWidget):
     def _build_needs(self, row, comp):
         """The still-needs line (mockup .needs): a red broken-link notice, a green
         Complete pill, or a 'Missing' label + one amber pill per missing field. The
-        missing labels come straight from part_completion['missing'] (LM)."""
+        missing labels come straight from part_completion['missing'] (LM). Every state
+        carries the full per-dimension passport as its hover tooltip (same text as the
+        header warn glyph), so the completion state is self-documenting wherever it shows."""
+        tip = LM.completion_tooltip(comp)
         if comp["dangling"]:
             lab = QLabel("Has a broken link, needs a fix"); lab.setObjectName("needsBroken")
-            lab.setFont(T.ui_font(9)); self._needs.addWidget(lab); return
+            lab.setFont(T.ui_font(9)); lab.setToolTip(tip)
+            self._needs.addWidget(lab); return
         if comp["is_complete"]:
             pill = QLabel("Complete"); pill.setObjectName("needsComplete")
-            pill.setFont(T.ui_font(9, semibold=True))
+            pill.setFont(T.ui_font(9, semibold=True)); pill.setToolTip(tip)
             pill.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Maximum)
             holder = QWidget(); hl = QHBoxLayout(holder); hl.setContentsMargins(0, 0, 0, 0)
             hl.addWidget(pill); hl.addStretch(1); self._needs.addWidget(holder); return
         lab = QLabel("Missing"); lab.setObjectName("needsLabel"); lab.setFont(T.ui_font(9))
+        lab.setToolTip(tip)
         self._needs.addWidget(lab)
         pills = QWidget(); flow = FlowLayout(pills)
         for m in comp["missing"]:
             pill = QLabel(m); pill.setObjectName("needsPill"); pill.setFont(T.ui_font(9))
-            flow.addWidget(pill)
+            pill.setToolTip(tip); flow.addWidget(pill)
         self._needs.addWidget(pills)
 
     def _build_head_actions(self, row):
@@ -1833,7 +1899,29 @@ class PartDetail(QWidget):
                                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         return ans == QMessageBox.Yes
 
-    def _rename_symbol(self, new_name=None):
+    def _confirm_rename(self, confirm, projects, old, new) -> bool:
+        """Confirm a symbol rename, naming the projects that reference it. `confirm` is a
+        callable(projects)->bool test/headless seam. With no projects and no seam the
+        rename proceeds silently (nothing to warn about); with projects it shows an
+        INFORMATIONAL dialog — the rename won't break them, they update from the library
+        on next open. A headless run with no seam proceeds (rename is undo-safe)."""
+        if callable(confirm):
+            return bool(confirm(projects))
+        if not projects or _headless():
+            return True
+        from PyQt5.QtWidgets import QMessageBox
+        shown = ", ".join(projects[:8])
+        more = f" (+{len(projects) - 8} more)" if len(projects) > 8 else ""
+        msg = (f"Rename symbol '{old}' to '{new}'?\n\n"
+               f"{plural(len(projects), 'project')} reference it: {shown}{more}.\n\n"
+               "This is safe: each project keeps its own cached copy of the symbol, so the "
+               "rename won't break them. They pick up the new name the next time KiCad "
+               "updates from the library. No manual fix needed.")
+        ans = QMessageBox.question(self, "Rename Symbol", msg,
+                                   QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+        return ans == QMessageBox.Yes
+
+    def _rename_symbol(self, new_name=None, confirm=None):
         row = self._current
         names = (row or {}).get("symbols") or []
         if not names:
@@ -1851,6 +1939,16 @@ class PartDetail(QWidget):
                 return
             new = text.strip()
         if new == old:
+            return
+        # Heads-up: which projects instantiate this symbol. Renaming a shared-library
+        # symbol never breaks them (a schematic embeds its own cached copy), so this is
+        # reassurance, not a fixup list — but the user deserves to know the reach before
+        # committing. `confirm` is the test/headless seam: callable(projects)->bool.
+        try:
+            used_by = LM.projects_referencing_symbol(self._ctx.cfg, old)
+        except Exception:  # noqa: BLE001
+            used_by = []
+        if not self._confirm_rename(confirm, used_by, old, new):
             return
 
         def job():
@@ -2085,39 +2183,63 @@ class PartDetail(QWidget):
                 self._on_changed()
         run_populate(self._ctx, job, done, busy=f"Deleting {row.get('name', 'part')}...")
 
-    def _build_sourcing(self, row, src):
-        """Live Mouser sourcing: lifecycle / stock / price / lead time / suggested
-        replacement. Shows cached data if present, else a one-click lookup (when a
-        Mouser key is configured), else a quiet hint."""
+    def _resolve_sourcing(self, row):
+        """Resolve a part's sourcing to (src, status, age_seconds, live). In-session live
+        data (self._src_cache, set by a lookup this run) always wins; otherwise fall back
+        to the persisted snapshot so pricing survives relaunch. `status` is the honest
+        freshness headline ('Live (Mouser)' / 'Cached 4h ago'); `age_seconds` drives the
+        per-provider refresh policy; `live` says whether it came from the live cache."""
         mpn = row.get("mpn")
-        # Resolve sourcing BEFORE the header so the header can decide whether a
-        # "Look Up On Mouser" belongs there at all: fall back to a persisted
-        # snapshot so pricing survives relaunch (in-session live data always wins;
-        # the snapshot carries an 'as of' age).
-        as_of = ""
-        if not src and mpn:
+        src = self._src_cache.get(mpn) if mpn else None
+        if src:                                          # live this session
+            prov = (src.get("source") or "").strip() or "Mouser"
+            return src, f"Live ({prov})", None, True
+        if mpn:
             try:
                 snap = LM.sourcing_snapshot_for(self._ctx.cfg, mpn)
             except Exception:  # noqa: BLE001
                 snap = None
             if snap:
-                src = snap
-                as_of = LM.snapshot_age_label(snap.get("as_of", ""))
+                age = LM.snapshot_age_label(snap.get("as_of", ""))
+                secs = LM.snapshot_age_seconds(snap.get("as_of", ""))
+                return snap, (f"Cached {age}" if age else "Cached"), secs, False
+        return None, "", None, False
 
-        # One "Mouser ▾" entry point (owner decision) instead of the confusing
-        # "Find on Mouser" / "Look Up On Mouser" pair: catalog search (find a part you
-        # don't have the exact number for) + exact-MPN refresh (re-price this part),
-        # each self-describing. It appears EXACTLY once — in the header when sourcing is
-        # already shown, or as the empty-state CTA when nothing is cached — never both.
+    def _sourcing_for(self, row):
+        """Just the resolved sourcing dict (live cache or snapshot) for a row, or None —
+        the seam the identity Mouser P/N link and datasheet Find read a product URL from."""
+        return self._resolve_sourcing(row)[0]
+
+    def _build_sourcing(self, row, src):
+        """Per-part sourcing, split into three honest branches so the user always knows
+        the next move: (1) DATA — live or cached stats + a provider-aware refresh, (2) NO
+        PROVIDER — a single CTA to Settings to add a key, (3) UNCACHED — 'Not Looked Up
+        Yet' + a one-click lookup. `src` is the in-session live hint; _resolve_sourcing
+        folds in the persisted snapshot and the freshness/refresh policy."""
+        mpn = row.get("mpn")
+        resolved, status, age_seconds, _live = self._resolve_sourcing(row)
+        src = src or resolved
+        prov = ((resolved or {}).get("source") or "").strip() or "Mouser"
+        policy = LM.snapshot_refresh_policy(prov, age_seconds)
+
+        # One "Mouser ▾" entry point (owner decision): catalog search + an exact-MPN
+        # refresh. It appears EXACTLY once — header when data is shown, empty-state CTA
+        # otherwise. The refresh item is DISABLED (with the shared-cap reason on hover)
+        # when the provider policy says the cached data is too fresh to re-spend a lookup.
         def _mouser_menu():
             items = [("Search Catalog…", lambda: self._find_on_mouser(row),
                       "Search the Mouser catalog by keyword or part number, then apply a "
                       "match to this part")]
             if mpn:
                 items.append(("Refresh This Part's Data", lambda: self._lookup_one(row),
-                              "Re-fetch live stock, pricing and lifecycle for this part's number"))
-            return W.menu_button("Mouser", items, kind="ghost",
-                                 tip="Search Mouser or refresh this part's sourcing data")
+                              policy["reason"]))
+            btn = W.menu_button("Mouser", items, kind="ghost",
+                                tip="Search Mouser or refresh this part's sourcing data")
+            if mpn and not policy["can_refresh"]:
+                for act in btn._menu.actions():          # gate the refresh item per policy
+                    if act.text() == "Refresh This Part's Data":
+                        act.setEnabled(False)
+            return btn
 
         head = QHBoxLayout(); head.setSpacing(8)
         head.addWidget(_subhead("Sourcing"))
@@ -2127,17 +2249,34 @@ class PartDetail(QWidget):
         self._fields.addLayout(head)
 
         if src:
-            self._fields.addWidget(self._sourcing_body(src, as_of))
+            self._fields.addWidget(self._sourcing_body(src, status))
         elif not self._lookup:
-            self._fields.addWidget(W.body(
-                "Add a Mouser API key in Settings to see live stock, pricing and lifecycle.",
-                dim=True))
+            # No provider at all: a real CTA that jumps to Settings to add a key, not a
+            # dead sentence the user can't act on.
+            self._fields.addWidget(W.empty_state(
+                "No Sourcing Provider", glyph=icons.GLYPHS["search"],
+                sub="Add a Mouser API key (or enable LCSC) to see live stock, pricing "
+                    "and lifecycle.",
+                action=W.btn("Open Settings", "ghost",
+                             "Go to Settings to add a distributor key",
+                             self._open_settings)))
         else:
-            # Nothing cached yet: the Mouser menu IS the empty-state CTA (the single
-            # entry point when uncached), beside the "Not Looked Up Yet" glyph.
+            # Provider configured but nothing cached: the Mouser menu IS the CTA.
             self._fields.addWidget(W.empty_state(
                 "Not Looked Up Yet", glyph=icons.GLYPHS["search"],
-                action=_mouser_menu() if self._lookup else None))
+                sub="Look this part up to pull live stock, pricing and lifecycle.",
+                action=_mouser_menu()))
+
+    def _open_settings(self):
+        """Jump to the Settings workspace (the sourcing empty-state CTA). Routes through
+        the shell nav bus so the one owner of tab selection handles it; a no-op when the
+        detail is driven standalone (no bus), which is honest for tests."""
+        bus = getattr(self._ctx, "bus", None)
+        if bus is not None:
+            try:
+                bus.emit("nav.open", "settings")
+            except Exception:  # noqa: BLE001
+                pass
 
     @staticmethod
     def _fmt_price(p) -> str:
@@ -2147,16 +2286,17 @@ class PartDetail(QWidget):
             return "—"
         return f"${p:,.4f}" if 0 < p < 0.1 else f"${p:,.2f}"
 
-    def _sourcing_body(self, src: dict, as_of: str = "") -> QWidget:
-        """The per-part sourcing block (mockup §3.5): a 4-col stat-card grid (In Stock /
-        Unit at 100 / Lifecycle / Lead Time), a horizontal-bar Price Breaks graph
-        (bars scale price against the qty-1 max), then the remaining distributor fields
-        (Category / RoHS / suggested replacement / product-page link) as a quiet list."""
+    def _sourcing_body(self, src: dict, status: str = "") -> QWidget:
+        """The per-part sourcing block (mockup §3.5): a freshness headline ('Live
+        (Mouser)' / 'Cached 4h ago'), a 4-col stat-card grid (In Stock / Unit at 100 /
+        Lifecycle / Lead Time), a horizontal-bar Price Breaks graph (bars scale price
+        against the qty-1 max), then the remaining distributor fields (Category / RoHS /
+        suggested replacement / product-page link) as a quiet list."""
         box = QWidget(); v = QVBoxLayout(box)
         v.setContentsMargins(0, 0, 0, 0); v.setSpacing(14)
 
-        if as_of:                                   # freshness note (mockup .srcnote)
-            v.addWidget(W.body(f"Last priced {as_of}. Look up again to refresh.", dim=True))
+        if status:                                  # freshness headline (mockup .srcnote)
+            v.addWidget(W.body(status, dim=True))
 
         life = (src.get("lifecycle") or "").strip()
         obsolete = bool(src.get("obsolete")) or any(

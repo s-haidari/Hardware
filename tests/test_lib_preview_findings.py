@@ -282,7 +282,7 @@ def test_identity_and_sourcing_key_width_is_128(tmp_path, monkeypatch):
     from ui import widgets as W
     widths = []
     real_dl = W.dl
-    monkeypatch.setattr(W, "dl", lambda pairs, key_width=136: widths.append(key_width) or real_dl(pairs, key_width))
+    monkeypatch.setattr(W, "dl", lambda pairs, key_width=136, row_gap=12: widths.append(key_width) or real_dl(pairs, key_width, row_gap))
     pd = PartDetail(_ctx(tmp_path))
     pd._build_identity({"mpn": "P", "name": "P", "symbols": ["S"], "description": "d"})
     body = pd._sourcing_body({"stock": 1, "unit_price": "$1.00"})

@@ -111,6 +111,16 @@ def _make_fixture() -> dict:
         '    (property "Value" "100nF" (at 120 105 0))\n'
         '    (property "Footprint" "" (at 120 100 0))\n  )\n'
         ')\n', encoding="utf-8", newline="\n")
+    # a project that INSTANTIATES a shared-library symbol (R1) via a lib_id, so the
+    # rename heads-up (projects_referencing_symbol) has a real reference to surface.
+    delta = root / "Delta"
+    delta.mkdir()
+    (delta / "Delta.kicad_pro").write_text(proj_json, encoding="utf-8")
+    (delta / "Delta.kicad_sch").write_text(
+        '(kicad_sch (version 20230121) (generator eeschema)\n'
+        '  (symbol (lib_id "MySymbols:R1") (at 100 100 0) (unit 1)\n'
+        '    (property "Reference" "R1" (at 100 95 0)))\n)\n',
+        encoding="utf-8", newline="\n")
     return {"Libs": str(libs), "SymbolLib": str(libs / "MySymbols.kicad_sym"),
             "FootprintLib": str(fp), "ModelLib": str(md), "RepoRoot": str(root)}
 
@@ -530,6 +540,120 @@ def audit_library_workbench():
                 _fail("Library Parts: sourcing showed no price-break bars for a multi-rung ladder")
     except Exception as e:  # noqa: BLE001
         _fail("Library Parts: sourcing stat cards / price-break graph", e)
+
+    # M7b: the completion tooltip is self-documenting — hovering the header warn glyph
+    # (and the still-needs pills) shows the per-dimension ✓/✗ passport, and its text
+    # must match the backend 'missing' set exactly (no drift between the two surfaces).
+    try:
+        an_incomplete = next((r for r in LM.scan_library_grouped(ctx.cfg)
+                              if not LM.part_completion(r)["is_complete"]
+                              and not LM.part_completion(r)["dangling"]), None)
+        if an_incomplete is not None:
+            d.show(an_incomplete); _pump()
+            comp = LM.part_completion(an_incomplete)
+            tip = d._title_warn.toolTip()
+            for m in comp["missing"]:                 # every missing dim on a ✗ line
+                line = next((l for l in tip.splitlines() if l.endswith(m)), "")
+                if not line.startswith(LM.COMPLETION_CROSS):
+                    _fail(f"Library Parts: completion tooltip missing ✗ for '{m}'")
+            if f"{comp['score']} of {comp['total']}" not in tip:
+                _fail("Library Parts: completion tooltip lacks the N-of-8 summary")
+    except Exception as e:  # noqa: BLE001
+        _fail("Library Parts: completion passport tooltip", e)
+
+    # M7c: the three honest sourcing branches. Force each and assert the right panel:
+    #   (a) no provider  -> "No Sourcing Provider" + an Open Settings CTA
+    #   (b) uncached      -> "Not Looked Up Yet" (provider present, nothing cached)
+    #   (c) cached/stale  -> a Mouser refresh that is DISABLED under the 4h shared-cap
+    try:
+        from PyQt5.QtWidgets import QPushButton as _QPB
+        editable = next((r for r in LM.scan_library_grouped(ctx.cfg) if r.get("symbols")), None)
+        if editable is not None:
+            part = dict(editable); part["mpn"] = "SRC-BRANCH-1"
+            # (a) no provider: temporarily blank the lookup chain
+            real_lookup = d._lookup
+            d._lookup = None
+            d.show(part); _pump()
+            labels_a = {lab.text() for lab in d.findChildren(QLabel)}
+            if "No Sourcing Provider" not in labels_a:
+                _fail("Library Parts: no-provider sourcing did not show the No Sourcing Provider state")
+            if not any(b.text() == "Open Settings" for b in d.findChildren(_QPB)):
+                _fail("Library Parts: no-provider sourcing lacked the Open Settings CTA")
+            # (b) provider present, nothing cached
+            d._lookup = real_lookup
+            d.show(part); _pump()
+            labels_b = {lab.text() for lab in d.findChildren(QLabel)}
+            if "Not Looked Up Yet" not in labels_b:
+                _fail("Library Parts: uncached sourcing did not show Not Looked Up Yet")
+            # (c) a fresh (<4h) Mouser snapshot -> Refresh gated by the shared-cap policy
+            LM.save_sourcing_snapshot(ctx.cfg, "SRC-BRANCH-1",
+                                      {"unit_price": 1.0, "stock": 5, "source": "Mouser"})
+            d.show(part); _pump()
+            menus = [b for b in d.findChildren(_QPB) if getattr(b, "_menu", None)]
+            refresh_acts = [a for b in menus for a in b._menu.actions()
+                            if a.text() == "Refresh This Part's Data"]
+            if not refresh_acts:
+                _fail("Library Parts: cached sourcing header missing the Mouser refresh action")
+            elif any(a.isEnabled() for a in refresh_acts):
+                _fail("Library Parts: Mouser Refresh enabled on a <4h snapshot (shared-cap gate)")
+    except Exception as e:  # noqa: BLE001
+        _fail("Library Parts: three sourcing branches / refresh policy", e)
+
+    # M7d: the datasheet Find button (view mode, part with an MPN + provider) fetches a
+    # datasheet link and writes it through the field seam. Drive with a stubbed lookup.
+    try:
+        editable = next((r for r in LM.scan_library_grouped(ctx.cfg)
+                         if r.get("symbols")), None)
+        if editable is not None:
+            part = dict(editable); part["mpn"] = "DS-FIND-1"; part["datasheet"] = ""
+            real_lookup = d._lookup
+            d._lookup = lambda n: {"mpn": "DS-FIND-1", "datasheet": "http://ds/find.pdf",
+                                   "source": "Mouser"}
+            captured = {"val": None}
+            real_commit = d._commit_field
+            d._commit_field = lambda label, prop, rk, v: captured.__setitem__("val", v)
+            try:
+                d.show(part); _pump()
+                d._find_datasheet(part); _pump()
+                if captured["val"] != "http://ds/find.pdf":
+                    _fail("Library Parts: datasheet Find did not write the fetched URL to the field")
+                # Race guard (adversarial-review fix): if the user navigates to a different
+                # part while the async lookup is in flight, the fetched URL must NOT be
+                # written onto the now-current unrelated part.
+                captured["val"] = None
+                other = dict(part); other["mpn"] = "DS-OTHER"
+                d._lookup = lambda n: (d.__setattr__("_current", other),
+                                       {"mpn": "DS-FIND-1", "datasheet": "http://ds/stale.pdf"})[1]
+                d._find_datasheet(part); _pump()
+                if captured["val"] is not None:
+                    _fail("Library Parts: datasheet Find wrote to a part the user navigated away from")
+            finally:
+                d._commit_field = real_commit
+                d._lookup = real_lookup
+    except Exception as e:  # noqa: BLE001
+        _fail("Library Parts: datasheet Find", e)
+
+    # M7e: the rename heads-up surfaces the projects that reference the symbol to the
+    # confirm seam (Delta references R1 via a lib_id). Returning False aborts the rename,
+    # so the library file is untouched while the project-lookup + confirm path is driven.
+    try:
+        rrow = next((r for r in LM.scan_library_grouped(ctx.cfg)
+                     if (r.get("symbols") or [None])[0] == "R1"), None)
+        if rrow is not None:
+            d.show(rrow); _pump()
+            seen = {"projs": None}
+            d._rename_symbol(new_name="R1_HEADSUP",
+                             confirm=lambda projs: (seen.__setitem__("projs", list(projs)), False)[1])
+            _pump()
+            if not seen["projs"] or "Delta" not in seen["projs"]:
+                _fail(f"Library Parts: rename heads-up did not surface referencing projects "
+                      f"(saw {seen['projs']})")
+            names_now = [LM.extract_symbol_name(b) for b in
+                         LM.extract_symbol_blocks(Path(ctx.cfg["SymbolLib"]).read_text(encoding="utf-8"))]
+            if "R1_HEADSUP" in names_now:
+                _fail("Library Parts: rename proceeded despite the confirm seam returning False")
+    except Exception as e:  # noqa: BLE001
+        _fail("Library Parts: rename heads-up (projects referencing symbol)", e)
 
     # M8: the Library Tools modal (5 curated real ops) and the Dedup review dialog
     # (per-group keep/delete cards + a live counter). Construct headless (no exec) and

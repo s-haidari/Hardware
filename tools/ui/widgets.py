@@ -868,13 +868,16 @@ class CollapsibleSection(QWidget):
 
 
 # ── definition list ──────────────────────────────────────────────────────────
-def dl(pairs: Sequence[Tuple[str, QWidget]], key_width: int = 136) -> QWidget:
-    """Two-column key/value list. Value is any widget (label, token, tag)."""
+def dl(pairs: Sequence[Tuple[str, QWidget]], key_width: int = 136,
+       row_gap: int = 12) -> QWidget:
+    """Two-column key/value list. Value is any widget (label, token, tag). `row_gap`
+    is the vertical space between rows (default 12; the identity canvas passes the
+    design-contract detail-row gap of 10)."""
     w = QWidget()
     grid = QGridLayout(w)
     grid.setContentsMargins(0, 0, 0, 0)
     grid.setHorizontalSpacing(16)
-    grid.setVerticalSpacing(12)
+    grid.setVerticalSpacing(row_gap)
     grid.setColumnMinimumWidth(0, key_width)
     for r, (k, v) in enumerate(pairs):
         key = QLabel(k); key.setFont(T.ui_font(10))

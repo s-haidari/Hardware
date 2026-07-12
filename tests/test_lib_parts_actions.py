@@ -254,3 +254,32 @@ def test_orphan_offers_reuse_symbol(tmp_path):
     detail.show(_rows(cfg)["SOT"])               # footprint-only orphan
     labels = {b.text() for b in detail.findChildren(QPushButton)}
     assert "Reuse Symbol" in labels
+
+
+def test_find_datasheet_ignores_part_switched_during_async_lookup(tmp_path):
+    """Regression (adversarial-review wf_c95b5bf3, major): the datasheet Find write
+    branch must NOT commit the fetched URL onto whatever part is selected NOW if the
+    user navigated away while the async lookup was in flight. _commit_field writes to
+    self._current, so both done-branches gate on 'still this part'. Here the lookup
+    stub flips _current to an unrelated part (the race) and the write must be skipped."""
+    ctx = _fake_ctx({"Libs": str(tmp_path)})
+    detail = P.PartDetail(ctx)
+    part_a = {"name": "A", "symbols": ["A"], "mpn": "MPN-A"}
+    part_b = {"name": "B", "symbols": ["B"], "mpn": "MPN-B"}
+    detail._current = part_a
+    commits = []
+    detail._commit_field = lambda *a: commits.append(a)
+
+    def stub(mpn):                               # user selects B while A's lookup is in flight
+        detail._current = part_b
+        return {"mpn": mpn, "datasheet": "http://a/ds.pdf"}
+    detail._lookup = stub
+
+    detail._find_datasheet(part_a)
+    assert commits == []                         # nothing written to the now-current unrelated part
+
+    # And the positive path: still on A when the lookup returns -> the write DOES happen.
+    detail._current = part_a
+    detail._lookup = lambda mpn: {"mpn": mpn, "datasheet": "http://a/ds.pdf"}
+    detail._find_datasheet(part_a)
+    assert commits == [("Datasheet", "Datasheet", "datasheet", "http://a/ds.pdf")]

@@ -187,6 +187,18 @@ class NetdeckShell(QMainWindow):
         # persisted "AutoPull" preference so it runs regardless of the open tab.
         self._autopull = self._build_autopull(cfg)
         self.ctx.bus.on("autopull.set_enabled", self._set_autopull)
+        # Cross-feature navigation: a feature can ask the shell (the one owner of tab
+        # selection) to open another workspace by id — e.g. the Library sourcing
+        # empty-state's "Open Settings" CTA emits nav.open("settings").
+        self.ctx.bus.on("nav.open", self._open_feature)
+
+    def _open_feature(self, feature_id: str):
+        """Select the workspace whose feature id matches — the bus target for a
+        cross-feature 'go here' CTA. No-op on an unknown id (never raises)."""
+        for i, spec in enumerate(getattr(self, "_page_specs", [])):
+            if spec[0].id == feature_id:
+                self._select(i)
+                return
 
     # -- nav --
     def _build_nav(self) -> QWidget:

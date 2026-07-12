@@ -35,7 +35,7 @@ def test_snapshot_is_shown_when_no_live_lookup(tmp_path):
     pd = PartDetail(_ctx(tmp_path))
     pd.show({"mpn": "STM32F407VGT6", "name": "STM32F407VGT6", "symbols": []})
     texts = " ".join(_labels(pd))
-    assert "Last priced" in texts                    # the as-of line rendered
+    assert "Cached" in texts                          # the freshness headline rendered
     assert "$8.12" in texts                          # string price coerced + shown, no crash
     assert "421" in texts                            # stock from the snapshot
     sip.delete(pd)
@@ -45,5 +45,5 @@ def test_no_snapshot_shows_not_looked_up(tmp_path):
     pd = PartDetail(_ctx(tmp_path))
     pd.show({"mpn": "NOPART", "name": "NOPART", "symbols": []})
     texts = " ".join(_labels(pd))
-    assert "Last priced" not in texts
+    assert "Cached" not in texts
     sip.delete(pd)

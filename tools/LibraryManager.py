@@ -1988,8 +1988,14 @@ def save_group_overrides(cfg: Dict[str, str], overrides: dict) -> None:
 
 
 # ── sourcing snapshots (persist volatile price/stock/lifecycle across relaunch) ─
+# Persisted per-part sourcing snapshot fields. Beyond the volatile price/stock trio we
+# now also keep `source` (so the per-provider refresh policy survives relaunch), the
+# product `url` + `datasheet` (so the Mouser P/N link and datasheet Find work off a
+# cached snapshot), `category`/`rohs`, and the `price_breaks` ladder (so the restored
+# view shows the whole volume curve, not just a single unit price).
 _SNAPSHOT_FIELDS = ("unit_price", "stock", "lifecycle", "lead_time",
-                    "suggested_replacement", "mouser_pn")
+                    "suggested_replacement", "mouser_pn", "source", "url",
+                    "datasheet", "category", "rohs", "price_breaks")
 
 
 def _sourcing_snapshots_path(cfg: Dict[str, str]) -> Path:
@@ -2035,19 +2041,9 @@ def sourcing_snapshot_for(cfg: Dict[str, str], mpn: str) -> Optional[dict]:
 def snapshot_age_label(as_of_iso: str, now=None) -> str:
     """A human 'N days ago' for a snapshot's as_of ISO timestamp; '' on bad input.
     `now` is injectable so the label is deterministic under test."""
-    if not as_of_iso:
+    secs = snapshot_age_seconds(as_of_iso, now=now)
+    if secs is None:
         return ""
-    import datetime as _dt
-    try:
-        t = _dt.datetime.fromisoformat(as_of_iso)
-    except (TypeError, ValueError):
-        return ""
-    now = now or _dt.datetime.now(_dt.timezone.utc)
-    if t.tzinfo is None and now.tzinfo is not None:      # tolerate naive/aware mismatch
-        t = t.replace(tzinfo=now.tzinfo)
-    elif t.tzinfo is not None and now.tzinfo is None:
-        now = now.replace(tzinfo=t.tzinfo)
-    secs = (now - t).total_seconds()
     if secs < 60:
         return "just now"
     for unit, n in (("day", 86400), ("hour", 3600), ("minute", 60)):
@@ -2055,6 +2051,92 @@ def snapshot_age_label(as_of_iso: str, now=None) -> str:
             v = int(secs // n)
             return f"{v} {unit}{'s' if v != 1 else ''} ago"
     return "just now"
+
+
+def snapshot_age_seconds(as_of_iso: str, now=None):
+    """Seconds elapsed since a snapshot's as_of ISO timestamp, or None on bad/empty
+    input. Tolerates a naive/aware tzinfo mismatch. The numeric backbone shared by the
+    'N days ago' label and the per-provider refresh policy."""
+    if not as_of_iso:
+        return None
+    import datetime as _dt
+    try:
+        t = _dt.datetime.fromisoformat(as_of_iso)
+    except (TypeError, ValueError):
+        return None
+    now = now or _dt.datetime.now(_dt.timezone.utc)
+    if t.tzinfo is None and now.tzinfo is not None:      # tolerate naive/aware mismatch
+        t = t.replace(tzinfo=now.tzinfo)
+    elif t.tzinfo is not None and now.tzinfo is None:
+        now = now.replace(tzinfo=t.tzinfo)
+    return (now - t).total_seconds()
+
+
+# The built-in Mouser key is a SHARED 1000-lookups/day cap, so re-pricing a part whose
+# snapshot is younger than this is wasteful — the refresh policy disables it. LCSC
+# (key-free jlcsearch) has no such cap and is always refreshable.
+MOUSER_REFRESH_MIN_AGE_S = 4 * 3600
+
+
+def snapshot_refresh_policy(source: str, age_seconds) -> Dict[str, object]:
+    """Whether a per-part sourcing Refresh should be OFFERED, given the provider that
+    sourced the data and the cached snapshot's age (seconds, or None when the data was
+    just fetched live this session / has no persisted age).
+
+    Returns {can_refresh, reason}. Mouser is gated: a snapshot younger than
+    MOUSER_REFRESH_MIN_AGE_S can't be refreshed (the shared daily cap), and `reason`
+    says when it frees up. LCSC and any other/unknown provider are always refreshable.
+    Pure — `now` never read here; the caller passes an already-computed age."""
+    src = (source or "").strip().lower()
+    if src == "mouser" and age_seconds is not None and age_seconds < MOUSER_REFRESH_MIN_AGE_S:
+        remaining = int(MOUSER_REFRESH_MIN_AGE_S - age_seconds)
+        hrs = MOUSER_REFRESH_MIN_AGE_S // 3600
+        rh, rm = remaining // 3600, (remaining % 3600) // 60
+        when = (f"{rh}h {rm}m" if rh else f"{rm}m") if remaining > 0 else "shortly"
+        return {"can_refresh": False,
+                "reason": (f"Priced under {hrs}h ago. Mouser's built-in key is shared "
+                           f"(1000 lookups/day), so a re-fetch this soon is skipped. "
+                           f"Refresh frees up in ~{when}. LCSC always refreshes.")}
+    prov = (source or "").strip() or "the distributor"
+    return {"can_refresh": True,
+            "reason": f"Re-fetch live stock, pricing and lifecycle from {prov}."}
+
+
+def projects_referencing_symbol(cfg: Dict[str, str], symbol_name: str) -> List[str]:
+    """Names of discovered KiCad projects whose schematics instantiate the library
+    symbol `symbol_name` (matched on the symbol-name part of each schematic lib_id).
+
+    Used by the rename heads-up: renaming a shared-library symbol never breaks these
+    projects (a schematic embeds its own cached copy of the symbol), so this is
+    informational reassurance, not a manual fixup list. Read-only; discovery mirrors
+    the Projects workbench (RepoRoot and its parent)."""
+    name = (symbol_name or "").strip()
+    if not name:
+        return []
+    import kicad_tools
+    rr = cfg.get("RepoRoot")
+    roots = [Path(rr), Path(rr).parent] if rr else []
+    seen: set = set()
+    projects: List[Path] = []
+    for r in roots:
+        try:
+            for p in kicad_tools.discover_kicad_projects(r):
+                if str(p) not in seen:
+                    seen.add(str(p))
+                    projects.append(Path(p))
+        except Exception:                        # noqa: BLE001
+            pass
+    pat = re.compile(r'\(\s*lib_id\s+"[^"]*:' + re.escape(name) + r'"')
+    hits: List[str] = []
+    for proj in projects:
+        try:
+            # Non-recursive: a nested folder with its own .kicad_pro is a DISTINCT
+            # project (NETDECK cards), counted under its own name — never double-billed.
+            if any(pat.search(read_text(sch)) for sch in proj.glob("*.kicad_sch")):
+                hits.append(proj.name)
+        except Exception:                        # noqa: BLE001
+            pass
+    return sorted(set(hits))
 
 
 def _cfg_path(cfg: Dict[str, str], key: str) -> Path:
@@ -2358,6 +2440,31 @@ def completion_badge(row: Dict) -> str:
     when the part has a dangling reference (it can never be Complete), else 'N/8'."""
     c = part_completion(row)
     return "Fix" if c["dangling"] else f"{c['score']}/{c['total']}"
+
+
+# The completion passport uses a plain check/cross pair (already the app's vocabulary —
+# see kit.workbench_text's ✓/✗ report) so a hover tooltip reads the same everywhere.
+COMPLETION_CHECK = "✓"      # ✓
+COMPLETION_CROSS = "✗"      # ✗
+
+
+def completion_tooltip(comp: Dict) -> str:
+    """The per-dimension breakdown shown on hovering a part's completion badge/glyph:
+    one line per COMPLETION_ITEMS dimension, '✓ Symbol' when present and '✗ Datasheet'
+    when missing, headed by an N/8 (or 'broken link') summary. Built straight off a
+    part_completion() result so the lines and the 'missing' set can never disagree."""
+    items = comp.get("items", [])
+    if comp.get("dangling"):
+        head = "Has a broken link, needs a fix"
+    elif comp.get("is_complete"):
+        head = f"Complete, all {comp.get('total', len(items))} present"
+    else:
+        head = f"Incomplete, {comp.get('score', 0)} of {comp.get('total', len(items))}"
+    lines = [head, ""]
+    for it in items:
+        mark = COMPLETION_CHECK if it.get("present") else COMPLETION_CROSS
+        lines.append(f"{mark} {it.get('label', '')}")
+    return "\n".join(lines)
 
 
 # LIB-05 autofill: the identity fields a Mouser lookup can populate.
