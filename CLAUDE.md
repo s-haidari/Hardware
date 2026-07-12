@@ -40,6 +40,7 @@ Read the ledger's Current State for live status.
 - **Scoped `git add <path>` only** — never `-A` / `commit -a`. **Never stage
   `libs/My3DModels/*.STEP`** (CRLF churn, not real changes).
 - Plain commit messages — **NO `Co-Authored-By` / `Claude-Session` trailers**.
+- **Commit messages: one sentence max, no body/description** (owner directive, 2026-07-12).
 - Push without asking once committed + ready; never force-push.
 
 ## Verify loops
