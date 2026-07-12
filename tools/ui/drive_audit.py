@@ -1789,6 +1789,30 @@ def audit_subpage_nav():
         if shell._subpages or shell._content_stack.currentWidget() is not shell._stack:
             _fail("Subpage nav: Esc did not close the top subpage back to the workspaces")
 
+        # 5. the ▶ primary-flow async-preview seam opens ITS preview as a subpage on the real
+        #    shell (not a modal window): run a synthetic flow, assert the host shows, then accept
+        #    the preview and assert the continuation drove the apply. This is how the Projects
+        #    ▶ Prepare Components FillPreview now opens (kit.PrimaryFlow.preview_async).
+        applied = {}
+        holder = {}
+
+        def _prev_async(h, label, intro, ops, cont):
+            d = QDialog()
+            holder["dlg"] = d
+            kit.open_subpage(shell.ctx, d, "Preview",
+                             on_result=lambda r: cont(["k1"] if r == QDialog.Accepted else None))
+        flow = kit.PrimaryFlow(label="▶ Synthetic",
+                               audit=lambda s: [{"key": "k1", "label": "One", "safe": True}],
+                               intro=lambda s, o: "i",
+                               apply=lambda s, keys: applied.update(keys=list(keys)),
+                               preview_async=_prev_async)
+        kit.run_primary_flow(shell.ctx, shell, flow, snapshot=lambda: {}); _pump()
+        if shell._content_stack.currentWidget() is not shell._subpage_host:
+            _fail("Subpage nav: a ▶ async-preview flow did not open its preview as a subpage")
+        holder["dlg"].accept(); _pump()
+        if applied.get("keys") != ["k1"]:
+            _fail("Subpage nav: accepting the async-preview subpage did not drive the apply")
+
         shell.close(); _pump()
     except Exception as e:  # noqa: BLE001
         _fail("Subpage nav framework", e); return

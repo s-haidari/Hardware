@@ -360,6 +360,114 @@ def open_subpage(ctx, widget, title: str = "", *, on_result: Optional[Callable] 
     return True
 
 
+class _ModalOverlay(QWidget):
+    """A semi-modal in-app overlay: a scrim dimming the host window with a centered card, run
+    via a LOCAL event loop so the caller stays SYNCHRONOUS — exactly like QMessageBox.exec_(),
+    but a CHILD widget of the host window, never a new OS window. Callers reach it through
+    ``confirm_overlay`` / ``info_overlay`` (and ``util.confirm``); headless callers short-circuit
+    before building one, so an offscreen drive never enters the loop."""
+
+    def __init__(self, host_window, card: QWidget):
+        super().__init__(host_window)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self._result = None
+        self._loop = None
+        card.setParent(self)
+        self._card = card
+        self.setGeometry(host_window.rect())
+        host_window.installEventFilter(self)          # keep the scrim covering on resize
+        self._center()
+
+    def paintEvent(self, e):
+        from PyQt5.QtGui import QPainter, QColor
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor(0, 0, 0, 140))  # dim scrim over the whole window
+
+    def _center(self):
+        self._card.adjustSize()
+        self._card.move(max(0, (self.width() - self._card.width()) // 2),
+                        max(0, (self.height() - self._card.height()) // 2))
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        self._center(); self.setFocus()               # own focus so Esc reaches keyPressEvent
+
+    def resizeEvent(self, e):
+        self._center()
+
+    def eventFilter(self, obj, ev):
+        from PyQt5.QtCore import QEvent
+        if ev.type() == QEvent.Resize and self.parent() is not None:
+            self.setGeometry(self.parent().rect()); self._center()
+        return False
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key_Escape:
+            self.finish(False); e.accept(); return
+        super().keyPressEvent(e)
+
+    def finish(self, value: bool):
+        self._result = bool(value)
+        if self._loop is not None:
+            self._loop.quit()
+
+    def run(self) -> bool:
+        from PyQt5.QtCore import QEventLoop
+        self.show(); self.raise_(); self.setFocus()
+        self._loop = QEventLoop()
+        self._loop.exec_()
+        parent = self.parent()
+        if parent is not None:
+            parent.removeEventFilter(self)
+        self.hide(); self.deleteLater()
+        return bool(self._result)
+
+
+def _overlay_card(title: str, text: str) -> "W.Card":
+    """The shared overlay card: a Title-Case eyebrow + a wrapped body message. The caller adds
+    the button row and owns the overlay wiring."""
+    card = W.Card()
+    card.setMaximumWidth(500)
+    card.body.addWidget(W.eyebrow(title))
+    card.body.addWidget(W.body(text, wrap=True))
+    return card
+
+
+def confirm_overlay(host_window, title: str, text: str, *, confirm_label: str = "Confirm",
+                    cancel_label: str = "Cancel", default_no: bool = True) -> bool:
+    """A yes/no confirmation shown as an in-app modal overlay (scrim + card) over
+    ``host_window`` — SYNCHRONOUS (returns the choice) but never a new OS window. Confirm →
+    True, Cancel / Esc → False. ``util.confirm`` routes here when a window is present."""
+    card = _overlay_card(title, text)
+    row = QHBoxLayout(); row.setContentsMargins(0, 0, 0, 0); row.setSpacing(T.sp("sm"))
+    row.addStretch(1)
+    cancel = W.btn(cancel_label, "ghost", cancel_label)
+    ok = W.btn(confirm_label, "primary", confirm_label)
+    row.addWidget(cancel); row.addWidget(ok)
+    holder = QWidget(); holder.setLayout(row)
+    card.body.addWidget(holder)
+    overlay = _ModalOverlay(host_window, card)
+    cancel.clicked.connect(lambda: overlay.finish(False))
+    ok.clicked.connect(lambda: overlay.finish(True))
+    return overlay.run()
+
+
+def info_overlay(host_window, title: str, text: str, *, ok_label: str = "OK") -> None:
+    """An informational message shown as an in-app modal overlay (scrim + card) over
+    ``host_window`` — the in-app replacement for a QMessageBox.information / .warning popup.
+    Dismiss with OK / Esc."""
+    card = _overlay_card(title, text)
+    row = QHBoxLayout(); row.setContentsMargins(0, 0, 0, 0); row.setSpacing(T.sp("sm"))
+    row.addStretch(1)
+    ok = W.btn(ok_label, "primary", ok_label)
+    row.addWidget(ok)
+    holder = QWidget(); holder.setLayout(row)
+    card.body.addWidget(holder)
+    overlay = _ModalOverlay(host_window, card)
+    ok.clicked.connect(lambda: overlay.finish(True))
+    overlay.run()
+
+
 class BusyDict(dict):
     """The workbench's shared busy gate, as a dict whose ``on`` flips notify a callback.
 
@@ -400,6 +508,13 @@ class PrimaryFlow:
     tip: str = ""
     empty: str = "Nothing to do."
     preview: Optional[Callable] = None  # (host, label, intro_text, ops) -> keys|None; GUI thread
+    # A NON-blocking preview that resolves via a continuation instead of a return value — for a
+    # preview shown as an in-app subpage (no modal loop, so no new OS window): the callable is
+    # (host, label, intro_text, ops, cont) and MUST call cont(keys|None) exactly once when the
+    # subpage is accepted (keys) or cancelled (None). Takes precedence over ``preview`` when set;
+    # MUST call cont SYNCHRONOUSLY under ``_headless()`` (with the safe/pre-checked keys) so an
+    # offscreen drive never stalls waiting for a click.
+    preview_async: Optional[Callable] = None
 
 
 def run_primary_flow(ctx, host, flow: "PrimaryFlow", snapshot: Callable[[], dict],
@@ -427,23 +542,32 @@ def run_primary_flow(ctx, host, flow: "PrimaryFlow", snapshot: Callable[[], dict
         if not ops:
             _report(host, flow.label, {"summary": flow.empty}, log=log)
             _finish(); return
-        # A flow may supply a richer preview (kept headless-safe by the feature); default is
-        # the shared flat checkbox preview. Both return the selected keys, or None on cancel.
-        preview = flow.preview or _checkbox_preview
-        keys = preview(host, flow.label, flow.intro(snap, ops), ops)
-        if keys is None:                       # cancelled
-            if callable(log):
-                log(f"{flow.label} cancelled")
-            _finish(); return
-        if not keys:                           # nothing selected (all risky, none checked)
-            _report(host, flow.label, {"summary": "Nothing selected."}, log=log)
-            _finish(); return
 
-        def on_done(report, ok2):
-            _report(host, flow.label,
-                    report if report is not None else {"summary": "Done."}, log=log)
-            _finish()
-        run_populate(ctx, lambda: flow.apply(snap, keys), on_done)
+        def _continue(keys):
+            # The tail shared by the sync and async preview paths: None → cancel, [] →
+            # nothing selected, else apply OFF-thread → report → after (busy-gated by _finish).
+            if keys is None:                       # cancelled
+                if callable(log):
+                    log(f"{flow.label} cancelled")
+                _finish(); return
+            if not keys:                           # nothing selected (all risky, none checked)
+                _report(host, flow.label, {"summary": "Nothing selected."}, log=log)
+                _finish(); return
+
+            def on_done(report, ok2):
+                _report(host, flow.label,
+                        report if report is not None else {"summary": "Done."}, log=log)
+                _finish()
+            run_populate(ctx, lambda: flow.apply(snap, keys), on_done)
+
+        # A flow may supply a richer preview (kept headless-safe by the feature). An
+        # async preview shows an in-app subpage and resolves via the continuation (no modal
+        # loop); the default flat checkbox preview returns the selected keys synchronously.
+        if flow.preview_async is not None:
+            flow.preview_async(host, flow.label, flow.intro(snap, ops), ops, _continue)
+        else:
+            preview = flow.preview or _checkbox_preview
+            _continue(preview(host, flow.label, flow.intro(snap, ops), ops))
 
     run_populate(ctx, lambda: flow.audit(snap), on_audit)
 

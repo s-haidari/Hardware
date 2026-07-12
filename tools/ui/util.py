@@ -10,16 +10,22 @@ def _headless() -> bool:
 
 
 def confirm(parent, title: str, text: str, default_no: bool = True) -> bool:
-    """A yes/no confirmation dialog; returns True to proceed. Under headless (offscreen
-    tests / render_gate) there is no user to click, and a modal QMessageBox would block
-    the run forever — so it auto-proceeds. A test that wants to exercise the guarded
-    action therefore sees it happen; render_gate never triggers one."""
+    """A yes/no confirmation; returns True to proceed. Shown as an in-app modal overlay
+    (a scrim + card over the app window) rather than a separate OS window — the app's
+    "no new windows" standard. Under headless (offscreen tests / render_gate) there is no
+    user to click and a modal loop would block forever, so it auto-proceeds (a guarded action
+    therefore still happens in a test; render_gate never triggers one). With no window context
+    (rare) it falls back to a native QMessageBox."""
     if _headless():
         return True
-    from PyQt5.QtWidgets import QMessageBox
-    default = QMessageBox.No if default_no else QMessageBox.Yes
-    return QMessageBox.question(parent, title, text,
-                                QMessageBox.Yes | QMessageBox.No, default) == QMessageBox.Yes
+    win = parent.window() if parent is not None else None
+    if win is None:
+        from PyQt5.QtWidgets import QMessageBox
+        default = QMessageBox.No if default_no else QMessageBox.Yes
+        return QMessageBox.question(parent, title, text,
+                                    QMessageBox.Yes | QMessageBox.No, default) == QMessageBox.Yes
+    from . import kit as K
+    return K.confirm_overlay(win, title, text, default_no=default_no)
 
 
 class LogSink:

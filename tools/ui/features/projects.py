@@ -1581,26 +1581,32 @@ def _health_panel(ctx, state) -> QWidget:
         return (f"{plural(n, 'proposed change')} for {snap['name']}. "
                 "Exact blank fills are pre-checked; overwrites and fuzzy matches need your check.")
 
-    def _prepare_preview(host, label, intro, ops):
-        """The recipe's ``preview`` hook: the rich ``FillPreviewDialog`` (confidence chips,
-        per-field old→new deltas, Only-Exact bulk). HEADLESS: no ``exec_`` — return the
-        safe/pre-checked keys so an offscreen drive runs the whole flow. GUI: parent to the
-        top-level window (never the rebuildable body), then map the checked pairs back to keys."""
+    def _prepare_preview_async(host, label, intro, ops, cont):
+        """The recipe's non-blocking ``preview_async`` hook: the rich ``FillPreviewDialog``
+        (confidence chips, per-field old→new deltas, library pickers, Only-Exact bulk) opens
+        as an in-app SUBPAGE, never a modal OS window. On accept it maps the checked pairs back
+        to keys and continues the flow; Back / cancel cancels. HEADLESS: no subpage — continue
+        immediately with the safe/pre-checked keys so an offscreen drive runs the whole flow
+        (byte-identical to the old sync hook, and the dialog is never built → _fill_dialog None)."""
         from ..util import _headless
+        from ..kit import open_subpage
         prep["links"] = {}                          # reset the per-run link/add directives
         if _headless():
-            return [op["key"] for op in ops if op.get("safe")]
+            cont([op["key"] for op in ops if op.get("safe")]); return
         dlg = FillPreviewDialog(prep.get("plan") or {"items": []}, prep.get("annotate_n", 0),
                                 cfg=ctx.cfg, parent=host.window(),
                                 components=prep.get("components"), sheet_of=prep.get("sheet_of"))
         host._fill_dialog = dlg
-        if dlg.exec_() != QDialog.Accepted or not dlg.applied:
-            return None
-        prep["links"] = dlg.library_links()         # {ref: link/add directive} for _prepare_apply
-        keys = [_op_key(r, p) for (r, p) in dlg.selected()]
-        if dlg.annotate_selected():
-            keys.append(_ANNOTATE_KEY)
-        return keys
+
+        def _done(result):
+            if result != QDialog.Accepted or not dlg.applied:
+                cont(None); return
+            prep["links"] = dlg.library_links()     # {ref: link/add directive} for _prepare_apply
+            keys = [_op_key(r, p) for (r, p) in dlg.selected()]
+            if dlg.annotate_selected():
+                keys.append(_ANNOTATE_KEY)
+            cont(keys)
+        open_subpage(ctx, dlg, label.replace("▶", "").strip(), on_result=_done)
 
     def _prepare_apply(snap, keys):
         """OFF-thread: write the selected subset (fills + optional annotate) with .bak
@@ -1792,7 +1798,7 @@ def _health_panel(ctx, state) -> QWidget:
 
     prepare_flow = kit.PrimaryFlow(
         label="▶ Prepare Components", audit=_prepare_audit, intro=_prepare_intro,
-        apply=_prepare_apply, preview=_prepare_preview,
+        apply=_prepare_apply, preview_async=_prepare_preview_async,
         tip="Prepare every component: annotate references + link footprints/models + fill "
             "each component's fields (part number / manufacturer / datasheet) from the "
             "Library and Mouser, previewed field-by-field, then re-audit",

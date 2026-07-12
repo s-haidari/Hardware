@@ -197,6 +197,23 @@ def _render_chrome(win, app, out_dir, theme, settle):
     win._pop_subpage()
     _settle(app, settle)
 
+    # 7. an in-app confirm overlay — the "no new windows" confirmation: a scrim dims the
+    #    window and a centered card asks, instead of a separate OS message box.
+    from ui import kit as _kit
+    card = _kit._overlay_card("Delete Part",
+                              "Delete this part? Its symbols are removed. The files go to the "
+                              "library trash and can be restored.")
+    from PyQt5.QtWidgets import QHBoxLayout
+    hb = QHBoxLayout(); hb.addStretch(1)
+    hb.addWidget(W.btn("Cancel", "ghost")); hb.addWidget(W.btn("Delete", "primary"))
+    holder = QWidget(); holder.setLayout(hb); card.body.addWidget(holder)
+    ov = _kit._ModalOverlay(win, card)
+    ov.show(); ov.raise_()
+    _settle(app, settle)
+    p = out_dir / f"chrome.confirm-overlay.{theme}.png"; win.grab().save(str(p)); out.append(p)
+    ov.hide(); ov.deleteLater()
+    _settle(app, settle)
+
     # restore default chrome state for the next theme / a clean finish
     win._auto_surface_errors = prev
     win._console_open = False
