@@ -263,7 +263,8 @@ def _parts_panel(ctx, _state) -> QWidget:
         rows, on_select=detail.show,
         group_by=(saved_group or "Category"),
         on_group_change=lambda mode: LM.write_setting(_GROUP_BY_SETTING, mode),
-        on_resolve_dup=_resolve_dup)
+        on_resolve_dup=_resolve_dup,
+        cfg=cfg, ctx=ctx)                    # cfg resolves each row's 3D model; ctx renders the row thumbnail off-thread
 
     # ── empty-library diagnostic (P0): a chosen folder that resolves no parts must SAY
     # so — which path was checked and how to fix it — never a silent empty list. This is

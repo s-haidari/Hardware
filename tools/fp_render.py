@@ -1098,6 +1098,115 @@ def render_step_image(step_path: Path, px: int = 420) -> Optional[QImage]:
 
 
 # ---------------------------------------------------------------------------
+# 3D model THUMBNAIL cache — a tiny static PNG per model, rendered ONCE and kept
+# on disk so it survives relaunch and is never re-rendered while a model is
+# unchanged. This is what the Library parts picker paints at the end of every
+# row: a real render of the part's 3D model would freeze the list if done
+# per-row/synchronously, so the picker renders each thumbnail off-thread and
+# reads the cached PNG back. The cache is keyed by the model path + its mtime +
+# size, so an edited model (new mtime) re-renders and an unchanged one is reused.
+#
+# Rendered with a TRANSPARENT background (not the preview BG square) so the
+# thumbnail blends into the list row's own surface in either theme instead of
+# reading as a pasted swatch. Headless STEP still returns None (native cascadio
+# is skipped offscreen); VRML/.wrl renders headlessly (pure-Python + numpy).
+# ---------------------------------------------------------------------------
+_THUMB_PX = 32                  # rendered thumbnail edge (device-independent px)
+_THUMB_CACHE_DIR_NAME = "nd_model_thumbs"
+
+
+def _thumb_cache_dir() -> Path:
+    """Per-user on-disk thumbnail cache directory (created on first use). Under the
+    system temp dir so it is writable everywhere and self-cleans across reboots,
+    yet survives an app relaunch within a session — the whole point of the cache."""
+    import tempfile
+    d = Path(tempfile.gettempdir()) / _THUMB_CACHE_DIR_NAME
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    return d
+
+
+def _thumb_cache_key(model_path: Path, px: int) -> Optional[str]:
+    """Stable cache filename stem for a model at a given size: a hash of the
+    absolute path + mtime + size + px. None when the file can't be stat'd (so the
+    caller skips caching rather than keying on partial data)."""
+    import hashlib
+    try:
+        st = Path(model_path).stat()
+    except OSError:
+        return None
+    raw = "%s|%s|%s|%s" % (str(Path(model_path).resolve()), st.st_mtime, st.st_size, px)
+    return hashlib.sha1(raw.encode("utf-8", "replace")).hexdigest()
+
+
+def _invert_mask_to_alpha(mask: QImage) -> QImage:
+    """Turn a 1-bpp mask (BG pixels set) into an 8-bit alpha where the BG region
+    is transparent and the mesh region is opaque. Kept tiny + dependency-free so
+    the thumbnail composite stays cheap."""
+    inv = QImage(mask)
+    inv.invertPixels()
+    return inv
+
+
+def model_thumbnail(model_path, px: int = _THUMB_PX, cache_dir: Optional[Path] = None) -> Optional[str]:
+    """Path to a small cached PNG thumbnail of the model's 3D shape, rendering it
+    ONCE and reusing the cached file forever after (until the model's mtime/size
+    changes). Returns the PNG path as a string, or None when the model is
+    missing / its format unsupported / its backend unavailable (headless STEP).
+
+    Keyed by path + mtime + size + px so an unchanged model is never re-rendered
+    and an edited one re-renders. The render itself reuses :func:`render_step_image`;
+    the only extra work here is a transparent-background recomposite + a PNG write.
+
+    This does REAL work (parses + rasterises the mesh) — call it OFF the GUI thread
+    (the Library picker does, via run_populate). It never raises for the ordinary
+    failure modes; it logs and returns None."""
+    if not model_path:
+        return None
+    p = Path(model_path)
+    if not p.exists():
+        return None
+    key = _thumb_cache_key(p, px)
+    if key is None:
+        return None
+    cdir = Path(cache_dir) if cache_dir is not None else _thumb_cache_dir()
+    out = cdir / ("%s.png" % key)
+    try:
+        if out.exists() and out.stat().st_size > 0:
+            return str(out)                   # reuse — the model is unchanged
+    except OSError:
+        pass
+    # Render the shaded shape larger (antialiasing headroom), then downscale into a
+    # transparent thumbnail so small edges stay crisp and the row surface shows through.
+    src = render_step_image(p, px=px * 4)
+    if src is None or src.isNull():
+        return None
+    try:
+        scaled = src.scaled(px, px, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        # render_step_image fills BG; mask the BG region back to transparent so only the
+        # shaded mesh survives onto the row (BG is a solid colour, the mesh isn't).
+        bg_mask = scaled.createMaskFromColor(BG.rgb(), Qt.MaskInColor)
+        scaled = scaled.convertToFormat(QImage.Format_ARGB32)
+        scaled.setAlphaChannel(_invert_mask_to_alpha(bg_mask))
+        thumb = QImage(px, px, QImage.Format_ARGB32)
+        thumb.fill(Qt.transparent)
+        painter = QPainter(thumb)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        painter.drawImage((px - scaled.width()) // 2, (px - scaled.height()) // 2, scaled)
+        painter.end()
+        cdir.mkdir(parents=True, exist_ok=True)
+        if not thumb.save(str(out), "PNG"):
+            return None
+        return str(out)
+    except Exception:
+        _log.warning("fp_render: could not write model thumbnail for %s", p, exc_info=True)
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Board-level render — export a WHOLE .kicad_pcb to an image via kicad-cli.
 #
 # The footprint/symbol/STEP/WRL paths above render a single part. There was no

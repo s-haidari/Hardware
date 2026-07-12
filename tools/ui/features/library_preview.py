@@ -20,7 +20,7 @@ import LibraryManager as LM
 import nd_commit_msg as CM
 import fp_render as R
 from PyQt5.QtCore import Qt, QTimer, QEvent, QPoint, QSize, QRect
-from PyQt5.QtGui import QPainter, QFontMetrics
+from PyQt5.QtGui import QPainter, QFontMetrics, QPixmap
 from PyQt5.QtWidgets import (QWidget, QFrame, QVBoxLayout, QHBoxLayout, QLabel,
                              QListWidget, QListWidgetItem, QLineEdit, QFileDialog,
                              QInputDialog, QDialog, QCheckBox, QGridLayout,
@@ -42,6 +42,12 @@ def _headless() -> bool:
     no real HWND, corrupting the heap and crashing later — so skip it headlessly. The
     real app runs a native platform and gets full drag-and-drop. Mirrors fp_render."""
     return os.environ.get("QT_QPA_PLATFORM", "").startswith("offscreen")
+
+
+# Parts-picker 3D-model thumbnail: the on-disk PNG is rendered at fp_render._THUMB_PX;
+# the row slot is a hair larger so the transparent thumbnail sits centred with breathing
+# room and every row (modeled or not) keeps the same width.
+_THUMB_SLOT = 30
 
 
 def _missing_label() -> QLabel:
@@ -2856,10 +2862,20 @@ class PartsList(QWidget):
     def __init__(self, rows, on_select: Callable[[dict], None], parent=None, *,
                  group_by: str = "Category",
                  on_group_change: Optional[Callable[[str], None]] = None,
-                 on_resolve_dup: Optional[Callable[[dict], None]] = None):
+                 on_resolve_dup: Optional[Callable[[dict], None]] = None,
+                 cfg: Optional[dict] = None, ctx=None):
         super().__init__(parent)
         self._rows = list(rows)
         self._on_select = on_select
+        # 3D-model thumbnail seam: cfg resolves a row's model file (ModelLib +
+        # row['model']); ctx runs the render OFF the GUI thread (run_populate) so a
+        # rescan/scroll never blocks on a synchronous 3D render. Both optional so the
+        # bare PartsList(rows, on_select) test constructor keeps working (it then shows
+        # the neutral placeholder for every row, never an error). See _queue_thumbnails.
+        self._cfg = cfg
+        self._ctx = ctx
+        self._thumb_state: dict = {}       # model-path str -> "loading" | pixmap | None(done-empty)
+        self._thumb_inflight: set = set()  # model paths currently rendering (dedupe)
         # Panel-wired seams: persist the last-used grouping, and open the one-confirm
         # keep/delete flow when a row's Duplicate badge is clicked. Both optional so the
         # bare PartsList(rows, on_select) constructor the tests use keeps working.
@@ -2930,6 +2946,16 @@ class PartsList(QWidget):
         sb = self._list.verticalScrollBar()
         sb.valueChanged.connect(self._sync_overlay)
         sb.rangeChanged.connect(lambda *_: self._sync_overlay())   # fires once the list has real geometry
+        # Scroll drives the VIEWPORT-lazy thumbnail loader: as new rows scroll into view
+        # their 3D thumbnails are rendered (off-thread, cached), debounced so a fast drag
+        # doesn't fire a render per pixel. rangeChanged also fires once the list first
+        # gets geometry, so the initially-visible rows get their thumbnails.
+        self._thumb_timer = QTimer(self)
+        self._thumb_timer.setSingleShot(True)
+        self._thumb_timer.setInterval(120)
+        self._thumb_timer.timeout.connect(self._queue_thumbnails)
+        sb.valueChanged.connect(lambda *_: self._thumb_timer.start())
+        sb.rangeChanged.connect(lambda *_: self._thumb_timer.start())
         self._list.viewport().installEventFilter(self)
 
         # Selection footer (mockup): 'N of M selected' while a multi-selection is active,
@@ -3094,6 +3120,20 @@ class PartsList(QWidget):
         score.setFont(T.ui_font(9, semibold=True) if comp["dangling"] else T.mono_font(9))
         lay.addWidget(score, 0, Qt.AlignVCenter)
 
+        # 3D-model thumbnail (right-most): a small fixed-size static render of the part's
+        # 3D model so a row is identifiable at a glance. Built for EVERY row (so the row
+        # width/layout is stable whether or not a model is present) and filled lazily +
+        # off-thread by _queue_thumbnails; a row with no model, or when the render is
+        # unavailable/headless, keeps the neutral empty slot (never an error). The slot is
+        # AFTER the score so name/dup-badge/dot/score keep their positions and the primary
+        # label still elides against the remaining width.
+        thumb = QLabel(); thumb.setObjectName("partRowThumb")
+        thumb.setFixedSize(_THUMB_SLOT, _THUMB_SLOT)
+        thumb.setAlignment(Qt.AlignCenter)
+        thumb.setToolTip("3D model")
+        lay.addWidget(thumb, 0, Qt.AlignVCenter)
+        w._thumb = thumb
+
         def restyle():
             prim.setStyleSheet(f"color:{T.t('txt1')};background:transparent;")
             sub.setStyleSheet(f"color:{T.t('txt3')};background:transparent;")
@@ -3234,6 +3274,116 @@ class PartsList(QWidget):
         finally:
             self._list.blockSignals(False)
         self._sync_overlay()
+        self._queue_thumbnails()
+
+    # ── 3D-model thumbnails (lazy + async + cached) ───────────────────────────────
+    # A real 3D render per row would freeze the list on every scan/scroll, so the
+    # thumbnail is: CACHED (fp_render.model_thumbnail writes a PNG once, keyed by the
+    # model's path+mtime+size — an unchanged model is never re-rendered, an edited one
+    # is), ASYNC (rendered off the GUI thread via run_populate; headless it runs
+    # synchronously but STEP returns None so nothing blocks), and LAZY (only the
+    # currently-VISIBLE rows are rendered — a 900-part library never renders 900 models
+    # up front). A row with no model, or when the render is unavailable/headless, keeps
+    # the neutral empty slot.
+    _THUMB_MAX_PER_PASS = 24            # bound the renders kicked off per refilter/scroll
+
+    def _row_model_path(self, row) -> Optional[str]:
+        """Absolute path (str) to the row's 3D model file, or None. Resolved through the
+        same model_path_for helper the detail 3D card uses (ModelLib + row['model'])."""
+        if not self._cfg:
+            return None
+        p = model_path_for(self._cfg, row)
+        return str(p) if p else None
+
+    def _viewport_rows(self) -> list:
+        """The rows whose items are within (or just past) the scroll viewport — the set
+        the user can actually see. Used to keep thumbnail rendering VIEWPORT-lazy: a
+        900-part library only renders the ~dozen on screen, plus a small look-ahead, not
+        all 900. Falls back to the full filtered set headlessly (no real geometry)."""
+        vp = self._list.viewport()
+        h = vp.height()
+        if h <= 0:                                       # unshown / no geometry (headless)
+            return list(getattr(self, "_visible", []))
+        look = _THUMB_SLOT * 8                           # a little above/below the fold
+        out = []
+        for row, it, _w in self._items:
+            if it.isHidden():
+                continue
+            r = self._list.visualItemRect(it)
+            if r.bottom() >= -look and r.top() <= h + look:
+                out.append(row)
+        return out
+
+    def _queue_thumbnails(self):
+        """Render + apply thumbnails for the rows in (or near) the VIEWPORT that don't
+        have one yet. Bounded per pass so a fast scroll can't queue the whole library at
+        once; the disk cache makes a re-visit free. No-op without cfg/ctx (bare test
+        constructor) or when no model is resolvable — those rows keep the neutral empty
+        slot."""
+        if not self._cfg:
+            return
+        started = 0
+        seen: set = set()
+        for row in self._viewport_rows():
+            mp = self._row_model_path(row)
+            if not mp or mp in seen:
+                continue
+            seen.add(mp)
+            st = self._thumb_state.get(mp, "unseen")
+            if isinstance(st, QPixmap):
+                self._apply_thumb_to_rows(mp, st)       # already rendered — just (re)paint
+                continue
+            if st in ("loading", None):                 # in flight, or known-empty
+                continue
+            if started >= self._THUMB_MAX_PER_PASS:
+                break
+            started += 1
+            self._render_thumb(mp)
+
+    def _render_thumb(self, model_path: str):
+        """Kick off ONE model's thumbnail render off the GUI thread; apply it to every
+        row that uses it when it lands. Falls back to the neutral slot (state None) when
+        the render yields nothing (no backend / headless STEP / unreadable model)."""
+        if model_path in self._thumb_inflight:
+            return
+        self._thumb_inflight.add(model_path)
+        self._thumb_state[model_path] = "loading"
+
+        def job():
+            return R.model_thumbnail(model_path)         # cached PNG path or None
+
+        def done(png_path, ok):
+            self._thumb_inflight.discard(model_path)
+            pm = None
+            if ok and png_path:
+                loaded = QPixmap(png_path)
+                if not loaded.isNull():
+                    pm = loaded
+            self._thumb_state[model_path] = pm           # QPixmap, or None = known-empty
+            if pm is not None:
+                self._apply_thumb_to_rows(model_path, pm)
+
+        if self._ctx is not None:
+            run_populate(self._ctx, job, done)
+        else:                                            # cfg but no ctx: render inline (test path)
+            try:
+                done(job(), True)
+            except Exception:  # noqa: BLE001
+                done(None, False)
+
+    def _apply_thumb_to_rows(self, model_path: str, pm: QPixmap):
+        """Paint the rendered pixmap onto every built row that uses this model. Guarded
+        against a deleted widget (rebuild between dispatch and completion)."""
+        for row, _it, w in getattr(self, "_items", []):
+            if self._row_model_path(row) != model_path:
+                continue
+            thumb = getattr(w, "_thumb", None)
+            if thumb is None:
+                continue
+            try:
+                thumb.setPixmap(pm)
+            except RuntimeError:                         # widget torn down by a rebuild
+                continue
 
     def _item_row_for(self, row) -> int:
         """The full-list index of the given row's item (headers + hidden rows are
@@ -3385,6 +3535,11 @@ class PartsList(QWidget):
         shows the existing widgets (PERF lib_preview:1175)."""
         self._rows = list(rows)
         self._compute_dup_mpns()
+        # Drop the in-memory pixmap map so a rescan re-resolves each thumbnail through
+        # the DISK cache: an unchanged model is a free cache hit, an edited model (new
+        # mtime → new cache key) re-renders. The stale QPixmap must not survive the
+        # rebuild (the widgets it was painted on are gone anyway).
+        self._thumb_state = {}
         self._rebuild_widgets()
         self._apply(preserve=True)
 

@@ -82,12 +82,19 @@ def _make_fixture() -> dict:
         '  (symbol "R1" (property "Value" "R1")(property "Footprint" "MyFootprints:FP_B")(pin 1))\n'
         '  (symbol "U2" (property "Value" "U2")(property "Footprint" "MyFootprints:GONE")(pin 1))\n'
         ')\n', encoding="utf-8", newline="\n")
+    # FP_A points at a VALID VRML model — .wrl renders headlessly (pure-Python + numpy),
+    # so the parts-picker row THUMBNAIL is exercised for real in the offscreen drive
+    # (STEP is skipped natively headless and would only prove the placeholder path).
     (fp / "FP_A.kicad_mod").write_text(
-        '(footprint "FP_A" (layer "F.Cu")\n  (model "${MY3DMODELS}/m.step"\n'
+        '(footprint "FP_A" (layer "F.Cu")\n  (model "${MY3DMODELS}/m.wrl"\n'
         '    (offset (xyz 0 0 0))\n  )\n)\n', encoding="utf-8", newline="\n")
     (fp / "FP_B.kicad_mod").write_text('(footprint "FP_B" (layer "F.Cu"))\n', encoding="utf-8")
     (fp / "ORPH.kicad_mod").write_text('(footprint "ORPH" (layer "F.Cu"))\n', encoding="utf-8")
-    (md / "m.step").write_text("solid\n", encoding="utf-8")
+    (md / "m.wrl").write_text(
+        "#VRML V2.0 utf8\nShape {\n  geometry IndexedFaceSet {\n"
+        "    coord Coordinate { point [ 0 0 0, 1 0 0, 1 1 0, 0 1 0, 0 0 1, 1 0 1, 1 1 1, 0 1 1 ] }\n"
+        "    coordIndex [ 0 1 2 3 -1, 4 5 6 7 -1, 0 1 5 4 -1, 2 3 7 6 -1, 1 2 6 5 -1, 0 3 7 4 -1 ]\n"
+        "  }\n}\n", encoding="utf-8", newline="\n")
     # two VALID .kicad_pro projects so the Projects selector has something to switch between
     proj_json = '{"board":{"design_settings":{}},"meta":{"version":1},"net_settings":{}}'
     for name in ("Alpha", "Beta"):
@@ -278,6 +285,32 @@ def audit_library_workbench():
                 _fail("Library Parts: Group By Category rendered no headers")
     except Exception as e:  # noqa: BLE001
         _fail("Library Parts: Group By re-render", e)
+    # 3D-model row thumbnail: every row carries a fixed-size right-aligned thumbnail slot
+    # (layout stability), building the list with a modeled part does NOT hang (the render
+    # is cached + off-thread), and the modeled part's row actually paints a pixmap once
+    # its thumbnail lands. The fixture's U1 → FP_A → m.wrl is headless-renderable.
+    try:
+        pl.set_group_by("None"); _pump()             # flat list, no header offset
+        slots = [getattr(w, "_thumb", None) for _r, _it, w in pl._items]
+        if any(s is None for s in slots):
+            _fail("Library Parts: a row is missing its 3D-model thumbnail slot")
+        elif any(s.width() != P._THUMB_SLOT for s in slots if s is not None):
+            _fail("Library Parts: a row thumbnail slot is not the fixed thumbnail size")
+        else:
+            pl._queue_thumbnails(); _pump()          # kick the viewport-lazy loader, drain
+            modeled = None
+            for r, _it, w in pl._items:
+                if pl._row_model_path(r):
+                    modeled = w; break
+            if modeled is None:
+                _fail("Library Parts: no row resolved a 3D model to thumbnail")
+            else:
+                pm = modeled._thumb.pixmap()
+                if pm is None or pm.isNull():
+                    _fail("Library Parts: the modeled row never painted a 3D thumbnail")
+        pl.set_group_by("Category"); _pump()         # restore the grouping the rest expects
+    except Exception as e:  # noqa: BLE001
+        _fail("Library Parts: 3D-model row thumbnail", e)
     # M3: the ALWAYS-VISIBLE inline finder bar (no hidden pop): its Show checkboxes
     # filter the list and its Group By radios re-group it (the real UI wiring).
     try:
