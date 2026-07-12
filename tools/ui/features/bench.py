@@ -22,6 +22,7 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdi
 
 from .. import widgets as W
 from .. import kit
+from .. import theme as T
 from .. import feature as F
 from ..prose import plural
 from ..util import clear_layout, run_populate, _headless
@@ -109,7 +110,7 @@ def _authority_panel(ctx, state: BenchState) -> QWidget:
     verdict_holder = QVBoxLayout(); verdict_holder.setContentsMargins(0, 0, 0, 0)
     outer.addLayout(verdict_holder)
 
-    grid = QHBoxLayout(); grid.setSpacing(16)
+    grid = QHBoxLayout(); grid.setSpacing(T.sp("card"))
     # left: map card
     map_card = W.Card(pad=20)
     # smaller default map (scroll-wheel zoom enlarges it) so the inspector gets more width
@@ -129,7 +130,7 @@ def _authority_panel(ctx, state: BenchState) -> QWidget:
     map_card.body.addLayout(zrow)
     map_card.body.addWidget(pin_map, 0, Qt.AlignHCenter)
     map_card.body.addWidget(legend())
-    strip = QHBoxLayout(); strip.setSpacing(24); strip.setContentsMargins(0, 12, 0, 0)
+    strip = QHBoxLayout(); strip.setSpacing(T.sp("page")); strip.setContentsMargins(0, T.sp("md"), 0, 0)
     strip.addStretch(1)
     stat_cells = {}
     for key, label in (("positions_total", "Positions"), ("must_switch_count", "Must-Switch"),
@@ -277,18 +278,18 @@ def _resolver_panel(ctx, state: BenchState) -> QWidget:
     except Exception:  # noqa: BLE001
         part_nos = []
 
-    head = QHBoxLayout(); head.setSpacing(10)
+    head = QHBoxLayout(); head.setSpacing(T.sp("row"))
     head.addWidget(W.eyebrow(f"MCU Pinout Viewer   {state.package}" if state.package
                              else "MCU Pinout Viewer"))
     head.addWidget(W.body("Exact silicon, not the package union.", dim=True))
     head.addStretch(1)
     lay.addLayout(head)
 
-    split = QHBoxLayout(); split.setSpacing(16)
+    split = QHBoxLayout(); split.setSpacing(T.sp("card"))
 
     # ── left: a filterable, browsable list of every part in the package ──────────
     # (owner v2.11: "give a searchable LIST to pick from", not an exact-name search).
-    left = QVBoxLayout(); left.setSpacing(8)
+    left = QVBoxLayout(); left.setSpacing(T.sp("sm"))
     filt = QLineEdit(); filt.setMinimumHeight(32); filt.setFixedWidth(300)
     filt.setClearButtonEnabled(True)
     filt.setPlaceholderText(f"Filter {len(part_nos)} parts…" if part_nos
@@ -306,7 +307,7 @@ def _resolver_panel(ctx, state: BenchState) -> QWidget:
     split.addWidget(left_w, 0, Qt.AlignTop)
 
     # ── right: the resolved pinout (map + per-pin table) ─────────────────────────
-    result_holder = QVBoxLayout(); result_holder.setSpacing(10)
+    result_holder = QVBoxLayout(); result_holder.setSpacing(T.sp("row"))
     right_w = QWidget(); right_w.setLayout(result_holder)
     split.addWidget(right_w, 1)
     lay.addLayout(split, 1)
@@ -348,7 +349,7 @@ def _resolver_panel(ctx, state: BenchState) -> QWidget:
             result_holder.addWidget(W.body(f"No match for {mpn}.", dim=True))
             return
         result_holder.addWidget(W.eyebrow(f"{res['part']}   {res['package']}   {len(res['pins'])} Pins"))
-        rsplit = QHBoxLayout(); rsplit.setSpacing(16)
+        rsplit = QHBoxLayout(); rsplit.setSpacing(T.sp("card"))
         # left: the resolved pinout, painted from the datasheet-derived pins. The map is
         # its own pan/zoom viewport (wheel zooms to the cursor, drag pans); a −/+ pair +
         # ghost Reset, a legend under it, and on_select highlights the matching table row.
@@ -470,7 +471,7 @@ def _outputs_panel(ctx, state: BenchState) -> QWidget:
             ctx.services.log(f"Write failed: {e}")
 
     positions = authority["positions"]
-    bar = QHBoxLayout(); bar.setSpacing(8)
+    bar = QHBoxLayout(); bar.setSpacing(T.sp("sm"))
     bar.addWidget(W.subhead(f"Exports   {pkg}")); bar.addStretch(1)
     # Owner v2.11: "only a far-more-detailed All-Pins export is worth keeping" — so the
     # detailed 13-column pin CSV is the ONE accent primary. The bundle drops to a default
@@ -644,13 +645,13 @@ def _allpins_section(ctx, state: BenchState) -> QWidget:
     the standalone _allpins_panel wraps it): a section header, a description + inline
     Export-CSV primary, then the full 13-column table bounded so it scrolls inside its own
     height rather than making the page kilometres long."""
-    w = QWidget(); lay = QVBoxLayout(w); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(8)
+    w = QWidget(); lay = QVBoxLayout(w); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(T.sp("sm"))
     if state.package is None:
         lay.addWidget(W.body("No package loaded.", dim=True)); return w
     pkg = state.package
     positions = state.authority()["positions"]
     lay.addWidget(W.section_header(f"All Pins   {pkg}   {len(positions)} Positions"))
-    bar = QHBoxLayout(); bar.setSpacing(8)
+    bar = QHBoxLayout(); bar.setSpacing(T.sp("sm"))
     bar.addWidget(W.body(
         "Every socket position across all supported STM32 parts in this package, with its "
         "functions, peripherals, breakout, tags, supply range and delivered net.", dim=True))
@@ -720,7 +721,7 @@ def _profiles_section(ctx, state: BenchState) -> QWidget:
     card, the switching-pin pills, the supported-families line, and the off-thread,
     memoised chips-by-profile grouping."""
     w = QWidget()
-    lay = QVBoxLayout(w); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(14)
+    lay = QVBoxLayout(w); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(T.sp("path"))
     if state.error or state.package is None:
         lay.addWidget(W.body("No package loaded.", dim=True)); return w
     try:
@@ -739,7 +740,7 @@ def _profiles_section(ctx, state: BenchState) -> QWidget:
     # combo lists the package's supported families (default: All). Selecting one fires
     # state.set_family -> ws.rebuild_all, which rebuilds THIS panel with state.family set,
     # re-reading it below to narrow `parts`.
-    fam_row = QHBoxLayout(); fam_row.setSpacing(8)
+    fam_row = QHBoxLayout(); fam_row.setSpacing(T.sp("sm"))
     fam_row.addWidget(W.eyebrow("Family"))
     fam_combo = QComboBox(); fam_combo.setFixedWidth(160)
     fam_combo.addItem(_ALL_FAMILIES)
@@ -790,7 +791,7 @@ def _profiles_section(ctx, state: BenchState) -> QWidget:
 
     # chips grouped by profile — computed off the GUI thread (a resolve per part)
     lay.addWidget(W.section_header("Chips by Profile"))
-    prof_box = QVBoxLayout(); prof_box.setSpacing(12); lay.addLayout(prof_box)
+    prof_box = QVBoxLayout(); prof_box.setSpacing(T.sp("md")); lay.addLayout(prof_box)
 
     # BENCH-perf: grouping is package-authority-derived and family-INDEPENDENT — the
     # profile a part lands in is the same whether the family filter is set or not. So
@@ -864,7 +865,7 @@ def _profiles_section(ctx, state: BenchState) -> QWidget:
         ordered = sorted(tiers.items(), key=lambda kv: (len(kv[0]), -len(kv[1])))
         for n, (sig, mpns) in enumerate(ordered, 1):
             pcard = W.Card(pad=16)
-            head = QHBoxLayout(); head.setSpacing(10)
+            head = QHBoxLayout(); head.setSpacing(T.sp("row"))
             head.addWidget(profile_badge(n))
             name = "Baseline" if not sig else "Needs " + ", ".join(f"{nm} ({nd})" for nd, nm in sig)
             head.addWidget(W.subhead(name))
@@ -924,7 +925,7 @@ def _analysis_panel(ctx, state: BenchState) -> QWidget:
     lay.addWidget(W.section_header("Connection Diagram"))
     order = sorted(authority["positions"], key=lambda p: p["position"])
     cw = sauth.card_wiring(authority)
-    cd_bar = QHBoxLayout(); cd_bar.setSpacing(8)
+    cd_bar = QHBoxLayout(); cd_bar.setSpacing(T.sp("sm"))
     cd_bar.addWidget(W.eyebrow("Pin"))
     pin_combo = QComboBox(); pin_combo.setFixedWidth(240)
     pin_combo.setToolTip("Choose a socket pin to draw its path from the MCU to the delivered net")
@@ -990,7 +991,7 @@ def _analysis_panel(ctx, state: BenchState) -> QWidget:
         lay.addWidget(W.body("No must-switch fabric for this package.", dim=True))
     for c in cells:
         card = W.Card(pad=16)
-        head = QHBoxLayout(); head.setSpacing(10)
+        head = QHBoxLayout(); head.setSpacing(T.sp("row"))
         head.addWidget(W.subhead(f"Cell {c['cell']}   {c['symbol']}"))
         head.addWidget(W.body(c.get("footprint", ""), dim=True)); head.addStretch(1)
         card.body.addLayout(head)
@@ -1027,12 +1028,12 @@ def _analysis_panel(ctx, state: BenchState) -> QWidget:
     lay.addWidget(W.body(
         "Drift gate: check a Build Card's asserted numbers (must-switch count, ADG714 "
         "cells, debug pin positions) against the built authority.", dim=True))
-    lint_bar = QHBoxLayout(); lint_bar.setSpacing(8)
+    lint_bar = QHBoxLayout(); lint_bar.setSpacing(T.sp("sm"))
     b_lint = W.btn("Lint Claim Files…", "primary",
                    "Pick claim files and check them against the authority")
     lint_bar.addWidget(b_lint); lint_bar.addStretch(1)
     lay.addLayout(lint_bar)
-    lint_holder = QVBoxLayout(); lint_holder.setSpacing(8)
+    lint_holder = QVBoxLayout(); lint_holder.setSpacing(T.sp("sm"))
     lay.addLayout(lint_holder)
 
     def run_lint_flow():

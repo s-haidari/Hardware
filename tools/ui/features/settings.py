@@ -234,7 +234,7 @@ def _settings_panel(ctx, _s) -> QWidget:
     import stm32_db
 
     root = QWidget()
-    lay = QVBoxLayout(root); lay.setContentsMargins(24, 20, 24, 24); lay.setSpacing(12)
+    lay = kit.page_layout(root)
     lay.setAlignment(Qt.AlignTop)
 
     _machine_setup(ctx, root, lay)

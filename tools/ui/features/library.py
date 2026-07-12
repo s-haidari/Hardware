@@ -98,7 +98,7 @@ def _write_parts_export(path, cfg, rows) -> int:
 
 def _action_row(*buttons) -> QWidget:
     row = QWidget()
-    h = QHBoxLayout(row); h.setContentsMargins(0, 0, 0, 0); h.setSpacing(8)
+    h = QHBoxLayout(row); h.setContentsMargins(0, 0, 0, 0); h.setSpacing(T.sp("sm"))
     h.addStretch(1)
     for b in buttons:
         h.addWidget(b)
@@ -151,7 +151,7 @@ class _DropFront(QFrame):
         self.setObjectName("dropfront")
         self._on_click = on_click
         self.setCursor(Qt.PointingHandCursor)
-        v = QVBoxLayout(self); v.setContentsMargins(16, 20, 16, 20); v.setSpacing(6)
+        v = QVBoxLayout(self); v.setContentsMargins(T.sp("card"), T.sp("xl"), T.sp("card"), T.sp("xl")); v.setSpacing(6)
         icon = QLabel(); icon.setAlignment(Qt.AlignHCenter)
         # Re-tint the glyph from txt3 on every theme flip (svg_icon bakes a fixed hex).
         def _tint(_i=icon):
@@ -166,7 +166,7 @@ class _DropFront(QFrame):
         # "or browse files" — 'browse files' carries the mockup's underline link
         # affordance (txt2 detail-key font, underlined) so it reads as clickable even
         # though the whole zone is; 'or ' stays dim. Centered as one line.
-        subrow = QHBoxLayout(); subrow.setContentsMargins(0, 0, 0, 0); subrow.setSpacing(4)
+        subrow = QHBoxLayout(); subrow.setContentsMargins(0, 0, 0, 0); subrow.setSpacing(T.sp("xs"))
         subrow.addStretch(1)
         pre = W.static_label("or", "dim")
         link = W.static_label("browse files", "key")
@@ -295,7 +295,7 @@ def _parts_panel(ctx, _state) -> QWidget:
             "Looking in: " + (st["symbol_path"] or "(location not set)"), "dim"))
         b = getattr(ctx, "bus", None)
         if b is not None:
-            row = QHBoxLayout(); row.setSpacing(8)
+            row = QHBoxLayout(); row.setSpacing(T.sp("sm"))
             row.addWidget(W.btn("Open Settings", "default",
                                 "Change the library location or reset to the bundled snapshot",
                                 lambda: b.emit("nav.open", "settings")))
@@ -483,7 +483,7 @@ def _parts_panel(ctx, _state) -> QWidget:
     # Picker column inset (mockup .picker padding 6px 6px 0 14px → Qt L,T,R,B); the
     # 6px right gap keeps the list off the splitter handle, 14px left gives the drop
     # zone air. Bottom 0 so the list scroll runs to the panel edge.
-    left = QVBoxLayout(picker_w); left.setContentsMargins(14, 6, 6, 0); left.setSpacing(10)
+    left = QVBoxLayout(picker_w); left.setContentsMargins(T.sp("path"), 6, 6, 0); left.setSpacing(T.sp("row"))
     # Front-of-library drop zone (library-v2 §2.1): click to browse a vendor ZIP, or
     # drop one anywhere on the panel (the whole-panel drop stays _PartsRoot/SRC-03; the
     # zone just makes the affordance obvious and lifts while a file is dragged over).
@@ -651,7 +651,7 @@ def _maintenance_workbench(ctx) -> QWidget:
     # ── detail: Imports + Undo History cards (chrome once, fill static) ────────────────
     def detail(snap, handle):
         body = QWidget()
-        col = QVBoxLayout(body); col.setContentsMargins(0, 0, 0, 0); col.setSpacing(14)
+        col = QVBoxLayout(body); col.setContentsMargins(0, 0, 0, 0); col.setSpacing(T.sp("path"))
         col.addWidget(W.eyebrow("Imports"))
         zcard = W.Card(pad=16)
         col.addWidget(zcard)
@@ -670,7 +670,7 @@ def _maintenance_workbench(ctx) -> QWidget:
             if not items:
                 card.body.addWidget(W.static_label(empty_line, "dim"))
                 return
-            head = QHBoxLayout(); head.setSpacing(8)
+            head = QHBoxLayout(); head.setSpacing(T.sp("sm"))
             head.addWidget(W.static_label(noun, "sub"))
             head.addWidget(W.static_label(f"{len(items)}", "dim"))
             head.addStretch(1)
@@ -1268,7 +1268,7 @@ def _health_workbench(ctx) -> QWidget:
 
     def detail(snap, handle):
         body = QWidget()
-        col = QVBoxLayout(body); col.setContentsMargins(0, 0, 0, 0); col.setSpacing(14)
+        col = QVBoxLayout(body); col.setContentsMargins(0, 0, 0, 0); col.setSpacing(T.sp("path"))
         col.addWidget(W.eyebrow("Structure"))
         findings = W.Card(pad=16)
         col.addWidget(findings)
@@ -1297,7 +1297,7 @@ def _health_workbench(ctx) -> QWidget:
                 if any_gap:
                     findings.body.addSpacing(6)
                 any_gap = True
-                head = QHBoxLayout(); head.setSpacing(8)
+                head = QHBoxLayout(); head.setSpacing(T.sp("sm"))
                 head.addWidget(W.static_label(title, "sub"))
                 head.addWidget(W.static_label(f"{len(names)}", "dim"))
                 head.addStretch(1)

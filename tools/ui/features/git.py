@@ -53,6 +53,7 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdi
 
 from .. import widgets as W
 from .. import kit as K
+from .. import theme as T
 from ..prose import plural
 from ..util import run_populate, clear_layout, _headless
 from .. import feature as F
@@ -103,7 +104,7 @@ def _clean_state() -> QWidget:
     baked pixmap has no restyler to re-tint on a theme toggle — neutral gray reads on both)."""
     from .. import icons
     w = QWidget()
-    col = QVBoxLayout(w); col.setContentsMargins(24, 32, 24, 32); col.setSpacing(0)
+    col = QVBoxLayout(w); col.setContentsMargins(T.sp("page"), T.sp("xxxl"), T.sp("page"), T.sp("xxxl")); col.setSpacing(0)
     col.addStretch(1)
     icon = QLabel(); icon.setAlignment(Qt.AlignHCenter)
     icon.setPixmap(W.svg_icon(icons.GLYPHS["check"], size=28).pixmap(28, 28))
@@ -216,7 +217,7 @@ def _git_workbench(ctx) -> QWidget:
     def detail(snap, handle):
         repo = snap.get("repo")
         body = QWidget()
-        col = QVBoxLayout(body); col.setContentsMargins(0, 0, 0, 0); col.setSpacing(14)
+        col = QVBoxLayout(body); col.setContentsMargins(0, 0, 0, 0); col.setSpacing(T.sp("path"))
         if repo is None:
             # No repo yet: a quiet prompt (the verdict band carries the error). The
             # machinery below (Set Up / Initialize) is how the user recovers.
@@ -303,7 +304,7 @@ def _git_workbench(ctx) -> QWidget:
                 if any_change:
                     changes.body.addSpacing(6)
                 any_change = True
-                head = QHBoxLayout(); head.setSpacing(8)
+                head = QHBoxLayout(); head.setSpacing(T.sp("sm"))
                 head.addWidget(W.static_label(label, "sub"))
                 head.addWidget(W.static_label(f"{len(files)}", "dim"))
                 head.addStretch(1)

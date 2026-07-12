@@ -240,7 +240,7 @@ class ProjectsState:
 
 
 def _no_project(msg="No KiCad projects discovered under the repo root.") -> QWidget:
-    w = QWidget(); v = QVBoxLayout(w); v.setContentsMargins(24, 16, 24, 24)
+    w = QWidget(); v = QVBoxLayout(w); v.setContentsMargins(T.sp("page"), T.sp("card"), T.sp("page"), T.sp("page"))
     v.addWidget(W.body(msg, dim=True)); v.addStretch(1)
     return w
 
@@ -299,7 +299,7 @@ class LibraryPickerCard(W.Card):
         self._on_change = on_change
         self._mode = "select"
 
-        head = QHBoxLayout(); head.setSpacing(8)
+        head = QHBoxLayout(); head.setSpacing(T.sp("sm"))
         head.addWidget(W.body(title, mono=True))
         if subtitle:
             head.addWidget(W.body(subtitle, dim=True))
@@ -308,7 +308,7 @@ class LibraryPickerCard(W.Card):
         hw = QWidget(); hw.setLayout(head); self.body.addWidget(hw)
 
         # Mode selector: Select (default) vs Add — mutually exclusive, no free-text path.
-        modes = QHBoxLayout(); modes.setSpacing(8)
+        modes = QHBoxLayout(); modes.setSpacing(T.sp("sm"))
         self._cb_select = QCheckBox("Select from Library")
         self._cb_add = QCheckBox("Add to Library")
         self._cb_select.setToolTip("Link this component to an existing library part.")
@@ -324,7 +324,7 @@ class LibraryPickerCard(W.Card):
         # the value applied is always the highlighted library row (never arbitrary text) —
         # apply() resolves the combo's current index back to a library-part record.
         self._select_row = QWidget()
-        sr = QHBoxLayout(self._select_row); sr.setContentsMargins(0, 0, 0, 0); sr.setSpacing(8)
+        sr = QHBoxLayout(self._select_row); sr.setContentsMargins(0, 0, 0, 0); sr.setSpacing(T.sp("sm"))
         lab = W.body("Library part"); lab.setFixedWidth(104); sr.addWidget(lab, 0)
         self._combo = QComboBox(); self._combo.setEditable(True)
         self._combo.setInsertPolicy(QComboBox.NoInsert)     # typing NEVER adds an item
@@ -347,8 +347,8 @@ class LibraryPickerCard(W.Card):
         # ADD: footprint pick-list (which footprint the new part links to) + identity form.
         # Hidden until the Add mode is chosen. Its edits fill the NEW LIBRARY symbol.
         self._add_box = QWidget()
-        ab = QVBoxLayout(self._add_box); ab.setContentsMargins(0, 0, 0, 0); ab.setSpacing(8)
-        fp_row = QWidget(); fpr = QHBoxLayout(fp_row); fpr.setContentsMargins(0, 0, 0, 0); fpr.setSpacing(8)
+        ab = QVBoxLayout(self._add_box); ab.setContentsMargins(0, 0, 0, 0); ab.setSpacing(T.sp("sm"))
+        fp_row = QWidget(); fpr = QHBoxLayout(fp_row); fpr.setContentsMargins(0, 0, 0, 0); fpr.setSpacing(T.sp("sm"))
         fl = W.body("Footprint"); fl.setFixedWidth(104); fpr.addWidget(fl, 0)
         self._fp_combo = QComboBox(); self._fp_combo.setEditable(False); self._fp_combo.setMinimumHeight(30)
         self._fp_combo.addItem("Choose a library footprint…", None)
@@ -365,7 +365,7 @@ class LibraryPickerCard(W.Card):
                             "below describe the new library part.", dim=True))
         self._add_edits = {}
         for prop, label in self._ADD_FIELDS:
-            row = QWidget(); rl = QHBoxLayout(row); rl.setContentsMargins(0, 0, 0, 0); rl.setSpacing(8)
+            row = QWidget(); rl = QHBoxLayout(row); rl.setContentsMargins(0, 0, 0, 0); rl.setSpacing(T.sp("sm"))
             pl = W.body(label); pl.setFixedWidth(104); rl.addWidget(pl, 0)
             e = QLineEdit(); e.setPlaceholderText(f"Add {label.lower()} (optional)")
             e.setMinimumHeight(30)
@@ -486,14 +486,14 @@ class FillPreviewDialog(QDialog):
     # ── construction ─────────────────────────────────────────────────────────
     def _build(self):
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(20, 18, 20, 18)
-        outer.setSpacing(14)
+        outer.setContentsMargins(T.sp("xl"), 18, T.sp("xl"), 18)
+        outer.setSpacing(T.sp("path"))
 
         self._header = W.subhead("")            # Semibold region label (kit)
         outer.addWidget(self._header)
 
         # Bulk affordances: a big board must not be per-field toil.
-        bulk = QHBoxLayout(); bulk.setSpacing(8)
+        bulk = QHBoxLayout(); bulk.setSpacing(T.sp("sm"))
         b_all = W.btn("Select All", "ghost", "Check every proposed field")
         b_exact = W.btn("Only Exact", "ghost", "Check only the confident, blank-fill changes")
         b_clear = W.btn("Clear", "ghost", "Uncheck everything")
@@ -509,7 +509,7 @@ class FillPreviewDialog(QDialog):
         # A reference-prefix box ("C" or "C12") + a Passives-only toggle hide non-matching
         # cards; Select All / Only Exact then act on the VISIBLE rows only.
         self._filter_sections = []          # (header_widget, {refs in this section})
-        trow = QHBoxLayout(); trow.setSpacing(8)
+        trow = QHBoxLayout(); trow.setSpacing(T.sp("sm"))
         self._filter_edit = QLineEdit()
         self._filter_edit.setPlaceholderText("Filter by reference (e.g. C or C12)")
         self._filter_edit.setMinimumHeight(30)
@@ -528,7 +528,7 @@ class FillPreviewDialog(QDialog):
         # Scrollable body so a long plan never overflows the modal. `W.scroll_body`
         # owns the transparent-viewport chrome (no direct styling here).
         body = QWidget()
-        bl = QVBoxLayout(body); bl.setContentsMargins(0, 0, 0, 0); bl.setSpacing(12)
+        bl = QVBoxLayout(body); bl.setContentsMargins(0, 0, 0, 0); bl.setSpacing(T.sp("md"))
 
         if self.annotate_n:
             bl.addWidget(self._annotate_card())
@@ -583,7 +583,7 @@ class FillPreviewDialog(QDialog):
         self._apply_card_filter()               # seed the "N of M" count
 
         # Footer: primary Apply + secondary Cancel (one primary only).
-        footer = QHBoxLayout(); footer.setSpacing(8); footer.addStretch(1)
+        footer = QHBoxLayout(); footer.setSpacing(T.sp("sm")); footer.addStretch(1)
         b_cancel = W.btn("Cancel", "ghost", "Close without writing anything")
         b_cancel.clicked.connect(self.reject)
         self._apply_btn = W.btn("Apply", "primary", "Write the checked changes, then re-audit")
@@ -608,7 +608,7 @@ class FillPreviewDialog(QDialog):
         lib_part = match.get("lib_part") or {}
         card = W.Card(pad=14)
 
-        head = QHBoxLayout(); head.setSpacing(8)
+        head = QHBoxLayout(); head.setSpacing(T.sp("sm"))
         head.addWidget(W.body(str(item["ref"]), mono=True))
         # Confidence chip: exact is calm (ok), verify is amber (warn).
         chip_kind = "ok" if conf == "exact" else ("warn" if conf == "verify" else "mut")
@@ -640,7 +640,7 @@ class FillPreviewDialog(QDialog):
             cb.setToolTip("Overwrites existing data. Opt in per field.")
         cb.stateChanged.connect(lambda _=0: self._sync_apply_enabled())
         self._boxes.append((cb, item["ref"], ch["prop"], ch.get("kind"), conf))
-        row = QWidget(); rl = QHBoxLayout(row); rl.setContentsMargins(0, 0, 0, 0); rl.setSpacing(8)
+        row = QWidget(); rl = QHBoxLayout(row); rl.setContentsMargins(0, 0, 0, 0); rl.setSpacing(T.sp("sm"))
         rl.addWidget(cb)
         if ch.get("kind") == "overwrite":
             rl.addWidget(W.tag("Overwrite", "warn"))
@@ -1038,7 +1038,7 @@ def _overview_panel(ctx, state) -> QWidget:
         return rows
 
     def _row_widget(label, status, kind, det):
-        w = QWidget(); h = QHBoxLayout(w); h.setContentsMargins(0, 0, 0, 0); h.setSpacing(10)
+        w = QWidget(); h = QHBoxLayout(w); h.setContentsMargins(0, 0, 0, 0); h.setSpacing(T.sp("row"))
         key = W.body(label); key.setFixedWidth(116)
         h.addWidget(key)
         h.addWidget(W.tag(status, kind))
@@ -1052,14 +1052,14 @@ def _overview_panel(ctx, state) -> QWidget:
         body = QWidget()
         col = QVBoxLayout(body)
         col.setContentsMargins(0, 0, 0, 0)
-        col.setSpacing(14)
+        col.setSpacing(T.sp("path"))
         col.addWidget(W.eyebrow("Readiness"))
         rows_host = QWidget(); rows_box = QVBoxLayout(rows_host)
-        rows_box.setContentsMargins(0, 0, 0, 0); rows_box.setSpacing(8)
+        rows_box.setContentsMargins(0, 0, 0, 0); rows_box.setSpacing(T.sp("sm"))
         col.addWidget(rows_host)
         col.addWidget(W.eyebrow("Next Step"))
         next_host = QWidget(); next_box = QVBoxLayout(next_host)
-        next_box.setContentsMargins(0, 0, 0, 0); next_box.setSpacing(4)
+        next_box.setContentsMargins(0, 0, 0, 0); next_box.setSpacing(T.sp("xs"))
         col.addWidget(next_host)
 
         def fill(s):
@@ -1070,7 +1070,7 @@ def _overview_panel(ctx, state) -> QWidget:
             clear_layout(next_box)
             title, sub, kind = r["next"]
             line = QWidget(); lh = QHBoxLayout(line)
-            lh.setContentsMargins(0, 0, 0, 0); lh.setSpacing(8)
+            lh.setContentsMargins(0, 0, 0, 0); lh.setSpacing(T.sp("sm"))
             lh.addWidget(W.tag(title, kind)); lh.addStretch(1)
             next_box.addWidget(line)
             if sub:
@@ -1357,14 +1357,14 @@ def _health_panel(ctx, state) -> QWidget:
         body = QWidget()
         col = QVBoxLayout(body)
         col.setContentsMargins(0, 0, 0, 0)
-        col.setSpacing(14)
+        col.setSpacing(T.sp("path"))
         if not snap["schs"]:
             col.addWidget(W.eyebrow("Findings"))
             col.addWidget(W.static_label("No schematic sheet in this project to audit.", "dim"))
             return body, (lambda s: None)
         col.addWidget(W.eyebrow("Findings"))
         summary = QHBoxLayout()
-        summary.setSpacing(8)
+        summary.setSpacing(T.sp("sm"))
         summary_w = QWidget()
         summary_w.setLayout(summary)
         col.addWidget(summary_w)
@@ -1384,7 +1384,7 @@ def _health_panel(ctx, state) -> QWidget:
         # The "Last Prepare" before/after itemization — hidden until a Prepare has run.
         prep_box = QVBoxLayout()
         prep_box.setContentsMargins(0, 0, 0, 0)
-        prep_box.setSpacing(8)
+        prep_box.setSpacing(T.sp("sm"))
         prep_host = QWidget()
         prep_host.setLayout(prep_box)
         col.addWidget(prep_host)
@@ -1447,7 +1447,7 @@ def _health_panel(ctx, state) -> QWidget:
                 prep_host.setVisible(False)
                 return
             prep_host.setVisible(True)
-            head = QHBoxLayout(); head.setSpacing(8)
+            head = QHBoxLayout(); head.setSpacing(T.sp("sm"))
             head.addWidget(W.eyebrow("Last Prepare"))
             delta = diff["after_total"] - diff["before_total"]
             head.addWidget(W.tag(f"{diff['before_total']} → {diff['after_total']} ({delta:+d})",
@@ -1494,7 +1494,7 @@ def _health_panel(ctx, state) -> QWidget:
         the exact refs fixed. A no-op click when nothing was fixed for that kind."""
         card = QWidget()
         cv = QVBoxLayout(card); cv.setContentsMargins(0, 0, 0, 0); cv.setSpacing(2)
-        line = QHBoxLayout(); line.setSpacing(8)
+        line = QHBoxLayout(); line.setSpacing(T.sp("sm"))
         fixed = r["fixed"]
         n_fixed = len(fixed)
         head = W.toggle_chip(r["label"], "ok" if r["delta"] < 0 else "mut",
@@ -2145,7 +2145,7 @@ def _bom_panel(ctx, state) -> QWidget:
         col = None
         for i, p in enumerate(state.projects):
             if i % 3 == 0:
-                col = QVBoxLayout(); col.setSpacing(4); boxrow.addLayout(col)
+                col = QVBoxLayout(); col.setSpacing(T.sp("xs")); boxrow.addLayout(col)
             cb = QCheckBox(p.name); cb.setChecked(True); cb.setToolTip(p.as_posix())
             checks[p.name] = cb; col.addWidget(cb)
         boxrow.addStretch(1)
@@ -2154,7 +2154,7 @@ def _bom_panel(ctx, state) -> QWidget:
 
     # The summary row + the result area (BOM table / diff) — panel-level layouts so every
     # render helper writes into the SAME objects the detail body mounts once.
-    summary = QHBoxLayout(); summary.setSpacing(8)
+    summary = QHBoxLayout(); summary.setSpacing(T.sp("sm"))
     summary_w = QWidget(); summary_w.setLayout(summary)
     result = QVBoxLayout()
     result_host = QWidget(); result_host.setLayout(result)
@@ -2210,8 +2210,8 @@ def _bom_panel(ctx, state) -> QWidget:
         body = QWidget()
         col = QVBoxLayout(body)
         col.setContentsMargins(0, 0, 0, 0)
-        col.setSpacing(14)
-        ctrls = QHBoxLayout(); ctrls.setSpacing(8)
+        col.setSpacing(T.sp("path"))
+        ctrls = QHBoxLayout(); ctrls.setSpacing(T.sp("sm"))
         ctrls.addWidget(lab_boards); ctrls.addWidget(sp_boards)
         ctrls.addWidget(lab_spares); ctrls.addWidget(sp_spares)
         ctrls.addWidget(lab_source); ctrls.addWidget(cb_source)
@@ -2467,7 +2467,7 @@ def _bom_panel(ctx, state) -> QWidget:
         exec'd) so a headless drive/test can inspect it. No sideways scroll (design-rules §5)."""
         dlg = QDialog(host)
         dlg.setWindowTitle("Per-Board Breakdown")
-        v = QVBoxLayout(dlg); v.setContentsMargins(20, 16, 20, 18); v.setSpacing(12)
+        v = QVBoxLayout(dlg); v.setContentsMargins(T.sp("xl"), T.sp("card"), T.sp("xl"), 18); v.setSpacing(T.sp("md"))
         names = LM.part_display_names(r)
         title = str(r.get("mpn", "")) if names["orderable"] else names["flag"]
         v.addWidget(W.subhead(title))
@@ -3110,7 +3110,7 @@ def _bom_panel(ctx, state) -> QWidget:
     #    Export collapsible so the two filters read as export controls (they drive _filter_rows,
     #    shared by all six exports). Built here because kit renders the Export body internally. ──
     scope_row = QWidget()
-    srl = QHBoxLayout(scope_row); srl.setContentsMargins(0, 0, 0, 6); srl.setSpacing(12)
+    srl = QHBoxLayout(scope_row); srl.setContentsMargins(0, 0, 0, 6); srl.setSpacing(T.sp("md"))
     srl.addWidget(pv.field_label("Scope"))
     srl.addWidget(cb_populated); srl.addWidget(cb_priced_only); srl.addStretch(1)
     for _sec in host.findChildren(W.CollapsibleSection):
@@ -3206,9 +3206,9 @@ _OP_HELP = {
 def _rename_panel(ctx, state) -> QWidget:
     if not state.project:
         return _no_project()
-    root = QWidget(); lay = QVBoxLayout(root); lay.setContentsMargins(24, 16, 24, 24); lay.setSpacing(14)
+    root = QWidget(); lay = kit.page_layout(root)
     op_state = {"op": "find_replace"}
-    top = QHBoxLayout(); top.setSpacing(8)
+    top = QHBoxLayout(); top.setSpacing(T.sp("sm"))
     seg = W.Segmented([o[0] for o in _OPS], tip="Choose the refactor operation")
     top.addWidget(seg); top.addStretch(1)
     b_prev = W.btn("Preview", "ghost", "Preview the refactor without writing")
@@ -3229,8 +3229,8 @@ def _rename_panel(ctx, state) -> QWidget:
     stack = QStackedWidget()
 
     # find_replace page
-    p_fr = QWidget(); frl = QVBoxLayout(p_fr); frl.setContentsMargins(0, 0, 0, 0); frl.setSpacing(10)
-    fr = QHBoxLayout(); fr.setSpacing(12)
+    p_fr = QWidget(); frl = QVBoxLayout(p_fr); frl.setContentsMargins(0, 0, 0, 0); frl.setSpacing(T.sp("row"))
+    fr = QHBoxLayout(); fr.setSpacing(T.sp("md"))
     find = QLineEdit(); find.setPlaceholderText("Find text"); find.setMinimumHeight(32)
     repl = QLineEdit(); repl.setPlaceholderText("Replace with"); repl.setMinimumHeight(32)
     fcol = QVBoxLayout(); fcol.setSpacing(6); fcol.addWidget(pv.field_label("Find")); fcol.addWidget(find)
@@ -3361,7 +3361,7 @@ def _rename_panel(ctx, state) -> QWidget:
             # (below) rather than truncated, so an unshown corrupting rename can't slip
             # through unseen before Apply.
             for (typ, old, new, path) in changes:
-                row = QHBoxLayout(); row.setSpacing(8)
+                row = QHBoxLayout(); row.setSpacing(T.sp("sm"))
                 row.addWidget(W.tag(str(typ), "mut")); row.addWidget(W.body(str(old), dim=True, mono=True))
                 row.addWidget(W.body("→", dim=True)); row.addWidget(W.body(str(new), mono=True)); row.addStretch(1)
                 card.body.addLayout(row)
@@ -3921,7 +3921,7 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
     # ── the editable body — built ONCE by kit.editor ─────────────────────────────────────
     def build_body(ctx, host):
         root = QWidget()
-        lay = QVBoxLayout(root); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(10)
+        lay = QVBoxLayout(root); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(T.sp("row"))
 
         def add_section(title, first=False):
             if not first:
@@ -3929,7 +3929,7 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
             lay.addWidget(W.section_header(title))
 
         # ── selector row: Profile + Units (the two controls that govern the body) ─────────
-        top = QHBoxLayout(); top.setSpacing(10)
+        top = QHBoxLayout(); top.setSpacing(T.sp("row"))
         prof_combo = QComboBox()
         prof_combo.addItems(_pnames)
         prof_combo.setCurrentText(_default_prof)      # set BEFORE connecting so it doesn't fire the loader
@@ -3978,7 +3978,7 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
 
         # ── Section A — Fabrication Profile (locked fab facts, quiet read-only text) ───────
         add_section("Fabrication Profile", first=True)
-        fab_holder = QWidget(); fhl = QVBoxLayout(fab_holder); fhl.setContentsMargins(0, 4, 0, 0); fhl.setSpacing(0)
+        fab_holder = QWidget(); fhl = QVBoxLayout(fab_holder); fhl.setContentsMargins(0, T.sp("xs"), 0, 0); fhl.setSpacing(0)
         lay.addWidget(fab_holder)
         pv.apply_fabfacts_style(fab_holder)
         _fab_key = pv.fab_key
@@ -4009,7 +4009,7 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
                 ("Material", _fab_val(str(preset.material))),
             ]
             grid = QWidget(); g = QGridLayout(grid); g.setContentsMargins(0, 0, 0, 0)
-            g.setHorizontalSpacing(16); g.setVerticalSpacing(12); g.setColumnMinimumWidth(0, 170)
+            g.setHorizontalSpacing(T.sp("card")); g.setVerticalSpacing(T.sp("md")); g.setColumnMinimumWidth(0, 170)
             for r, (k, v) in enumerate(pairs):
                 g.addWidget(_fab_key(k), r, 0, Qt.AlignTop)
                 g.addWidget(v, r, 1, Qt.AlignTop)
@@ -4039,8 +4039,8 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
 
         text_fields = {}      # key -> (size_spin, thick_spin)
         text_checks = {}      # key -> QCheckBox (include this type when conforming)
-        tw = QWidget(); tg = QGridLayout(tw); tg.setContentsMargins(0, 4, 0, 0)
-        tg.setHorizontalSpacing(16); tg.setVerticalSpacing(10)
+        tw = QWidget(); tg = QGridLayout(tw); tg.setContentsMargins(0, T.sp("xs"), 0, 0)
+        tg.setHorizontalSpacing(T.sp("card")); tg.setVerticalSpacing(T.sp("row"))
         for ci, htxt in ((1, "Object"), (2, "Size"), (3, "Thickness")):
             tg.addWidget(pv.field_label(htxt), 0, ci)
         for r, (key, (label, (sz, th), on)) in enumerate(_text_seed().items(), start=1):
@@ -4061,7 +4061,7 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
         pv.apply_quiet_fields(tw)
         lay.addWidget(tw)
 
-        text_top = QHBoxLayout(); text_top.setSpacing(8)
+        text_top = QHBoxLayout(); text_top.setSpacing(T.sp("sm"))
         b_text_seed = W.btn("Seed From Profile", "ghost",
                             "Fill the silk & fab text sizes from the selected fabrication profile")
         text_top.addWidget(b_text_seed); text_top.addStretch(1)
@@ -4079,7 +4079,7 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
         b_text_seed.clicked.connect(seed_text_sizes)
         host._seed_text_sizes = seed_text_sizes
 
-        conf_actions = QHBoxLayout(); conf_actions.setSpacing(8)
+        conf_actions = QHBoxLayout(); conf_actions.setSpacing(T.sp("sm"))
         b_conf_prev = W.btn("Preview Conform", "ghost",
                             "Preview how many existing text objects would be resized")
         b_conf_apply = W.btn("Apply Conform", "default",
@@ -4088,7 +4088,7 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
         b_conf_apply.setEnabled(False)
         conf_actions.addWidget(b_conf_prev); conf_actions.addWidget(b_conf_apply); conf_actions.addStretch(1)
         lay.addLayout(conf_actions)
-        conform_result = QVBoxLayout(); conform_result.setSpacing(4); lay.addLayout(conform_result)
+        conform_result = QVBoxLayout(); conform_result.setSpacing(T.sp("xs")); lay.addLayout(conform_result)
         conform_state = {"previewed": 0}
 
         def _text_targets():
@@ -4161,8 +4161,8 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
         add_section("Stackup & Thickness")
 
         _preset0 = fabp.get_preset(prof_state["fab"])
-        st_top = QWidget(); stg = QGridLayout(st_top); stg.setContentsMargins(0, 4, 0, 0)
-        stg.setHorizontalSpacing(16); stg.setVerticalSpacing(10)
+        st_top = QWidget(); stg = QGridLayout(st_top); stg.setContentsMargins(0, T.sp("xs"), 0, 0)
+        stg.setHorizontalSpacing(T.sp("card")); stg.setVerticalSpacing(T.sp("row"))
         thick_field = _len_spin(unit, (_preset0.board_thickness_mm if _preset0 else 1.6),
                                 width=104, hi_mm=10.0)
         thick_field.setToolTip("Physical board thickness written into the .kicad_pcb by "
@@ -4176,7 +4176,7 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
         lay.addWidget(st_top)
 
         stack_holder = QWidget()
-        shl = QVBoxLayout(stack_holder); shl.setContentsMargins(0, 4, 0, 0); shl.setSpacing(0)
+        shl = QVBoxLayout(stack_holder); shl.setContentsMargins(0, T.sp("xs"), 0, 0); shl.setSpacing(0)
         lay.addWidget(stack_holder)
         pv.apply_fabfacts_style(stack_holder)
 
@@ -4196,7 +4196,7 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
                                             glyph=icons.GLYPHS["alert"],
                                             sub="This profile's fab floor carries no physical layer stack.")); return
             grid = QWidget(); g = QGridLayout(grid); g.setContentsMargins(0, 0, 0, 0)
-            g.setHorizontalSpacing(16); g.setVerticalSpacing(8); g.setColumnMinimumWidth(0, 170)
+            g.setHorizontalSpacing(T.sp("card")); g.setVerticalSpacing(T.sp("sm")); g.setColumnMinimumWidth(0, 170)
             for c, h in enumerate(("Layer", "Type", "Thickness", "Material")):
                 g.addWidget(pv.fab_key(h), 0, c, Qt.AlignTop)
             for r, (lname, kind, thick, mat) in enumerate(preset.stackup, start=1):
@@ -4274,8 +4274,8 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
                      "Rules section is read-only so it cannot overwrite them.")
         S["pm"] = pm
         S["dr_writable"] = dr_writable
-        drw = QWidget(); drg = QGridLayout(drw); drg.setContentsMargins(0, 4, 0, 0)
-        drg.setHorizontalSpacing(22); drg.setVerticalSpacing(10)
+        drw = QWidget(); drg = QGridLayout(drw); drg.setContentsMargins(0, T.sp("xs"), 0, 0)
+        drg.setHorizontalSpacing(22); drg.setVerticalSpacing(T.sp("row"))
         _PER_ROW = 3
         for i, (label, attr) in enumerate(_DR_FIELDS):
             r, c = divmod(i, _PER_ROW)
@@ -4290,7 +4290,7 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
         pv.apply_quiet_fields(drw)
         lay.addWidget(drw)
 
-        dr_actions = QHBoxLayout(); dr_actions.setSpacing(8)
+        dr_actions = QHBoxLayout(); dr_actions.setSpacing(T.sp("sm"))
         b_seed = W.btn("Seed From Fab Preset", "ghost", "Fill the design-rule floors from the selected fabrication preset")
         b_seed.setEnabled(dr_writable)
         dr_actions.addWidget(b_seed); dr_actions.addStretch(1)
@@ -4375,10 +4375,10 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
         host._ps_delete_row = _ps_delete_row                # drive/test seam
 
         ps_body = QWidget(); psl = QVBoxLayout(ps_body)
-        psl.setContentsMargins(0, 2, 0, 0); psl.setSpacing(10)
+        psl.setContentsMargins(0, 2, 0, 0); psl.setSpacing(T.sp("row"))
         for key, (ncols, hdrs, default) in _PS_SPEC.items():
-            row = QVBoxLayout(); row.setSpacing(4)
-            head = QHBoxLayout(); head.setSpacing(8)
+            row = QVBoxLayout(); row.setSpacing(T.sp("xs"))
+            head = QHBoxLayout(); head.setSpacing(T.sp("sm"))
             head.addWidget(pv.field_label(
                 {"track": "Track Widths", "via": "Via Sizes", "dp": "Diff-Pair Sizes"}[key]))
             head.addStretch(1)
@@ -4434,7 +4434,7 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
         rebuild_predefined()
 
         # ---- size-template quick-apply (Fine-Pitch / Power / Mixed / Hobby + Save As) --------
-        tmpl_row = QHBoxLayout(); tmpl_row.setSpacing(8)
+        tmpl_row = QHBoxLayout(); tmpl_row.setSpacing(T.sp("sm"))
         tmpl_row.addWidget(pv.field_label("Template"))
         ps_tmpl_combo = QComboBox(); ps_tmpl_combo.setFixedWidth(160)
         ps_tmpl_combo.setToolTip("Pre-fill the track / via / diff-pair tables from a coherent set")
@@ -4532,9 +4532,9 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
             return tbl
 
         sev_body = QWidget(); svl = QVBoxLayout(sev_body)
-        svl.setContentsMargins(0, 2, 0, 0); svl.setSpacing(8)
+        svl.setContentsMargins(0, 2, 0, 0); svl.setSpacing(T.sp("sm"))
         # scheme quick-apply (Strict / Moderate / Relaxed + Save As)
-        scheme_row = QHBoxLayout(); scheme_row.setSpacing(8)
+        scheme_row = QHBoxLayout(); scheme_row.setSpacing(T.sp("sm"))
         scheme_row.addWidget(pv.field_label("Scheme"))
         sev_scheme_combo = QComboBox(); sev_scheme_combo.setFixedWidth(160)
         sev_scheme_combo.setToolTip("Pre-fill every DRC/ERC severity to a checking posture")
@@ -4632,7 +4632,7 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
         pinmap_state = {"touched": False}
 
         pin_body = QWidget(); pbl = QVBoxLayout(pin_body)
-        pbl.setContentsMargins(0, 2, 0, 0); pbl.setSpacing(8)
+        pbl.setContentsMargins(0, 2, 0, 0); pbl.setSpacing(T.sp("sm"))
         pbl.addWidget(W.body(
             "Pin-to-pin conflict severity used by ERC. Click a cell to cycle "
             "OK → warning → error; the matrix is symmetric so the mirror updates too.",
@@ -4690,7 +4690,7 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
         _DNC_DEFAULTS = {"clearance": 0.2, "track_width": 0.2,
                          "microvia_diameter": 0.3, "microvia_drill": 0.1}
         dnc_body = QWidget(); dncg = QGridLayout(dnc_body)
-        dncg.setContentsMargins(0, 2, 0, 0); dncg.setHorizontalSpacing(22); dncg.setVerticalSpacing(10)
+        dncg.setContentsMargins(0, 2, 0, 0); dncg.setHorizontalSpacing(22); dncg.setVerticalSpacing(T.sp("row"))
         for _i, (_label, _attr) in enumerate(_DNC_SPEC):
             _loaded = getattr(pm.default_netclass, _attr, None)
             _present = _loaded is not None
@@ -4723,8 +4723,8 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
         #    re-writing it). Built BEFORE flush_dre so the closure can read the rows.
         meta_state = {"vars": sorted(pm.text_variables.items()), "rows": []}
         meta_body = QWidget(); metal = QVBoxLayout(meta_body)
-        metal.setContentsMargins(0, 2, 0, 0); metal.setSpacing(8)
-        meta_top = QHBoxLayout(); meta_top.setSpacing(8)
+        metal.setContentsMargins(0, 2, 0, 0); metal.setSpacing(T.sp("sm"))
+        meta_top = QHBoxLayout(); meta_top.setSpacing(T.sp("sm"))
         meta_top.addWidget(pv.field_label("Text Variables")); meta_top.addStretch(1)
         b_meta_add = W.btn("Add", "ghost", "Add a project text variable ({VAR} -> value)")
         b_meta_del = W.btn("Remove", "ghost", "Remove the last text variable row")
@@ -4904,7 +4904,7 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
         # ── Section C — Net Classes (ncm, editable, sticky-header table) ───────────────────
         add_section("Net Classes")
 
-        nc_top = QHBoxLayout(); nc_top.setSpacing(8)
+        nc_top = QHBoxLayout(); nc_top.setSpacing(T.sp("sm"))
         nc_filter = QLineEdit(); nc_filter.setPlaceholderText("Filter classes"); nc_filter.setFixedWidth(240)
         nc_filter.setToolTip("Narrow the visible classes by name or pattern")
         nc_top.addWidget(nc_filter); nc_top.addStretch(1)
@@ -4936,7 +4936,7 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
         pv.apply_netclass_table(tbl)
         lay.addWidget(tbl)
 
-        nc_status = QVBoxLayout(); nc_status.setSpacing(4); lay.addLayout(nc_status)
+        nc_status = QVBoxLayout(); nc_status.setSpacing(T.sp("xs")); lay.addLayout(nc_status)
         S["nc_status"] = nc_status
 
         def _apply_filter():
@@ -5096,8 +5096,8 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
         S["explicit"] = explicit
 
         if board is not None:
-            bgw = QWidget(); bgg = QGridLayout(bgw); bgg.setContentsMargins(0, 4, 0, 0)
-            bgg.setHorizontalSpacing(16); bgg.setVerticalSpacing(10)
+            bgw = QWidget(); bgg = QGridLayout(bgw); bgg.setContentsMargins(0, T.sp("xs"), 0, 0)
+            bgg.setHorizontalSpacing(T.sp("card")); bgg.setVerticalSpacing(T.sp("row"))
             rr = 0
 
             def _notset(key):
@@ -5121,7 +5121,7 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
                 sx = _len_spin(unit, val[0], width=112, lo_mm=-1000.0, hi_mm=1000.0)
                 sy = _len_spin(unit, val[1], width=112, lo_mm=-1000.0, hi_mm=1000.0)
                 all_fields.append(sx); all_fields.append(sy)
-                cw = QWidget(); ch = QHBoxLayout(cw); ch.setContentsMargins(0, 0, 0, 0); ch.setSpacing(8)
+                cw = QWidget(); ch = QHBoxLayout(cw); ch.setContentsMargins(0, 0, 0, 0); ch.setSpacing(T.sp("sm"))
                 ch.addWidget(sx); ch.addWidget(sy); ch.addStretch(1)
                 bgg.addWidget(cw, rr, 1)
                 bg_fields[key] = ("coord", (sx, sy))
