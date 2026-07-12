@@ -259,6 +259,168 @@ def _elide(text: str, n: int = 44) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
+def _lib_part_label(part: dict) -> str:
+    """One library part as 'name · MPN · footprint' for the picker list (blanks dropped)."""
+    bits = [str(part.get("name") or "").strip()]
+    mpn = str(part.get("mpn") or "").strip()
+    if mpn:
+        bits.append(mpn)
+    fp = str(part.get("footprint") or "").strip()
+    if fp:
+        bits.append(fp)
+    return "  ·  ".join(b for b in bits if b)
+
+
+class LibraryPickerCard(W.Card):
+    """The owner's library-only fix surface for a group / an unmatched component: NO
+    raw-text entry into the schematic — the user either SELECTS an existing library part
+    (req c) or ADDS a new one to the Library (req b/d), and the chosen part is auto-linked
+    (lib_id + footprint + identity + 3D-model) when the plan applies (req e).
+
+    Two mutually-exclusive modes chosen by a radio-like pair:
+      • "Select from Library" — a searchable read-only combo of every library part.
+      • "Add to Library"      — pick the footprint the new part links to (+ optional
+        identity), which creates a real MySymbols symbol carrying the footprint link.
+
+    `request()` returns the resolved directive for the ref(s), or None when nothing was
+    chosen: {"kind": "link", "lib_part": {…}} or {"kind": "add", "footprint": stem,
+    "name": …, "identity": {prop: val}}."""
+
+    # Identity fields for the "Add to Library" form (written onto the NEW library symbol,
+    # not the schematic — the library is the single source of truth).
+    _ADD_FIELDS = (("MPN", "Part Number"), ("Manufacturer", "Manufacturer"),
+                   ("Datasheet", "Datasheet"), ("Description", "Description"))
+
+    def __init__(self, title: str, subtitle: str, library_index, footprint_stems,
+                 suggested_stem: str = "", on_change=None, parent=None):
+        super().__init__(pad=14, parent=parent)
+        self._library_index = list(library_index or [])
+        self._footprint_stems = list(footprint_stems or [])
+        self._on_change = on_change
+        self._mode = "select"
+
+        head = QHBoxLayout(); head.setSpacing(8)
+        head.addWidget(W.body(title, mono=True))
+        if subtitle:
+            head.addWidget(W.body(subtitle, dim=True))
+        head.addWidget(W.tag("No Match", "mut"))
+        head.addStretch(1)
+        hw = QWidget(); hw.setLayout(head); self.body.addWidget(hw)
+
+        # Mode selector: Select (default) vs Add — mutually exclusive, no free-text path.
+        modes = QHBoxLayout(); modes.setSpacing(8)
+        self._cb_select = QCheckBox("Select from Library")
+        self._cb_add = QCheckBox("Add to Library")
+        self._cb_select.setToolTip("Link this component to an existing library part.")
+        self._cb_add.setToolTip("No library part fits: create one (footprint + identity) "
+                                 "and auto-link this component to it.")
+        self._cb_select.setChecked(True)
+        self._cb_select.stateChanged.connect(lambda _=0: self._pick_mode("select"))
+        self._cb_add.stateChanged.connect(lambda _=0: self._pick_mode("add"))
+        modes.addWidget(self._cb_select); modes.addWidget(self._cb_add); modes.addStretch(1)
+        mw = QWidget(); mw.setLayout(modes); self.body.addWidget(mw)
+
+        # SELECT: a searchable, read-only-ish combo. Editable ONLY to type a search query;
+        # the value applied is always the highlighted library row (never arbitrary text) —
+        # apply() resolves the combo's current index back to a library-part record.
+        self._select_row = QWidget()
+        sr = QHBoxLayout(self._select_row); sr.setContentsMargins(0, 0, 0, 0); sr.setSpacing(8)
+        lab = W.body("Library part"); lab.setFixedWidth(104); sr.addWidget(lab, 0)
+        self._combo = QComboBox(); self._combo.setEditable(True)
+        self._combo.setInsertPolicy(QComboBox.NoInsert)     # typing NEVER adds an item
+        self._combo.setMinimumHeight(30)
+        self._combo.addItem("Choose a library part…", None)
+        for part in self._library_index:
+            self._combo.addItem(_lib_part_label(part), part.get("name"))
+        try:
+            self._combo.setCurrentIndex(0)
+            self._combo.lineEdit().setPlaceholderText("Search the library by name / MPN / footprint")
+            self._combo.lineEdit().setText("")
+        except Exception:  # noqa: BLE001
+            pass
+        # A completer over the item texts makes it a real search box.
+        self._combo.setInsertPolicy(QComboBox.NoInsert)
+        self._combo.currentIndexChanged.connect(lambda _=0: self._changed())
+        sr.addWidget(self._combo, 1)
+        self.body.addWidget(self._select_row)
+
+        # ADD: footprint pick-list (which footprint the new part links to) + identity form.
+        # Hidden until the Add mode is chosen. Its edits fill the NEW LIBRARY symbol.
+        self._add_box = QWidget()
+        ab = QVBoxLayout(self._add_box); ab.setContentsMargins(0, 0, 0, 0); ab.setSpacing(8)
+        fp_row = QWidget(); fpr = QHBoxLayout(fp_row); fpr.setContentsMargins(0, 0, 0, 0); fpr.setSpacing(8)
+        fl = W.body("Footprint"); fl.setFixedWidth(104); fpr.addWidget(fl, 0)
+        self._fp_combo = QComboBox(); self._fp_combo.setEditable(False); self._fp_combo.setMinimumHeight(30)
+        self._fp_combo.addItem("Choose a library footprint…", None)
+        for stem in self._footprint_stems:
+            self._fp_combo.addItem(stem, stem)
+        if suggested_stem:
+            i = self._fp_combo.findData(suggested_stem)
+            if i >= 0:
+                self._fp_combo.setCurrentIndex(i)
+        self._fp_combo.currentIndexChanged.connect(lambda _=0: self._changed())
+        fpr.addWidget(self._fp_combo, 1)
+        ab.addWidget(fp_row)
+        ab.addWidget(W.body("Creates a MySymbols part linked to that footprint; the fields "
+                            "below describe the new library part.", dim=True))
+        self._add_edits = {}
+        for prop, label in self._ADD_FIELDS:
+            row = QWidget(); rl = QHBoxLayout(row); rl.setContentsMargins(0, 0, 0, 0); rl.setSpacing(8)
+            pl = W.body(label); pl.setFixedWidth(104); rl.addWidget(pl, 0)
+            e = QLineEdit(); e.setPlaceholderText(f"Add {label.lower()} (optional)")
+            e.setMinimumHeight(30)
+            e.textChanged.connect(lambda _=0: self._changed())
+            rl.addWidget(e, 1)
+            ab.addWidget(row)
+            self._add_edits[prop] = e
+        self._add_box.setVisible(False)
+        self.body.addWidget(self._add_box)
+
+    # ── mode + change plumbing ─────────────────────────────────────────────────
+    def _pick_mode(self, mode):
+        # Enforce mutual exclusivity without recursing into stateChanged storms.
+        self._mode = mode
+        self._cb_select.blockSignals(True); self._cb_add.blockSignals(True)
+        self._cb_select.setChecked(mode == "select")
+        self._cb_add.setChecked(mode == "add")
+        self._cb_select.blockSignals(False); self._cb_add.blockSignals(False)
+        self._select_row.setVisible(mode == "select")
+        self._add_box.setVisible(mode == "add")
+        self._changed()
+
+    def _changed(self):
+        if callable(self._on_change):
+            self._on_change()
+
+    # ── the resolved directive ─────────────────────────────────────────────────
+    def selected_lib_part(self):
+        """The library-part record currently chosen in Select mode, or None."""
+        name = self._combo.currentData()
+        if not name:
+            return None
+        for part in self._library_index:
+            if part.get("name") == name:
+                return part
+        return None
+
+    def request(self):
+        """Resolve this card to a link/add directive, or None if nothing usable is chosen.
+        Never returns free-text bound for the schematic: Select yields a library-part record;
+        Add yields a footprint stem (+ optional identity for the NEW library part)."""
+        if self._mode == "select":
+            part = self.selected_lib_part()
+            if part is None:
+                return None
+            return {"kind": "link", "lib_part": part}
+        # Add mode: require a footprint stem (the symbol->footprint link must be real).
+        stem = self._fp_combo.currentData()
+        if not stem:
+            return None
+        identity = {prop: e.text().strip() for prop, e in self._add_edits.items()
+                    if e.text().strip()}
+        return {"kind": "add", "footprint": stem, "name": None, "identity": identity}
+
+
 class FillPreviewDialog(QDialog):
     """One reviewable preview covering every proposed change before anything is
     written. Grouped by sheet -> component; each component shows a confidence chip
@@ -292,11 +454,14 @@ class FillPreviewDialog(QDialog):
         self._filter_cards = []
         self._filter_prefix = ""
         self._passives_only = False
-        # M3/M4: user-typed fills. _group_edits = [(group, checkbox, {prop: QLineEdit})];
-        # _manual_edits = [(ref, {prop: QLineEdit})]. _extra_selected is filled on apply().
-        self._group_edits = []
-        self._manual_edits = []
-        self._extra_selected = set()
+        # Library-only linking (owner: NO free-text on the schematic; select-or-add from the
+        # Library). _link_cards = [(ref-or-refs tuple, LibraryPickerCard)] for the group /
+        # "still needs input" sections. _library_index is the searchable pick-list; each card
+        # produces a resolved link/add request read on apply().
+        self._library_index = libfill.library_parts(self._cfg)
+        self._link_cards = []               # [(refs_tuple, LibraryPickerCard)]
+        self._extra_selected = set()        # (ref, prop) pairs recorded on apply()
+        self._link_requests = {}            # ref -> link/add request dict, recorded on apply()
         # Passive groups (fill-once) + the components that need manual entry (no library
         # match / distributor data and not a passive) — computed from the components.
         self._groups = libfill.passive_groups(self._components)
@@ -388,7 +553,7 @@ class FillPreviewDialog(QDialog):
         if self._groups:
             hdr = W.section_header("Passive Groups")
             bl.addWidget(hdr)
-            bl.addWidget(W.body("Enter the part number once per group; it fills every "
+            bl.addWidget(W.body("Pick one library part per group (or add one); it links every "
                                 "component in that group.", dim=True))
             self._filter_sections.append((hdr, {r for g in self._groups for r in g["refs"]}))
             for group in self._groups:
@@ -401,8 +566,8 @@ class FillPreviewDialog(QDialog):
         if self._manual_components:
             hdr = W.section_header("Still Needs Your Input")
             bl.addWidget(hdr)
-            bl.addWidget(W.body("These components have no library match. Fill what you "
-                                "can; blanks are left untouched.", dim=True))
+            bl.addWidget(W.body("These components have no library match. Select a library "
+                                "part or add one; it is auto-linked to the schematic.", dim=True))
             self._filter_sections.append((hdr, {c.get("ref", "") for c, _ in self._manual_components}))
             for comp, passport in self._manual_components:
                 card = self._manual_card(comp, passport)
@@ -482,77 +647,48 @@ class FillPreviewDialog(QDialog):
         rl.addStretch(1)
         return row
 
-    def _field_row(self, label, prop, placeholder=""):
-        """A labelled editable field row (label + QLineEdit). Returns (row_widget, edit)."""
-        row = QWidget(); rl = QHBoxLayout(row)
-        rl.setContentsMargins(0, 0, 0, 0); rl.setSpacing(8)
-        lab = W.body(label); lab.setFixedWidth(104)
-        rl.addWidget(lab, 0)
-        edit = QLineEdit(); edit.setPlaceholderText(placeholder or f"Add {label.lower()}")
-        edit.setMinimumHeight(30)
-        edit.textChanged.connect(lambda _=0: self._sync_apply_enabled())
-        rl.addWidget(edit, 1)
-        return row, edit
-
     def _group_card(self, group):
-        card = W.Card(pad=14)
-        head = QHBoxLayout(); head.setSpacing(8)
-        head.addWidget(W.body(group["label"], mono=True))
-        head.addStretch(1)
-        cb = QCheckBox(f"Fill all {len(group['refs'])}")
-        cb.setToolTip("Apply the values below to every component in this group.")
-        cb.stateChanged.connect(lambda _=0: self._sync_apply_enabled())
-        head.addWidget(cb)
-        head_w = QWidget(); head_w.setLayout(head); card.body.addWidget(head_w)
+        """A fill-once library picker for one passive group: choose ONE library part (or
+        add one) and it links every ref in the group. No free-text on the schematic."""
+        stems = libfill.library_footprint_stems(self._cfg)
         refs = ", ".join(group["refs"][:12]) + (" …" if len(group["refs"]) > 12 else "")
-        card.body.addWidget(W.body(refs, dim=True, mono=True))
-        edits = {}
-        for prop, label in libfill._GROUP_FIELDS:
-            row, edit = self._field_row(label, prop)
-            card.body.addWidget(row)
-            edits[prop] = edit
-        self._group_edits.append((group, cb, edits))
+        card = LibraryPickerCard(
+            group["label"], refs, self._library_index, stems,
+            suggested_stem=group.get("footprint", ""),
+            on_change=self._sync_apply_enabled)
+        self._link_cards.append((tuple(group["refs"]), card))
         return card
 
     def _manual_card(self, comp, passport):
-        card = W.Card(pad=14)
-        head = QHBoxLayout(); head.setSpacing(8)
-        head.addWidget(W.body(str(comp.get("ref", "")), mono=True))
+        """A library picker for one unmatched component: select an existing library part or
+        add a new one; the chosen part is auto-linked on apply. No free-text on the schematic."""
+        ref = comp.get("ref", "")
+        stems = libfill.library_footprint_stems(self._cfg)
         val = str(comp.get("value") or "").strip()
-        if val:
-            head.addWidget(W.body(val, dim=True))
-        head.addWidget(W.tag("No Match", "mut"))
-        head.addStretch(1)
-        head_w = QWidget(); head_w.setLayout(head); card.body.addWidget(head_w)
-        props = comp.get("props") or {}
-        edits = {}
-        for prop, label in libfill._GROUP_FIELDS:
-            if not libfill._is_blank(props.get(prop)):
-                continue                        # already filled on this instance
-            row, edit = self._field_row(label, prop)
-            card.body.addWidget(row)
-            edits[prop] = edit
-        self._manual_edits.append((comp.get("ref", ""), edits))
+        suggested = LM.footprint_name(comp.get("footprint")
+                                      or (comp.get("props") or {}).get("Footprint") or "")
+        card = LibraryPickerCard(
+            str(ref), val, self._library_index, stems,
+            suggested_stem=suggested, on_change=self._sync_apply_enabled)
+        self._link_cards.append(((ref,), card))
         return card
 
-    def _collect_manual(self):
-        """Gather the user-typed group + manual values into {(ref, prop): value}. Scoped
-        to visible cards (mirrors selected()): a group/manual card hidden by the filter is
-        not collected, so the filter stays honest for typed fills too."""
+    def _collect_links(self):
+        """Resolve every VISIBLE picker card to a per-ref link/add request:
+        {ref: {"kind": "link"|"add", …}}. A group's single request fans to every ref in the
+        group (fill-once). Scoped to visible cards so the triage filter stays honest."""
         out = {}
-        for group, cb, edits in self._group_edits:
-            if not cb.isChecked() or not any(self._ref_visible(r) for r in group["refs"]):
+        for refs, card in self._link_cards:
+            if not any(self._ref_visible(r) for r in refs):
                 continue
-            fv = {prop: e.text().strip() for prop, e in edits.items() if e.text().strip()}
-            if fv:
-                out.update(libfill.expand_group_fill(group, fv))
-        for ref, edits in self._manual_edits:
-            if not self._ref_visible(ref):
+            try:
+                req = card.request()
+            except RuntimeError:
                 continue
-            for prop, e in edits.items():
-                v = e.text().strip()
-                if v:
-                    out[(ref, prop)] = v
+            if not req:
+                continue
+            for r in refs:
+                out[r] = req
         return out
 
     # ── triage filter ─────────────────────────────────────────────────────────
@@ -625,17 +761,33 @@ class FillPreviewDialog(QDialog):
     def annotate_selected(self):
         return bool(self._annotate_box and self._annotate_box.isChecked())
 
+    def library_links(self):
+        """The per-ref link/add directives chosen in the picker cards, recorded on apply().
+        {ref: {"kind": "link", "lib_part": {…}}} or {ref: {"kind": "add", …}}. The Prepare
+        flow reads this after exec_ and runs the KiCad-correct link (lib_id + footprint +
+        3D-model) via nd_library_fill."""
+        return dict(self._link_requests)
+
     def _has_selection(self):
-        return bool(self.selected()) or self.annotate_selected() or bool(self._collect_manual())
+        return (bool(self.selected()) or self.annotate_selected()
+                or bool(self._collect_links()))
 
     def _sync_apply_enabled(self):
         self._apply_btn.setEnabled(self._has_selection())
         sel = self.selected()
-        comps = len({r for r, _p in sel})
+        links = self._collect_links()
+        comps = len({r for r, _p in sel} | set(links))
         need = sum(1 for cb, _r, _p, _k, conf in self._boxes
                    if conf == "verify" and cb.isChecked())
         parts = [f"{plural(comps, 'component')}",
                  f"{plural(len(sel), 'field')}"]
+        if links:
+            n_link = sum(1 for r in links.values() if r["kind"] == "link")
+            n_add = sum(1 for r in links.values() if r["kind"] == "add")
+            if n_link:
+                parts.append(f"{plural(n_link, 'library link')}")
+            if n_add:
+                parts.append(f"{n_add} new library {'part' if n_add == 1 else 'parts'}")
         if self.annotate_n and self.annotate_selected():
             parts.append(f"{plural(self.annotate_n, 'annotation')}")
         if need:
@@ -649,14 +801,10 @@ class FillPreviewDialog(QDialog):
         the flow reads ``selected()`` / ``annotate_selected()`` after ``exec_`` and writes."""
         if not self._has_selection():
             return
-        # Merge the user-typed group + manual fills into the plan (as FieldChanges) so the
-        # writer treats them exactly like library/distributor fills; record their keys so
-        # selected() returns them too.
-        manual = self._collect_manual()
-        if manual:
-            libfill.merge_manual_changes(self.plan, manual, self._components,
-                                         self._sheet_of, source="manual")
-            self._extra_selected = set(manual.keys())
+        # Record the per-ref library link/add directives so the Prepare flow can run the
+        # KiCad-correct link (lib_id + footprint + 3D-model) after exec_. No free-text ever
+        # reaches the schematic — every directive resolves to a library part.
+        self._link_requests = self._collect_links()
         self.applied = True
         if callable(self._on_apply):
             self._on_apply(self.selected(), self.annotate_selected())
@@ -1439,6 +1587,7 @@ def _health_panel(ctx, state) -> QWidget:
         safe/pre-checked keys so an offscreen drive runs the whole flow. GUI: parent to the
         top-level window (never the rebuildable body), then map the checked pairs back to keys."""
         from ..util import _headless
+        prep["links"] = {}                          # reset the per-run link/add directives
         if _headless():
             return [op["key"] for op in ops if op.get("safe")]
         dlg = FillPreviewDialog(prep.get("plan") or {"items": []}, prep.get("annotate_n", 0),
@@ -1447,6 +1596,7 @@ def _health_panel(ctx, state) -> QWidget:
         host._fill_dialog = dlg
         if dlg.exec_() != QDialog.Accepted or not dlg.applied:
             return None
+        prep["links"] = dlg.library_links()         # {ref: link/add directive} for _prepare_apply
         keys = [_op_key(r, p) for (r, p) in dlg.selected()]
         if dlg.annotate_selected():
             keys.append(_ANNOTATE_KEY)
@@ -1483,6 +1633,62 @@ def _health_panel(ctx, state) -> QWidget:
             except OSError:
                 pass
         res = libfill.apply_fill_plan(plan, selected, ctx.cfg, log)
+        # Library-only links (owner requirement): each unmatched / grouped component was
+        # pointed at an existing library part (SELECT) or a newly-added one (ADD). Run the
+        # KiCad-correct link now — lib_id + footprint + identity + persisted 3D-model line —
+        # so placing the symbol pulls the right footprint onto the PCB and the right 3D model
+        # in the viewer, not just metadata fields.
+        links = prep.get("links") or {}
+        link_summary = {"linked": 0, "added": 0, "models": 0}
+        sheet_of = prep.get("sheet_of") or {}
+        # An ADD directive is shared by every ref of a passive group; create each distinct
+        # (footprint, identity, name) library part ONCE, then link every ref to it.
+        add_cache = {}
+        for ref, req in links.items():
+            sheet = sheet_of.get(ref)
+            if not sheet:
+                res.setdefault("errors", []).append(f"{ref}: no sheet for library link")
+                continue
+            try:
+                if req.get("kind") == "add":
+                    ck = (req.get("footprint"), req.get("name"),
+                          tuple(sorted((req.get("identity") or {}).items())))
+                    part = add_cache.get(ck)
+                    if part is None:
+                        added = libfill.add_library_part(
+                            ctx.cfg, req["footprint"], name=req.get("name"),
+                            identity=req.get("identity"), log=log)
+                        if added.get("errors"):
+                            res.setdefault("errors", []).extend(added["errors"])
+                        if not added.get("name"):
+                            continue
+                        # Refetch the just-created part's record so link fills its identity.
+                        idx = libfill.library_parts(ctx.cfg)
+                        part = next((p for p in idx if p.get("name") == added["name"]), None)
+                        if part is None:
+                            part = {"name": added["name"], "footprint": added["footprint"]}
+                        add_cache[ck] = part
+                        link_summary["added"] += 1
+                    lr = libfill.link_placed_component(ctx.cfg, sheet, ref, part, log)
+                elif req.get("kind") == "link":
+                    lr = libfill.link_placed_component(ctx.cfg, sheet, ref,
+                                                       req.get("lib_part") or {}, log)
+                else:
+                    continue
+            except Exception as e:  # noqa: BLE001
+                res.setdefault("errors", []).append(f"{ref} link: {e}")
+                continue
+            if lr.get("errors"):
+                res.setdefault("errors", []).extend(lr["errors"])
+            if lr.get("written"):
+                link_summary["linked"] += 1
+                if sheet not in res.setdefault("written_files", []):
+                    res["written_files"].append(sheet)
+                for b in lr.get("backups", []):
+                    if b not in res.setdefault("backups", []):
+                        res["backups"].append(b)
+                if lr.get("model"):
+                    link_summary["models"] += 1
         annotated = 0
         if do_annotate:
             annotated = phealth.annotate_project(snap["schs"], apply=True)
@@ -1503,7 +1709,8 @@ def _health_panel(ctx, state) -> QWidget:
                 prepared[sch] = Path(sch).read_text(encoding="utf-8")
             except OSError:
                 pass
-        wrote = bool(res.get("fields_written", 0) or annotated)
+        wrote = bool(res.get("fields_written", 0) or annotated
+                     or link_summary["linked"] or link_summary["added"])
         # Update the reversibility holder as ONE unit, only on a real write. A later Prepare
         # that writes nothing must NOT overwrite originals/prepared with the current on-disk
         # state (that would be the already-prepared text, collapsing the round-trip so Restore
@@ -1548,6 +1755,22 @@ def _health_panel(ctx, state) -> QWidget:
         done, errors = [], list(res.get("errors", []))
         if filled:
             done.append(f"Filled {plural(filled, 'field')} across {plural(comps, 'component')}.")
+        if link_summary["added"]:
+            done.append(f"Added {plural(link_summary['added'], 'new part')} to the Library.")
+        if link_summary["linked"]:
+            extra = (f" ({plural(link_summary['models'], '3D model')} attached)"
+                     if link_summary["models"] else "")
+            done.append(f"Linked {plural(link_summary['linked'], 'component')} to a library "
+                        f"symbol: lib_id + footprint written{extra}.")
+            # Honest scope note (owner: never fake a sync). The link is written into the
+            # SCHEMATIC + the library files, which is what makes KiCad resolve the right
+            # footprint + 3D model when the symbol is placed. Propagating the new footprint
+            # onto an EXISTING .kicad_pcb needs KiCad's "Update PCB from Schematic" (an IPC /
+            # GUI action, not offered by kicad-cli); run that in KiCad once to sync the board.
+            if snap.get("boards"):
+                done.append("Board sync: open the PCB and run Tools ▸ Update PCB from "
+                            "Schematic to pull the new footprints onto the existing board "
+                            "(kicad-cli has no offline equivalent).")
         if annotated:
             done.append(f"Annotated {plural(annotated, 'reference')}.")
         if wrote and last_prepare["diff"] and last_prepare["diff"]["rows"]:

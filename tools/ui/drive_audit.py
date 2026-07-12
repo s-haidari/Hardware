@@ -841,37 +841,124 @@ def audit_projects_styled():
                 _fail("Projects/Health: temp Prepare left its stale ERC cache in place")
         except Exception as e:  # noqa: BLE001
             _fail("Projects/Health: ERC before/after report line", e)
-        # M3/M4: the preview dialog groups identical passives (fill-once) and prompts for
-        # unmatched components; typed values merge into the plan and apply. Drive it on a
-        # synthetic plan so the assertion is deterministic (headless skips exec_).
+        # M3/M4 (owner: library-only, no free-text): the preview groups identical passives
+        # and offers unmatched components a LIBRARY PICKER — SELECT an existing part or ADD
+        # one — and NEVER an editable schematic field. Drive it on a real temp library so the
+        # link path (lib_id + footprint + persisted 3D-model line) can be asserted on disk.
         try:
-            plan = {"items": [], "summary": {}}
+            import shutil
+            from PyQt5.QtWidgets import QLineEdit as _QLE2
+            libd = Path(tempfile.mkdtemp(prefix="drive_link_"))
+            fpdir = libd / "MyFootprints.pretty"; fpdir.mkdir()
+            mdir = libd / "My3DModels"; mdir.mkdir()
+            symp = libd / "MySymbols.kicad_sym"
+            # One real library part (a 10k resistor pointing at R_0402) so SELECT has a target.
+            symp.write_text(
+                '(kicad_symbol_lib (version 20211014) (generator "t")\n'
+                '  (symbol "R_10k"\n'
+                '    (property "Reference" "R" (at 0 0 0) (effects (font (size 1.27 1.27))))\n'
+                '    (property "Value" "10k" (at 0 2 0) (effects (font (size 1.27 1.27))))\n'
+                '    (property "Footprint" "MyFootprints:R_0402" (at 0 -2 0) (effects (font (size 1.27 1.27)) hide))\n'
+                '  )\n)\n', encoding="utf-8", newline="\n")
+            (fpdir / "R_0402.kicad_mod").write_text(
+                '(footprint "R_0402" (layer "F.Cu")\n  (pad "1" smd rect (at 0 0))\n)\n',
+                encoding="utf-8", newline="\n")
+            # A footprint the ADD path can create a NEW symbol for, with a name-matching model.
+            (fpdir / "USB_C_Recept.kicad_mod").write_text(
+                '(footprint "USB_C_Recept" (layer "F.Cu")\n  (pad "1" smd rect (at 0 0))\n)\n',
+                encoding="utf-8", newline="\n")
+            (mdir / "USB_C_Recept.step").write_text("solid\n", encoding="utf-8", newline="\n")
+            lcfg = {"SymbolLib": str(symp), "FootprintLib": str(fpdir), "ModelLib": str(mdir)}
+            sch = libd / "s.kicad_sch"
+            sch.write_text(
+                '(kicad_sch (version 20230121) (generator eeschema)\n'
+                '  (symbol (lib_id "Device:R") (at 10 10 0) (unit 1)\n'
+                '    (property "Reference" "R1" (at 10 5 0))\n'
+                '    (property "Value" "10k" (at 10 15 0))\n'
+                '    (property "Footprint" "" (at 10 10 0)) )\n'
+                '  (symbol (lib_id "Device:R") (at 20 10 0) (unit 1)\n'
+                '    (property "Reference" "R2" (at 20 5 0))\n'
+                '    (property "Value" "10k" (at 20 15 0))\n'
+                '    (property "Footprint" "" (at 20 10 0)) )\n'
+                '  (symbol (lib_id "Conn:X") (at 30 10 0) (unit 1)\n'
+                '    (property "Reference" "J1" (at 30 5 0))\n'
+                '    (property "Value" "USB-C" (at 30 15 0))\n'
+                '    (property "Footprint" "" (at 30 10 0)) )\n)\n',
+                encoding="utf-8", newline="\n")
             comps = [
-                {"ref": "R1", "value": "10k", "footprint": "MyFootprints:R_0402",
+                {"ref": "R1", "value": "10k", "footprint": "", "lib_id": "Device:R",
                  "props": {"Reference": "R1", "Value": "10k"}},
-                {"ref": "R2", "value": "10k", "footprint": "MyFootprints:R_0402",
+                {"ref": "R2", "value": "10k", "footprint": "", "lib_id": "Device:R",
                  "props": {"Reference": "R2", "Value": "10k"}},
-                {"ref": "J1", "value": "USB-C", "footprint": "",
+                {"ref": "J1", "value": "USB-C", "footprint": "", "lib_id": "Conn:X",
                  "props": {"Reference": "J1", "Value": "USB-C"}},
             ]
-            sof = {c["ref"]: "s.kicad_sch" for c in comps}
-            dlg = PROJ.FillPreviewDialog(plan, 0, cfg={}, components=comps, sheet_of=sof)
-            if not dlg._groups:
-                _fail("Projects/Health: passive group not detected in the preview")
-            grp, cb, edits = dlg._group_edits[0]
-            edits["MPN"].setText("RC0402-10K"); cb.setChecked(True)
-            for ref, medits in dlg._manual_edits:
-                if ref == "J1":
-                    medits["Datasheet"].setText("http://ds")
+            sof = {c["ref"]: str(sch) for c in comps}
+            dlg = PROJ.FillPreviewDialog({"items": [], "summary": {}}, 0, cfg=lcfg,
+                                         components=comps, sheet_of=sof)
+            if not dlg._link_cards:
+                _fail("Projects/Health: no library picker cards for the group/unmatched sections")
+            # (req a) NOT ONE group/manual card may expose an editable QLineEdit for a
+            # SCHEMATIC value. The only line-edits allowed are the combo's search box and the
+            # Add-to-Library identity form (which fills the NEW library part, not the schematic).
+            for refs, card in dlg._link_cards:
+                for e in card._select_row.findChildren(_QLE2):
+                    # the combo's own search line-edit is the sole permitted one in Select mode
+                    if e is not card._combo.lineEdit():
+                        _fail(f"Projects/Health: library picker {refs} exposed a raw schematic field")
+            # Group card (R1/R2): SELECT the existing R_10k library part → fill-once link.
+            grp_refs, grp_card = next(((r, c) for r, c in dlg._link_cards if set(r) >= {"R1", "R2"}),
+                                      (None, None))
+            if grp_card is None:
+                _fail("Projects/Health: passive group picker not found")
+            i = grp_card._combo.findData("R_10k")
+            if i < 0:
+                _fail("Projects/Health: library part R_10k missing from the picker")
+            grp_card._combo.setCurrentIndex(i)
+            # Manual card (J1): ADD a new library part for the USB_C_Recept footprint.
+            j_refs, j_card = next(((r, c) for r, c in dlg._link_cards if r == ("J1",)), (None, None))
+            if j_card is None:
+                _fail("Projects/Health: unmatched J1 picker not found")
+            j_card._pick_mode("add")
+            fi = j_card._fp_combo.findData("USB_C_Recept")
+            if fi < 0:
+                _fail("Projects/Health: USB_C_Recept footprint missing from the Add pick-list")
+            j_card._fp_combo.setCurrentIndex(fi)
+            j_card._add_edits["MPN"].setText("USB4110-GF-A")
             dlg.apply(); _pump()
-            sel = dlg.selected()
-            if ("R1", "MPN") not in sel or ("R2", "MPN") not in sel:
-                _fail("Projects/Health: passive fill-once did not fan out to every ref")
-            if ("J1", "Datasheet") not in sel:
-                _fail("Projects/Health: manual fill not recorded")
+            links = dlg.library_links()
+            if links.get("R1", {}).get("kind") != "link" or links.get("R2", {}).get("kind") != "link":
+                _fail(f"Projects/Health: group SELECT did not fan a link to every ref, got {links!r}")
+            if links.get("J1", {}).get("kind") != "add":
+                _fail(f"Projects/Health: unmatched ADD not recorded, got {links!r}")
+            # Now run the real link backends and assert the SCHEMATIC lib_id was rewritten and
+            # the footprint carries a persisted (model …) line (req c/e).
+            lr = PROJ.libfill.link_placed_component(lcfg, str(sch), "R1",
+                                                    links["R1"]["lib_part"])
+            if lr.get("lib_id") != "MySymbols:R_10k":
+                _fail(f"Projects/Health: link did not target MySymbols:R_10k, got {lr!r}")
+            txt = sch.read_text(encoding="utf-8")
+            if '(lib_id "MySymbols:R_10k")' not in txt:
+                _fail("Projects/Health: placed R1 lib_id was not rewritten on disk")
+            if 'MyFootprints:R_0402' not in txt:
+                _fail("Projects/Health: placed R1 footprint was not written on disk")
+            add = PROJ.libfill.add_library_part(lcfg, "USB_C_Recept",
+                                                identity={"MPN": "USB4110-GF-A"})
+            if not add.get("name"):
+                _fail(f"Projects/Health: ADD did not create a library symbol, got {add!r}")
+            idx2 = PROJ.libfill.library_parts(lcfg)
+            newp = next((p for p in idx2 if p.get("name") == add["name"]), None)
+            lr2 = PROJ.libfill.link_placed_component(lcfg, str(sch), "J1", newp or add)
+            txt2 = sch.read_text(encoding="utf-8")
+            if f'(lib_id "MySymbols:{add["name"]}")' not in txt2:
+                _fail("Projects/Health: ADD path did not rewrite J1 lib_id on disk")
+            fpmod = (fpdir / "USB_C_Recept.kicad_mod").read_text(encoding="utf-8")
+            if "model" not in fpmod or "USB_C_Recept.step" not in fpmod:
+                _fail(f"Projects/Health: ADD path did not persist the 3D-model line, got {fpmod!r}")
             dlg.deleteLater()
+            shutil.rmtree(libd, ignore_errors=True)
         except Exception as e:  # noqa: BLE001
-            _fail("Projects/Health: preview groups / manual fill", e)
+            _fail("Projects/Health: library-only picker link/add", e)
 
     def _bom(p):
         from PyQt5.QtWidgets import QTableWidget

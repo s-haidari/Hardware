@@ -520,21 +520,28 @@ def _is_placed_instance(block: str) -> bool:
 
 
 def write_fields_to_sheet(sheet_path, changes_by_ref: Dict[str, Dict[str, str]],
-                          *, backup: bool = True) -> int:
-    """Write property changes into a `.kicad_sch`, safely.
+                          *, lib_id_by_ref: Optional[Dict[str, str]] = None,
+                          backup: bool = True) -> int:
+    """Write property changes (and, optionally, a repointed `(lib_id …)`) into a
+    `.kicad_sch`, safely.
 
-    `changes_by_ref` = {ref: {prop: new_value, ...}}. For each PLACED top-level
-    `(symbol …)` instance whose Reference is a key in `changes_by_ref`, set/insert
-    each property via `LibraryManager.set_symbol_property` and splice the block back.
-    Writes a `.bak` sibling (when `backup`) then atomically replaces the file — only
+    `changes_by_ref` = {ref: {prop: new_value, ...}}. `lib_id_by_ref` = {ref: lib_id}
+    repoints a PLACED instance's `(lib_id "…")` — this is what physically links the
+    placed component to a shared-library symbol (and, through that symbol's Footprint
+    property + the footprint's model line, to the right footprint + 3D model), not just
+    a metadata field. For each PLACED top-level `(symbol …)` instance whose Reference is
+    a key in either map, set/insert each property via `LibraryManager.set_symbol_property`
+    and rewrite the lib_id via `LibraryManager.set_symbol_lib_id`, then splice the block
+    back. Writes a `.bak` sibling (when `backup`) then atomically replaces the file — only
     if the text actually changed. Returns the count of components written.
 
     Never touches the `(lib_symbols)` cache: cache symbols are excluded because they
     have no `(lib_id ...)` child (see `_is_placed_instance`); their bare-prefix
     Reference (e.g. "R") also won't match a real ref key.
     """
+    lib_id_by_ref = lib_id_by_ref or {}
     path = Path(sheet_path)
-    if not changes_by_ref or not path.is_file():
+    if not (changes_by_ref or lib_id_by_ref) or not path.is_file():
         return 0
     text = path.read_text(encoding="utf-8")
 
@@ -548,10 +555,13 @@ def write_fields_to_sheet(sheet_path, changes_by_ref: Dict[str, Dict[str, str]],
             continue
         ref = LM.extract_symbol_properties(block).get("Reference", "")
         props = changes_by_ref.get(ref)
-        if not props:
+        new_lib_id = lib_id_by_ref.get(ref)
+        if not props and not new_lib_id:
             continue
         edited = block
-        for prop, val in props.items():
+        if new_lib_id:
+            edited = LM.set_symbol_lib_id(edited, new_lib_id)
+        for prop, val in (props or {}).items():
             edited = LM.set_symbol_property(edited, prop, val)
         if edited != block:
             new_text = new_text[:a] + edited + new_text[b:]
@@ -575,6 +585,159 @@ class _NullLog:
 
     def write(self, msg):  # noqa: D401
         pass
+
+
+# ── Library-only linking (owner: NO free-text; select-or-add from the Library) ────
+# The identity fields a linked part fills onto the placed schematic instance, keyed by
+# the library-part record's field -> the schematic property that carries it.
+_LINK_IDENTITY = (("mpn", "MPN"), ("manufacturer", "Manufacturer"),
+                  ("datasheet", "Datasheet"), ("description", "Description"))
+
+
+def ensure_model_link_for_footprint(cfg: dict, fp_stem: str, log=None) -> dict:
+    """Persist the physical `(model …)` line on the shared-library footprint `fp_stem`
+    so its 3D model travels with the footprint (req e). Best-name-matches a file in
+    ModelLib via `match_model_for_footprint` and writes it with `ensure_footprint_model`.
+    Returns {"attached": bool, "model": <filename|None>, "reason": <code>}:
+      reason "" (attached / already), "no_fp_dir", "no_fp_file", "no_model_dir",
+      "no_match" (footprint resolves but no name-matching model file exists).
+    Idempotent — a footprint already carrying the right line is a no-op ("attached" True)."""
+    log = log or _NullLog()
+    stem = LM.footprint_name(fp_stem or "")
+    if not stem:
+        return {"attached": False, "model": None, "reason": "no_fp_file"}
+    fp_dir = cfg.get("FootprintLib")
+    if not fp_dir:
+        return {"attached": False, "model": None, "reason": "no_fp_dir"}
+    fp_path = Path(fp_dir) / f"{stem}.kicad_mod"
+    if not fp_path.is_file():
+        return {"attached": False, "model": None, "reason": "no_fp_file"}
+    mdl_dir = cfg.get("ModelLib")
+    if not mdl_dir or not Path(mdl_dir).is_dir():
+        return {"attached": False, "model": None, "reason": "no_model_dir"}
+    model_files = [p for p in Path(mdl_dir).glob("*")
+                   if p.suffix.lower() in (".step", ".stp", ".wrl")]
+    guess = LM.match_model_for_footprint(stem, model_files)
+    if guess is None:
+        return {"attached": False, "model": None, "reason": "no_match"}
+    text = LM.read_text(fp_path)
+    new_text = LM.ensure_footprint_model(text, guess.name)
+    if new_text != text:
+        LM.write_text(fp_path, new_text)
+    return {"attached": True, "model": guess.name, "reason": ""}
+
+
+def link_placed_component(cfg: dict, sheet_path, ref: str, lib_part: dict,
+                          log=None, *, backup: bool = True) -> dict:
+    """Point the placed component `ref` at the EXISTING library part `lib_part` — the
+    KiCad-correct link (req c/e), not just metadata:
+
+      1. rewrite the instance's `(lib_id …)` to `MySymbols:<lib_part.name>` so KiCad
+         resolves the symbol from the shared library;
+      2. write the instance's Footprint property to `MyFootprints:<lib_part.footprint>`
+         (pulled from the library part) so the right footprint lands on the PCB;
+      3. fill the instance's identity props (MPN/Manufacturer/Datasheet/Description)
+         from the library part;
+      4. persist the footprint's `(model …)` line (so the right 3D model travels), then
+      5. re-register MySymbols/MyFootprints/${MY3DMODELS} so all of it resolves.
+
+    Every write goes through `write_fields_to_sheet` (one .bak + atomic replace). Returns
+    {"written", "lib_id", "footprint", "fields", "model", "backups", "errors"}."""
+    log = log or _NullLog()
+    name = (lib_part or {}).get("name") or ""
+    result = {"written": 0, "lib_id": "", "footprint": "", "fields": [],
+              "model": None, "backups": [], "errors": []}
+    if not ref or not name:
+        result["errors"].append("link: missing ref or library part name")
+        return result
+    lib_id = LM.qualify_symbol(name)
+    fp_stem = LM.footprint_name(lib_part.get("footprint") or "")
+    changes: Dict[str, str] = {}
+    if fp_stem:
+        changes["Footprint"] = LM.qualify_footprint(fp_stem)
+    for field, prop in _LINK_IDENTITY:
+        val = str(lib_part.get(field) or "").strip()
+        if val:
+            changes[prop] = val
+    try:
+        n = write_fields_to_sheet(sheet_path, {ref: changes} if changes else {},
+                                  lib_id_by_ref={ref: lib_id}, backup=backup)
+    except Exception as e:  # noqa: BLE001
+        result["errors"].append(f"{Path(sheet_path).as_posix()}: {e}")
+        return result
+    result["written"] = n
+    result["lib_id"] = lib_id
+    result["footprint"] = changes.get("Footprint", "")
+    result["fields"] = sorted(changes)
+    if n:
+        bak = Path(sheet_path).with_suffix(Path(sheet_path).suffix + ".bak")
+        if backup and bak.exists():
+            result["backups"].append(str(bak))
+    # (e) persist the footprint's model line + re-register so footprint + 3D model resolve.
+    if fp_stem:
+        m = ensure_model_link_for_footprint(cfg, fp_stem, log)
+        result["model"] = m.get("model")
+        if m["reason"] not in ("", "no_match"):
+            result["errors"].append(f"model link ({fp_stem}): {m['reason']}")
+    if n:
+        try:
+            LM.register_libraries(cfg, log)
+        except Exception as e:  # noqa: BLE001
+            result["errors"].append(f"register_libraries: {e}")
+    return result
+
+
+def add_library_part(cfg: dict, footprint_stem: str, *, name=None,
+                     source_symbol=None, identity: Optional[Dict[str, str]] = None,
+                     log=None) -> dict:
+    """Create a NEW shared-library symbol carrying the symbol->footprint link (req b/d),
+    then fill its identity props IN THE LIBRARY. `footprint_stem` is the shared-library
+    footprint the new symbol links to (writes `Footprint = MyFootprints:<stem>` via
+    `create_symbol_for_footprint` / `duplicate_symbol_for_footprint`). When `source_symbol`
+    is given the new symbol DUPLICATES it (pins/graphics and all) and repoints its
+    footprint; else a geometry-free stub is created. `identity` = {prop: value} identity
+    fields (MPN/Manufacturer/Datasheet/Description) written onto the new library symbol so
+    the part is orderable. Returns {"name", "footprint", "errors"} (name None on failure).
+
+    This is the library MUTATION only; the caller then `link_placed_component`s the
+    placed instance at the returned part so the schematic points at the new symbol."""
+    log = log or _NullLog()
+    stem = LM.footprint_name(footprint_stem or "")
+    out = {"name": None, "footprint": stem, "errors": []}
+    if not stem:
+        out["errors"].append("add: no footprint stem")
+        return out
+    try:
+        if source_symbol:
+            new_name = LM.duplicate_symbol_for_footprint(cfg, source_symbol, stem, log,
+                                                         name=name)
+        else:
+            new_name = LM.create_symbol_for_footprint(cfg, stem, log, name=name)
+    except Exception as e:  # noqa: BLE001
+        out["errors"].append(f"create symbol: {e}")
+        return out
+    if not new_name:
+        out["errors"].append(f"create symbol for '{stem}' failed")
+        return out
+    out["name"] = new_name
+    for prop, val in (identity or {}).items():
+        v = str(val or "").strip()
+        if not v:
+            continue
+        try:
+            LM.set_library_symbol_property(cfg, new_name, prop, v, log)
+        except Exception as e:  # noqa: BLE001
+            out["errors"].append(f"fill {prop}: {e}")
+    return out
+
+
+def library_footprint_stems(cfg: dict) -> List[str]:
+    """Sorted stems of every footprint in the shared FootprintLib — the pick-list for the
+    'Add to Library' affordance (choose which footprint the new part links to)."""
+    fp_dir = (cfg or {}).get("FootprintLib")
+    if not fp_dir or not Path(fp_dir).is_dir():
+        return []
+    return sorted(p.stem for p in Path(fp_dir).glob("*.kicad_mod"))
 
 
 def apply_fill_plan(plan: dict, selected, cfg: dict, log=None,

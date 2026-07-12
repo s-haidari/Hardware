@@ -640,3 +640,137 @@ def test_library_index_signature_changes_on_path_or_content_swap(tmp_path):
     (fp / "R_0402.kicad_mod").write_text('(footprint "R_0402")\n', encoding="utf-8")
     after = F.library_index_signature(cfg)
     assert before != after, "adding a footprint must change the signature"
+
+
+# ── Library-only link/add: point a placed instance at a library symbol (req c/d/e) ──
+
+def _lib_dir(tmp_path):
+    """A self-contained temp library: a symbol lib with one R_10k part, a footprint dir
+    with R_0402 + USB_C_Recept, and a model dir with a name-matching USB_C_Recept.step."""
+    symp = tmp_path / "MySymbols.kicad_sym"
+    symp.write_text(SYMBOL_LIB, encoding="utf-8")
+    fpdir = tmp_path / "MyFootprints.pretty"; fpdir.mkdir()
+    (fpdir / "R_0402_1005Metric.kicad_mod").write_text(
+        '(footprint "R_0402_1005Metric" (layer "F.Cu") (pad "1" smd rect (at 0 0)))\n',
+        encoding="utf-8")
+    (fpdir / "USB_C_Recept.kicad_mod").write_text(
+        '(footprint "USB_C_Recept" (layer "F.Cu") (pad "1" smd rect (at 0 0)))\n',
+        encoding="utf-8")
+    mdir = tmp_path / "My3DModels"; mdir.mkdir()
+    (mdir / "USB_C_Recept.step").write_text("solid\n", encoding="utf-8")
+    return {"SymbolLib": str(symp), "FootprintLib": str(fpdir), "ModelLib": str(mdir)}
+
+
+def test_set_symbol_lib_id_rewrites_only_placed_instance():
+    block = ('(symbol (lib_id "Device:R") (at 10 10 0) (unit 1)\n'
+             '  (property "Reference" "R1" (at 10 5 0)))')
+    out = LM.set_symbol_lib_id(block, "MySymbols:R_10k")
+    assert '(lib_id "MySymbols:R_10k")' in out
+    assert '(lib_id "Device:R")' not in out
+    # a cache symbol (no lib_id child) is returned unchanged
+    cache = '(symbol "Device:R" (property "Reference" "R"))'
+    assert LM.set_symbol_lib_id(cache, "MySymbols:R_10k") == cache
+
+
+def test_qualify_symbol_and_name_ref():
+    assert LM.qualify_symbol("R_10k") == "MySymbols:R_10k"
+    assert LM.qualify_symbol("MySymbols:R_10k") == "MySymbols:R_10k"   # idempotent
+    assert LM.qualify_symbol("") == ""
+    assert LM.symbol_name_ref("MySymbols:R_10k") == "R_10k"
+
+
+def test_write_fields_to_sheet_rewrites_lib_id(tmp_path):
+    sch = tmp_path / "b.kicad_sch"
+    sch.write_text(
+        '(kicad_sch (version 20230121) (generator eeschema)\n'
+        '  (lib_symbols (symbol "Device:R" (property "Reference" "R" (at 0 0 0))))\n'
+        '  (symbol (lib_id "Device:R") (at 10 10 0) (unit 1)\n'
+        '    (property "Reference" "R1" (at 10 5 0))\n'
+        '    (property "Footprint" "" (at 10 10 0))) )\n',
+        encoding="utf-8")
+    n = F.write_fields_to_sheet(str(sch), {"R1": {"Footprint": "MyFootprints:R_0402"}},
+                                lib_id_by_ref={"R1": "MySymbols:R_10k"}, backup=False)
+    assert n == 1
+    txt = sch.read_text(encoding="utf-8")
+    assert '(lib_id "MySymbols:R_10k")' in txt          # instance repointed
+    assert 'MyFootprints:R_0402' in txt                 # footprint filled
+    # the (lib_symbols) cache symbol is never touched
+    assert '(symbol "Device:R"' in txt
+
+
+def test_link_placed_component_writes_lib_id_footprint_and_identity(tmp_path):
+    cfg = _lib_dir(tmp_path)
+    sch = tmp_path / "b.kicad_sch"
+    sch.write_text(
+        '(kicad_sch (version 20230121) (generator eeschema)\n'
+        '  (symbol (lib_id "Device:R") (at 10 10 0) (unit 1)\n'
+        '    (property "Reference" "R1" (at 10 5 0))\n'
+        '    (property "Value" "10k" (at 10 15 0))\n'
+        '    (property "Footprint" "" (at 10 10 0))) )\n',
+        encoding="utf-8")
+    lib_part = {"name": "STM32F103C8T6", "mpn": "STM32F103C8T6",
+                "manufacturer": "STMicroelectronics",
+                "datasheet": "https://st.com/x.pdf", "description": "MCU",
+                "footprint": "LQFP-48_7x7mm_P0.5mm"}
+    res = F.link_placed_component(cfg, str(sch), "R1", lib_part, backup=False)
+    assert res["written"] == 1
+    assert res["lib_id"] == "MySymbols:STM32F103C8T6"
+    assert res["footprint"] == "MyFootprints:LQFP-48_7x7mm_P0.5mm"
+    txt = sch.read_text(encoding="utf-8")
+    assert '(lib_id "MySymbols:STM32F103C8T6")' in txt
+    assert 'MyFootprints:LQFP-48_7x7mm_P0.5mm' in txt
+    assert 'STMicroelectronics' in txt                  # identity filled from the library part
+    assert 'MCU' in txt
+
+
+def test_ensure_model_link_persists_model_line(tmp_path):
+    cfg = _lib_dir(tmp_path)
+    # USB_C_Recept footprint has a name-matching model file -> line is persisted.
+    m = F.ensure_model_link_for_footprint(cfg, "USB_C_Recept")
+    assert m["attached"] is True and m["model"] == "USB_C_Recept.step"
+    fp = (Path(cfg["FootprintLib"]) / "USB_C_Recept.kicad_mod").read_text(encoding="utf-8")
+    assert "model" in fp and "USB_C_Recept.step" in fp
+    # R_0402 has no matching model -> honest no_match, no crash, nothing written.
+    m2 = F.ensure_model_link_for_footprint(cfg, "R_0402_1005Metric")
+    assert m2["attached"] is False and m2["reason"] == "no_match"
+
+
+def test_add_library_part_creates_symbol_with_footprint_and_identity(tmp_path):
+    cfg = _lib_dir(tmp_path)
+    out = F.add_library_part(cfg, "USB_C_Recept", identity={"MPN": "USB4110-GF-A"})
+    assert out["name"]                                   # a symbol was created
+    idx = F.library_parts(cfg)
+    part = next(p for p in idx if p["name"] == out["name"])
+    assert part["footprint"] == "USB_C_Recept"          # symbol->footprint link written
+    assert part["mpn"] == "USB4110-GF-A"                # identity written into the library
+
+
+def test_add_then_link_is_kicad_correct_end_to_end(tmp_path):
+    """The full 'nothing fits' path: ADD a library part for a footprint, then LINK the
+    placed instance at it — instance lib_id + footprint rewritten, 3D-model line persisted."""
+    cfg = _lib_dir(tmp_path)
+    sch = tmp_path / "b.kicad_sch"
+    sch.write_text(
+        '(kicad_sch (version 20230121) (generator eeschema)\n'
+        '  (symbol (lib_id "Conn:X") (at 30 10 0) (unit 1)\n'
+        '    (property "Reference" "J1" (at 30 5 0))\n'
+        '    (property "Footprint" "" (at 30 10 0))) )\n',
+        encoding="utf-8")
+    added = F.add_library_part(cfg, "USB_C_Recept", identity={"MPN": "USB4110-GF-A"})
+    assert added["name"]
+    part = next(p for p in F.library_parts(cfg) if p["name"] == added["name"])
+    res = F.link_placed_component(cfg, str(sch), "J1", part, backup=False)
+    txt = sch.read_text(encoding="utf-8")
+    assert f'(lib_id "MySymbols:{added["name"]}")' in txt
+    assert 'MyFootprints:USB_C_Recept' in txt
+    # the footprint file now carries a (model …) line so the 3D model travels
+    fp = (Path(cfg["FootprintLib"]) / "USB_C_Recept.kicad_mod").read_text(encoding="utf-8")
+    assert "model" in fp and "USB_C_Recept.step" in fp
+    assert res["model"] == "USB_C_Recept.step"
+
+
+def test_library_footprint_stems_lists_pretty_dir(tmp_path):
+    cfg = _lib_dir(tmp_path)
+    stems = F.library_footprint_stems(cfg)
+    assert "USB_C_Recept" in stems and "R_0402_1005Metric" in stems
+    assert F.library_footprint_stems({}) == []

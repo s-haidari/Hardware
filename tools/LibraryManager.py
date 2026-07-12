@@ -989,6 +989,9 @@ def find_kicad_dir() -> Optional[Path]:
 # references resolve. Self-contained (no external backend dependency).
 # ---------------------------------------------------------------------------
 FP_NICKNAME = "MyFootprints"
+# The symbol library's KiCad nickname (registered by register_libraries). A placed
+# schematic instance points at a shared-library symbol via (lib_id "MySymbols:<name>").
+SYM_NICKNAME = "MySymbols"
 MODEL_VAR = "MY3DMODELS"
 MODEL_VAR_REF = "${MY3DMODELS}"
 
@@ -1014,6 +1017,33 @@ def rewrite_symbol_footprint(symbol_text: str, nickname: str = FP_NICKNAME) -> s
     def repl(m: "re.Match") -> str:
         return m.group(1) + qualify_footprint(m.group(2), nickname) + m.group(3)
     return _FP_PROP_RE.sub(repl, symbol_text, count=1)
+
+
+def symbol_name_ref(name: str) -> str:
+    """The bare symbol name from a lib_id or a plain name ('MySymbols:R_10k' -> 'R_10k')."""
+    name = (name or "").strip()
+    return name.split(":")[-1] if name else ""
+
+
+def qualify_symbol(name: str, nickname: str = SYM_NICKNAME) -> str:
+    """Return '<nickname>:<symbolName>' for the shared symbol lib (idempotent). This is
+    what a placed schematic instance's (lib_id …) must hold so KiCad resolves the symbol
+    from MySymbols and, through it, the right footprint + 3D model."""
+    bare = symbol_name_ref(name)
+    return f"{nickname}:{bare}" if bare else ""
+
+
+# The (lib_id "…") child of a PLACED schematic instance. Captures the pre-value chrome,
+# the quoted value, and the trailing quote+paren so the rewrite preserves formatting.
+_LIB_ID_RE = re.compile(r'(\(lib_id\s+")((?:[^"\\]|\\.)*)("\s*\))')
+
+
+def set_symbol_lib_id(symbol_text: str, lib_id: str) -> str:
+    """Repoint a placed instance's (lib_id "…") at `lib_id` (verbatim, quotes escaped),
+    in place, preserving the block's formatting. Returns the block unchanged when it has
+    no (lib_id …) child (e.g. a (lib_symbols) cache symbol, which must never be touched)."""
+    val = str(lib_id).replace("\\", "\\\\").replace('"', '\\"')
+    return _LIB_ID_RE.sub(lambda m: m.group(1) + val + m.group(3), symbol_text, count=1)
 
 
 def set_symbol_property(symbol_text: str, key: str, value: str) -> str:
