@@ -179,6 +179,24 @@ def _render_chrome(win, app, out_dir, theme, settle):
     _settle(app, settle)
     p = out_dir / f"chrome.console-error.{theme}.png"; win.grab().save(str(p)); out.append(p)
 
+    # 6. an in-app pushed subpage — the "no new windows" pattern: the Back bar over a
+    #    representative editor body, layered on the content area instead of a new OS window.
+    from PyQt5.QtWidgets import QVBoxLayout, QWidget
+    demo = QWidget()
+    dv = QVBoxLayout(demo)
+    dv.setContentsMargins(T.sp("page"), T.sp("page"), T.sp("page"), T.sp("page"))
+    dv.setSpacing(T.sp("md"))
+    dv.addWidget(W.eyebrow("Fabrication Presets"))
+    dv.addWidget(W.body("Manage the fab presets that seed a project's design rules. This "
+                        "opens as a Back-navigable subpage, never a separate OS window.",
+                        dim=True, wrap=True))
+    dv.addStretch(1)
+    win.push_subpage(demo, "Fabrication Presets")
+    _settle(app, settle)
+    p = out_dir / f"chrome.subpage.{theme}.png"; win.grab().save(str(p)); out.append(p)
+    win._pop_subpage()
+    _settle(app, settle)
+
     # restore default chrome state for the next theme / a clean finish
     win._auto_surface_errors = prev
     win._console_open = False

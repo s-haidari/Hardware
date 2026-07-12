@@ -490,7 +490,8 @@ def qss(dark: bool | None = None) -> str:
 QWidget {{ color: {c['txt1']}; font-family: {UI_STACK}; font-size: {fz_base}px; outline: none; }}
 QMainWindow, #shellRoot {{ background: {grad}; }}
 #navPane {{ background: {c['nav']}; border-right: 1px solid {c['divider']}; }}
-#contentArea, QStackedWidget, #workspace {{ background: {grad}; }}
+#contentArea, QStackedWidget, #workspace, #subpageHost {{ background: {grad}; }}
+#subpageBar {{ background: transparent; }}
 QLabel {{ background: transparent; }}
 
 /* nav rail — brand, search, workspace items (calm: inset active step, no accent rail) */

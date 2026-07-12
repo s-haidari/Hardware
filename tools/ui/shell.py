@@ -155,7 +155,17 @@ class NetdeckShell(QMainWindow):
         cv = QVBoxLayout(content); cv.setContentsMargins(0, 0, 0, 0); cv.setSpacing(0)
         self._stack = QStackedWidget()
         self._stack.setObjectName("contentArea")
-        cv.addWidget(self._stack, 1)
+        # The content area is an OUTER stack: the feature workspaces (self._stack) OR a
+        # pushed subpage host layered over them. Opening an editor / manager / picker
+        # pushes it HERE as a Back-navigable in-app subpage instead of spawning a new OS
+        # window (the owner's "no new windows" standard) — see push_subpage / nav.push_subpage.
+        self._subpages = []                       # [(widget, title, on_result)] nesting stack
+        self._subpage_host = self._build_subpage_host()
+        self._content_stack = QStackedWidget()
+        self._content_stack.setObjectName("contentOuter")
+        self._content_stack.addWidget(self._stack)          # index 0 = workspaces
+        self._content_stack.addWidget(self._subpage_host)   # index 1 = pushed subpage
+        cv.addWidget(self._content_stack, 1)
         from .console import ActivityConsole
         self._console = ActivityConsole(on_toggle=self._persist_console)
         self._console.set_expanded(True, notify=False)   # when shown, show the log body
@@ -191,6 +201,11 @@ class NetdeckShell(QMainWindow):
         # selection) to open another workspace by id — e.g. the Library sourcing
         # empty-state's "Open Settings" CTA emits nav.open("settings").
         self.ctx.bus.on("nav.open", self._open_feature)
+        # In-app subpages: any feature can open an editor / manager / picker as a
+        # Back-navigable subpage over the content area (never a new OS window). A feature
+        # emits nav.push_subpage(widget, title, on_result); nav.pop_subpage closes the top.
+        self.ctx.bus.on("nav.push_subpage", self.push_subpage)
+        self.ctx.bus.on("nav.pop_subpage", lambda *_a: self._pop_subpage())
 
     def _open_feature(self, feature_id: str):
         """Select the workspace whose feature id matches — the bus target for a
@@ -199,6 +214,93 @@ class NetdeckShell(QMainWindow):
             if spec[0].id == feature_id:
                 self._select(i)
                 return
+
+    # -- in-app subpages (no new OS windows) --
+    def _build_subpage_host(self) -> QWidget:
+        """The host for a pushed subpage: a slim Back bar (chevron + title) over a body
+        stack that holds the pushed widget. A dialog / editor / manager / picker opens here
+        as an in-app, Back-navigable subpage instead of spawning a separate OS window."""
+        host = QWidget(); host.setObjectName("subpageHost")
+        v = QVBoxLayout(host); v.setContentsMargins(0, 0, 0, 0); v.setSpacing(0)
+        bar = QWidget(); bar.setObjectName("subpageBar")
+        bh = QHBoxLayout(bar)
+        bh.setContentsMargins(T.sp("page"), T.sp("md"), T.sp("page"), T.sp("md"))
+        bh.setSpacing(T.sp("md"))
+        self._subpage_back = W.btn("Back", "ghost", "Return to the previous view (Esc)",
+                                   self._pop_subpage)
+        self._subpage_back.setIcon(W.svg_icon(_ICON["back"]))
+        self._subpage_title = W.eyebrow("")
+        bh.addWidget(self._subpage_back); bh.addWidget(self._subpage_title); bh.addStretch(1)
+        v.addWidget(bar)
+        rule = QFrame(); rule.setFixedHeight(1)
+        W.register_restyle(lambda: rule.setStyleSheet(f"background:{T.t('divider')};border:none;"))
+        v.addWidget(rule)
+        self._subpage_body = QStackedWidget()
+        v.addWidget(self._subpage_body, 1)
+        return host
+
+    def push_subpage(self, widget, title: str = "", on_result=None) -> None:
+        """Show `widget` as a pushed in-app subpage over the content area (never a new OS
+        window). `title` labels the Back bar; `on_result(result)`, if given, fires when the
+        subpage closes — for a QDialog it carries the accept/reject result so the caller's
+        closure can read the dialog's outcome (dlg.applied / dlg.plan() / dlg.picked …),
+        exactly as a post-exec_() read would. Nesting is supported (Back pops one level)."""
+        if widget is None:
+            return
+        from PyQt5.QtWidgets import QDialog
+        widget.setWindowFlags(Qt.Widget)          # strip window-ness → embed inline
+        self._subpage_body.addWidget(widget)      # reparents into the host body stack
+        self._subpage_body.setCurrentWidget(widget)
+        self._subpages.append((widget, title or "", on_result))
+        self._subpage_title.setText(title or "")
+        if isinstance(widget, QDialog):
+            # A QDialog resolves via finished(result): its own OK/Cancel (and Esc) route
+            # through here, so the callback fires with the real accept/reject result.
+            widget.finished.connect(lambda r, w=widget: self._resolve_subpage(w, r))
+        self._content_stack.setCurrentWidget(self._subpage_host)
+        widget.setFocus()
+
+    def _pop_subpage(self) -> None:
+        """Close the top subpage (Back button / Esc). A QDialog is rejected so it resolves
+        through finished(); a plain widget is removed directly."""
+        if not self._subpages:
+            return
+        from PyQt5.QtWidgets import QDialog
+        widget = self._subpages[-1][0]
+        if isinstance(widget, QDialog):
+            widget.reject()                       # → finished(Rejected) → _resolve_subpage
+        else:
+            self._resolve_subpage(widget, None)
+
+    def _resolve_subpage(self, widget, result) -> None:
+        """Remove `widget` from the subpage stack, return to the next subpage (or the
+        workspaces), then fire its on_result(result). Idempotent — a second finished()
+        (Back after an accept) is a no-op once the entry is gone."""
+        entry = next((e for e in self._subpages if e[0] is widget), None)
+        if entry is None:
+            return
+        self._subpages.remove(entry)
+        if self._subpages:                        # show the next subpage down …
+            top = self._subpages[-1]
+            self._subpage_body.setCurrentWidget(top[0])
+            self._subpage_title.setText(top[1])
+        else:                                     # … or fall back to the workspaces
+            self._content_stack.setCurrentWidget(self._stack)
+        on_result = entry[2]
+        if callable(on_result):
+            try:
+                on_result(result)                 # widget still alive → closure can read it
+            except Exception:  # noqa: BLE001 - a bad callback must not strand the subpage
+                pass
+        self._subpage_body.removeWidget(widget)
+        widget.deleteLater()
+
+    def keyPressEvent(self, e):
+        """Esc closes the top subpage when one is open. The search box's own Esc is
+        WidgetShortcut-scoped, so this never contends with it."""
+        if e.key() == Qt.Key_Escape and getattr(self, "_subpages", None):
+            self._pop_subpage(); e.accept(); return
+        super().keyPressEvent(e)
 
     # -- nav --
     def _build_nav(self) -> QWidget:

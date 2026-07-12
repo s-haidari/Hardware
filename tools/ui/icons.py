@@ -98,6 +98,9 @@ GLYPHS = {
     "expand": _svg('<path d="M9 3h4v4"/><path d="M13 3l-4.6 4.6"/>'
                    '<path d="M7 13H3V9"/><path d="M3 13l4.6-4.6"/>'),
     "check": _svg('<path d="M3.5 8.5l3 3 6-6.5"/>'),
+    # back: a left chevron — the pushed-subpage Back affordance (in-app navigation,
+    # so an editor/manager opens as a Back-navigable subpage, never a new OS window).
+    "back": _svg('<path d="M10 3.5 5.5 8l4.5 4.5"/>'),
     "alert": _svg(
         '<path d="M8 3 14 13H2z"/><path d="M8 6.8v3"/>'
         '<circle cx="8" cy="11.4" r="0.25" fill="currentColor" stroke="none"/>'),

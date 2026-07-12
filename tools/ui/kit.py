@@ -342,6 +342,24 @@ def _checkbox_preview(host, title: str, intro: str, ops: Sequence[dict]):
     return [k for k, cb in boxes if cb.isChecked()]
 
 
+def open_subpage(ctx, widget, title: str = "", *, on_result: Optional[Callable] = None) -> bool:
+    """Open `widget` as a pushed in-app subpage (Back-navigable) over the content area
+    instead of a modal OS window — the app-wide "no new windows" pattern. Routes through
+    the shell via the ``nav.push_subpage`` bus event; returns True once emitted.
+
+    Non-blocking by design: unlike ``dlg.exec_()`` it never runs a nested modal loop, so it
+    is headless-safe (an offscreen drive / render gate can push, drive, then Back out — no
+    hang). ``on_result(result)`` fires when the subpage closes, carrying a QDialog's
+    accept/reject result so the caller's closure can read the dialog's outcome
+    (``dlg.applied`` / ``dlg.plan()`` / ``dlg.picked`` …) exactly as a post-exec_() read
+    would. Use it everywhere a feature used to ``dlg.exec_()`` a content dialog."""
+    bus = getattr(ctx, "bus", None)
+    if bus is None:                               # no shell/bus (rare — a stray standalone build)
+        return False
+    bus.emit("nav.push_subpage", widget, title, on_result)
+    return True
+
+
 class BusyDict(dict):
     """The workbench's shared busy gate, as a dict whose ``on`` flips notify a callback.
 

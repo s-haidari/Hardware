@@ -1744,6 +1744,58 @@ def audit_library_empty_state():
     print("  library empty-state driven (diagnostic banner names the path + Open Settings)")
 
 
+def audit_subpage_nav():
+    """Drive the in-app subpage framework end-to-end on the real NetdeckShell: a feature
+    opens an editor/manager as a pushed subpage (via the kit.open_subpage bus helper) INSTEAD
+    of a new OS window, the Back bar shows over the content area, a QDialog resolves through
+    finished() so the caller's on_result gets the accept/reject outcome, nesting Backs one
+    level at a time, and Esc closes the top. This is the 'no new windows' regression lock."""
+    from ui.shell import NetdeckShell
+    from ui import features  # noqa: F401 — importing registers every feature
+    from ui import kit
+    try:
+        shell = NetdeckShell(LM.load_config())
+        shell.show(); _pump()
+        from PyQt5.QtWidgets import QDialog, QWidget
+        from PyQt5.QtGui import QKeyEvent
+        from PyQt5.QtCore import QEvent, Qt
+
+        # 1. open via the bus helper (the real path a feature uses) → host shows, no OS window
+        seen = []
+        dlg = QDialog()
+        if kit.open_subpage(shell.ctx, dlg, "Manage Presets", on_result=lambda r: seen.append(r)) is not True:
+            _fail("Subpage nav: open_subpage did not report the shell handled it")
+        if shell._content_stack.currentWidget() is not shell._subpage_host:
+            _fail("Subpage nav: pushing did not switch the content area to the subpage host")
+        if shell._subpage_title.text() != "Manage Presets":
+            _fail("Subpage nav: Back-bar title not set from the push")
+        # 2. accept resolves with the real result and returns to the workspaces
+        dlg.accept(); _pump()
+        if seen != [QDialog.Accepted]:
+            _fail(f"Subpage nav: on_result got {seen} (want [Accepted]) on OK")
+        if shell._content_stack.currentWidget() is not shell._stack:
+            _fail("Subpage nav: closing the last subpage did not return to the workspaces")
+
+        # 3. nesting + Back one level at a time
+        a, b = QWidget(), QWidget()
+        shell.push_subpage(a, "A"); shell.push_subpage(b, "B"); _pump()
+        if len(shell._subpages) != 2 or shell._subpage_body.currentWidget() is not b:
+            _fail("Subpage nav: nested push did not stack B over A")
+        shell._pop_subpage(); _pump()                 # Back → A
+        if len(shell._subpages) != 1 or shell._subpage_title.text() != "A":
+            _fail("Subpage nav: Back did not reveal the parent subpage A")
+        # 4. Esc closes the top (search Esc is WidgetShortcut-scoped, so no contention)
+        shell.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier)); _pump()
+        if shell._subpages or shell._content_stack.currentWidget() is not shell._stack:
+            _fail("Subpage nav: Esc did not close the top subpage back to the workspaces")
+
+        shell.close(); _pump()
+    except Exception as e:  # noqa: BLE001
+        _fail("Subpage nav framework", e); return
+    print("  subpage nav driven (push over content, QDialog result callback, nesting, Esc "
+          "— no new OS window, no crash)", flush=True)
+
+
 def main() -> int:
     cfg = _make_fixture()
     print("drive-audit fixture:", cfg["RepoRoot"], flush=True)
@@ -1755,6 +1807,7 @@ def main() -> int:
     audit_settings_styled()
     audit_subtab_animation()
     audit_shell_chrome()
+    audit_subpage_nav()
     # Whole-app smoke: build the real NetdeckShell and lazily build EVERY page. The styled
     # shell is what `python -m ui` now launches; a construction/selection crash (a feature
     # registration or page-build regression, or the library-location rebuild) must fail here,
