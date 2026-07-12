@@ -4291,12 +4291,21 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
         lay.addWidget(drw)
 
         dr_actions = QHBoxLayout(); dr_actions.setSpacing(8)
-        b_seed = W.btn("Seed From Profile", "ghost", "Fill the design-rule floors from the selected fabrication profile")
+        b_seed = W.btn("Seed From Fab Preset", "ghost", "Fill the design-rule floors from the selected fabrication preset")
         b_seed.setEnabled(dr_writable)
         dr_actions.addWidget(b_seed); dr_actions.addStretch(1)
         lay.addLayout(dr_actions)
 
         def seed_design_rules():
+            preset = fabp.get_preset(prof_state["fab"])
+            if preset is not None:
+                seeded = fabp.apply_to_project_settings(pm.settings, preset)
+                for _label, attr in _DR_FIELDS:
+                    sp = dr_fields.get(attr)
+                    if sp is not None:
+                        sp._mm = mils_to_mm(getattr(seeded, attr)); sp._render()
+                _log("Design rules seeded from the fabrication preset.")
+                return
             floor = ncm.NETCLASS_PROFILES.get(prof_state["fab"], ncm.NETCLASS_PROFILES[ncm.DEFAULT_NETCLASS_PROFILE])
             for attr, key in _DR_SEED.items():
                 sp = dr_fields.get(attr)
