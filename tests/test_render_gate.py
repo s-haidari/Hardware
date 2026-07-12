@@ -25,7 +25,10 @@ def test_render_gate_writes_dark_and_light_for_every_surface(tmp_path):
     # Sub-panels must each render, not only the default page (regression guard:
     # a Workspace page root would otherwise collapse to one image per feature).
     panel_stems = {p.name.rsplit(".", 2)[0] for p in saved}
-    for st in ("bench.overview", "bench.profiles", "bench.all-pins",
+    # Bench is 4 tabs now: Overview absorbed the All Pins table + the Profiles ladder as
+    # scrollable sections (owner v2.11), so bench.all-pins / bench.profiles are no longer
+    # standalone surfaces.
+    for st in ("bench.overview", "bench.analysis",
                "bench.mcu-pinout-viewer", "bench.exports",
                "projects.health", "projects.editor",
                "projects.bill-of-materials", "projects.refactor",
