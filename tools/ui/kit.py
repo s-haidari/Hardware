@@ -289,7 +289,10 @@ def _report(host, title: str, result, *, log: Optional[Callable] = None) -> None
     parent), show, then mirror a one-line summary to the log."""
     from .util import _headless
     body = _report_text(result)
-    line = f"{title}: " + body.replace("\n", " ")[:200]
+    # 200 was too short: a multi-item report (corrupt-file scan, health findings) with a long
+    # path pushes the per-item detail past the cut, so it never reaches the headless log — and
+    # a long tmp path (e.g. a Windows user profile with a space) makes it path-length-dependent.
+    line = f"{title}: " + body.replace("\n", " ")[:600]
     if _headless():
         if callable(log):
             log(line)

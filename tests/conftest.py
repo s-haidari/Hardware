@@ -52,6 +52,39 @@ def _isolate_pcb_profile_store(tmp_path, monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _isolate_config(tmp_path, monkeypatch):
+    """Redirect LibraryManager.CONFIG_PATH to a per-test tmp file so a UI preference write
+    (write_setting: Theme / NavSearch / ConsoleVisible / …) can't touch the real
+    tools/config.json. Beyond leak-prevention this is REQUIRED for parallel runs: xdist
+    workers otherwise race the shared config.json and its atomic-rename temp, which on
+    Windows fails with WinError 32 (file in use). Seed the tmp from the real config so
+    load_config() still reads the same contents; writes just land in isolation."""
+    try:
+        import LibraryManager as LM
+    except Exception:  # noqa: BLE001
+        yield
+        return
+    # A DEDICATED name in its own subdir so it never collides with a test's own
+    # tmp_path/"config.json" (several tests assert that exact file is absent/fresh).
+    iso = tmp_path / "_nd_isolated" / "config.json"
+    iso.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        real = Path(LM.CONFIG_PATH)
+        if real.exists():
+            iso.write_text(real.read_text(encoding="utf-8"), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+    # Own these module globals so monkeypatch restores them after the test even if a
+    # test's save_repo_root / apply_library_location reassigns them (unrestored global
+    # mutation otherwise poisons a later test in the same xdist worker — surfaces only
+    # under parallel reordering, e.g. the scan-corrupt / units round-trip failures).
+    monkeypatch.setattr(LM, "CONFIG_PATH", iso)
+    monkeypatch.setattr(LM, "REPO_ROOT", LM.REPO_ROOT)
+    monkeypatch.setattr(LM, "DEFAULTS", LM.DEFAULTS)
+    yield
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _qapp():
     global _APP

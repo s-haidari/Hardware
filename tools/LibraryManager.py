@@ -517,14 +517,33 @@ def load_config(config_path: Optional[Path] = None) -> Dict[str, str]:
 def _atomic_write_json(path: Path, data) -> None:
     """Write JSON durably: serialize to a sibling .tmp, then os.replace() (atomic on
     POSIX and Windows). A crash or power loss mid-write can never truncate the real
-    file — the worst case is a leftover .tmp, not a lost config."""
+    file — the worst case is a leftover .tmp, not a lost config.
+
+    The temp name carries the PID so two processes writing the SAME target never collide
+    on it, and the final replace is retried: on Windows os.replace raises PermissionError
+    (WinError 32, 'file in use') when the target is briefly locked by antivirus, a search
+    indexer, or a concurrent reader — a transient condition a single retry rides out. This
+    is a real hardening for the app (a user's AV can lock config.json), not just for the
+    parallel test loop that surfaced it."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
         f.flush()
         os.fsync(f.fileno())
-    os.replace(tmp, path)
+    last = None
+    for attempt in range(12):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError as e:            # Windows: target transiently locked (WinError 32)
+            last = e
+            time.sleep(0.02 * (attempt + 1))
+    try:
+        os.remove(tmp)                          # never leave the temp lying around on give-up
+    except OSError:
+        pass
+    raise last
 
 
 def save_config(cfg: Dict[str, str]):

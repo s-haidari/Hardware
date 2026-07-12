@@ -23,7 +23,7 @@ rsync -a --delete \
 
 echo "==> creating Windows uv venv (.wvenv, python 3.11) + installing CI deps"
 # Deps mirror .github/workflows/ci.yml exactly (PyQt5 + the mesh/tz runtime deps).
-powershell.exe -NoProfile -Command "cd '$WINROOT_WIN'; uv venv .wvenv --python 3.11; uv pip install --python .wvenv\\Scripts\\python.exe PyQt5 watchdog pytest numpy scipy shapely tzdata"
+powershell.exe -NoProfile -Command "cd '$WINROOT_WIN'; uv venv .wvenv --python 3.11; uv pip install --python .wvenv\\Scripts\\python.exe PyQt5 watchdog pytest pytest-xdist numpy scipy shapely tzdata"
 
 echo "==> verifying the Windows venv imports the GUI stack"
 powershell.exe -NoProfile -Command "cd '$WINROOT_WIN'; .\\.wvenv\\Scripts\\python.exe -c \"import PyQt5, pytest, numpy, scipy, shapely; from PyQt5 import QtCore; print('Windows venv OK — PyQt5', QtCore.PYQT_VERSION_STR)\""

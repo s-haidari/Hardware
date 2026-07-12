@@ -30,6 +30,14 @@ rsync -a --delete \
   "$SRC/" "$WINROOT_WSL/"
 
 ARGS="${*:-tests}"
+# Default to parallel across all cores (pytest-xdist) unless the caller already passed -n.
+# The suite is parallel-safe — tests/conftest.py isolates the per-worker config file and
+# restores the LibraryManager globals — so this is the point of the local loop: a full
+# real-Windows run in ~1.5 min instead of ~15 (or the ~20-min windows-latest CI round-trip).
+case " $ARGS " in
+  *" -n "*) : ;;                            # caller set -n (incl. `-n 0` to force serial) → respect it
+  *) ARGS="$ARGS -n auto" ;;
+esac
 PYFLAGS=""
 if [ "${WIN_ENCODING_STRICT:-0}" = "1" ]; then
   PYFLAGS="-X warn_default_encoding -W error::EncodingWarning"
