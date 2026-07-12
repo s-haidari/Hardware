@@ -1,0 +1,144 @@
+name: Windows Release EXE
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Optional release tag/name, for example v1.0.0. Leave blank to only upload an artifact."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  APP_NAME: KiCad Manager
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  build-windows:
+    name: Build KiCad Manager for Windows
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          lfs: true   # SP1: pull the real 3D models so the seed bundles files, not LFS stubs
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install pyinstaller cascadio trimesh numpy pillow
+
+      - name: Run tests
+        run: python -m pytest tests -q
+
+      - name: Build STM32 database (prebuilt, bundled read-only)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python tools/stm32_db.py --build --source "tools/cubemx_db/mcu" --out "tools/data/stm32.sqlite"
+          if (-not (Test-Path "tools/data/stm32.sqlite")) {
+            throw "STM32 database was not built"
+          }
+
+      - name: Stamp build version (so the exe knows which release it is)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $ver = if ($env:INPUT_VERSION) { $env:INPUT_VERSION } elseif ($env:GITHUB_REF -like 'refs/tags/*') { $env:GITHUB_REF_NAME } else { "dev" }
+          Write-Host "Stamping app_build.VERSION = $ver"
+          $path = "tools/app_build.py"
+          (Get-Content $path) -replace '^VERSION = .*$', "VERSION = `"$ver`"" | Set-Content $path
+          Get-Content $path | Select-String '^VERSION ='
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+
+      - name: Bake Mouser key (free shared Search key)
+        shell: pwsh
+        # PUBLIC-REPO POLICY: repo-scoped tokens are NOT baked into the exe. The repo is
+        # public, so auto-update downloads token-less (nd_updater falls back to the public
+        # asset URL) and any in-app git push uses a user-supplied GIT_PAT env var at runtime.
+        # Only the free, rate-limited, non-repo-scoped Mouser Search key is baked so sourcing
+        # works out of the box; a public binary exposing it is acceptable (rotate if abused).
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ([string]::IsNullOrEmpty($env:MOUSER_API_KEY)) {
+            Write-Host "No MOUSER_API_KEY secret set — Mouser sourcing will need a MOUSER_API_KEY env var / user key at runtime."
+          } else {
+            # GitHub masks the secret in logs; -replace runs per line (Get-Content yields an array).
+            $path = "tools/app_secrets.py"
+            $key = $env:MOUSER_API_KEY
+            (Get-Content $path) -replace '^MOUSER_API_KEY_DEFAULT = .*$', "MOUSER_API_KEY_DEFAULT = `"$key`"" | Set-Content $path
+            Write-Host "Baked MOUSER_API_KEY_DEFAULT into app_secrets.py"
+          }
+        env:
+          MOUSER_API_KEY: ${{ secrets.MOUSER_API_KEY }}
+
+      - name: Build KiCad Manager.exe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          python -m PyInstaller --noconfirm --clean "tools/KiCadLibraryManager.spec"
+
+      - name: Verify executable exists
+        shell: pwsh
+        run: |
+          $exe = "dist/${{ env.APP_NAME }}.exe"
+          if (-not (Test-Path $exe)) {
+            throw "Expected executable was not created: $exe"
+          }
+          Get-Item $exe | Select-Object FullName, Length
+
+      - name: Smoke-test the executable launches (--selftest)
+        shell: pwsh
+        # A successful PyInstaller BUILD can still ship a broken exe (a missing hidden
+        # import / bundled data file only fails at launch). Run the FROZEN exe headlessly
+        # (--selftest constructs the whole shell offscreen and exits 0) so that never
+        # reaches a release. Runs before Upload/Publish, so a broken exe fails the build.
+        run: |
+          $ErrorActionPreference = "Stop"
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $exe = "dist/${{ env.APP_NAME }}.exe"
+          # A windowed (console=False) exe does NOT populate ExitCode via Start-Process, so
+          # $null -ne 0 would falsely fail. Use System.Diagnostics.Process with
+          # UseShellExecute=$false for a reliable exit code (verified locally on the frozen exe).
+          $psi = New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName = (Resolve-Path $exe).Path
+          $psi.Arguments = "--selftest"
+          $psi.UseShellExecute = $false
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError = $true
+          $p = [System.Diagnostics.Process]::Start($psi)
+          if (-not $p.WaitForExit(120000)) { $p.Kill(); throw "Executable --selftest hung (>120s)" }
+          $out = $p.StandardOutput.ReadToEnd(); $err = $p.StandardError.ReadToEnd()
+          if ($out) { Write-Host "exe stdout: $out" }
+          if ($err) { Write-Host "exe stderr: $err" }
+          if ($p.ExitCode -ne 0) { throw "Executable --selftest failed with exit $($p.ExitCode)" }
+          Write-Host "Executable --selftest passed (frozen shell constructs + exits clean)"
+
+      - name: Upload Windows executable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: KiCad Manager Windows EXE
+          path: "dist/KiCad Manager.exe"
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.version != '')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version || github.ref_name }}
+          name: KiCad Manager ${{ inputs.version || github.ref_name }}
+          files: "dist/KiCad Manager.exe"

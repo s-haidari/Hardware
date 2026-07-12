@@ -1,0 +1,4278 @@
+"""Projects — the KiCad project maintenance workspace, fully wired.
+
+Projects are discovered under the repo root; a picker selects one. Panels call
+the real nd_* / LibraryManager helpers: audit_schematic, run_erc/run_drc,
+bom_from_kicad_schematic / consolidated_bom, the rename wizard, the net-class
+manager, board setup, and the OSH Park fab presets. Slow / mutating work runs
+off the GUI thread and logs to the status line. (Git is its own top-level
+feature — see ui/features/git.py.)
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+from PyQt5.QtCore import Qt
+from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QComboBox,
+                             QCheckBox, QDoubleSpinBox, QSpinBox, QGridLayout, QFrame,
+                             QStackedWidget, QTableWidget, QHeaderView, QAbstractItemView,
+                             QFileDialog, QMenu, QApplication, QDialog, QFormLayout,
+                             QDialogButtonBox, QPushButton)
+
+from .. import theme as T
+from .. import widgets as W
+from .. import kit
+from .. import icons
+from ..util import (LogSink, run_populate, clear_layout, sentence,
+                    mm_to_mils, mils_to_mm, confirm)
+from .. import feature as F
+from .. import units as U
+from . import projects_visuals as pv
+
+import nd_wizard
+import kicad_tools
+import nd_project_health as phealth
+import nd_library_fill as libfill
+import nd_kicad_checks as kchecks
+import nd_netclass_manager as ncm
+import nd_pcb_profiles as pcbprof
+import nd_board_setup
+import nd_fab_presets as fabp
+import nd_project_settings_manager as psm
+import nd_object_conform as conform
+import LibraryManager as LM
+import fp_render
+import nd_git
+import kicad_paths
+
+_SEV = {"error": "err", "warning": "warn", "exclusion": "mut", "info": "mut"}
+# Check acronyms shown verbatim (they are names, not shouted text) — a lookup keeps
+# the display string out of a .upper() call the no-drift lint can't tell from styling.
+_CHECK_NAME = {"erc": "ERC", "drc": "DRC"}
+_KIND_LABEL = {
+    "no_footprint": "No Footprint", "duplicate_ref": "Duplicate Reference",
+    "pin_pad_mismatch": "Pin / Pad Mismatch", "no_mpn": "No Manufacturer Part Number",
+    "unannotated": "Unannotated", "no_3d_model": "No 3D Model", "missing_3d_model": "No 3D Model",
+}
+
+
+# ── shared project state ─────────────────────────────────────────────────────
+class ProjectsState:
+    def __init__(self, cfg):
+        self.cfg = cfg or {}
+        self.projects = []
+        seen = set()
+        rr = self.cfg.get("RepoRoot")
+        roots = [Path(rr), Path(rr).parent] if rr else []
+        for r in roots:
+            try:
+                for p in kicad_tools.discover_kicad_projects(r):
+                    if str(p) not in seen:
+                        seen.add(str(p)); self.projects.append(Path(p))
+            except Exception:  # noqa: BLE001
+                pass
+        # Prefer a project named like the main board (Master) over archived/sub sheets
+        self.project = next((p for p in self.projects if p.name.lower() == "master"),
+                            self.projects[0] if self.projects else None)
+        self._refreshers = []
+
+    def names(self):
+        return [p.name for p in self.projects]
+
+    def labels(self):
+        """PROJ-01: display strings that keep identically-named projects apart —
+        just the name when it's unique, else 'Name — parent', else the full path."""
+        names = [p.name for p in self.projects]
+        out = []
+        for p in self.projects:
+            if names.count(p.name) > 1 and p.parent.name:
+                out.append(f"{p.name} — {p.parent.name}")
+            else:
+                out.append(p.name)
+        clash = {lab for lab in out if out.count(lab) > 1}   # snapshot before mutating
+        # Full-path fallback uses posix separators so the disambiguation label is
+        # deterministic across platforms (str(WindowsPath) would emit backslashes).
+        return [self.projects[i].as_posix() if lab in clash else lab
+                for i, lab in enumerate(out)]
+
+    def _fire(self):
+        for fn in list(self._refreshers):
+            try:
+                fn()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def select_index(self, i: int):
+        """Select by list position — the unambiguous handle the combo uses (a name
+        alone can match the wrong duplicate project)."""
+        if 0 <= i < len(self.projects):
+            self.project = self.projects[i]
+            self._fire()
+
+    def set_project(self, name):
+        for p in self.projects:
+            if p.name == name:
+                self.project = p
+                break
+        self._fire()
+
+    def on_change(self, fn):
+        self._refreshers.append(fn)
+
+    def schematics(self):
+        try:
+            return nd_wizard.list_schematics(self.project) if self.project else []
+        except Exception:  # noqa: BLE001
+            return []
+
+    def boards(self):
+        try:
+            return nd_wizard.list_boards(self.project) if self.project else []
+        except Exception:  # noqa: BLE001
+            return []
+
+    def root_schematic(self):
+        schs = self.schematics()
+        if not schs:
+            return None
+        try:
+            return kicad_tools.pick_root_schematic(schs, kicad_tools.project_pro_file(self.project))
+        except Exception:  # noqa: BLE001
+            return schs[0]
+
+
+def _no_project(msg="No KiCad projects discovered under the repo root.") -> QWidget:
+    w = QWidget(); v = QVBoxLayout(w); v.setContentsMargins(24, 16, 24, 24)
+    v.addWidget(W.body(msg, dim=True)); v.addStretch(1)
+    return w
+
+
+def _kicad_cli():
+    try:
+        return fp_render.find_board_render_cli()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+# ── Fix-All preview dialog (the honest "fix everything") ─────────────────────
+def _elide(text: str, n: int = 44) -> str:
+    """Trim a long value for the old→new delta so a row never forces sideways scroll."""
+    s = str(text or "")
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
+class FillPreviewDialog(QDialog):
+    """One reviewable preview covering every proposed change before anything is
+    written. Grouped by sheet -> component; each component shows a confidence chip
+    (exact calm / verify amber), its matched Library part, and each field change as
+    a checkbox row "field: old -> new". Fills on an exact match are pre-checked;
+    overwrites and fuzzy (verify) matches are unchecked and flagged. Primary Apply is
+    disabled until at least one field is selected.
+
+    `plan` is the nd_library_fill FillPlan. `annotate_n` is how many references the
+    annotate fixer would fix (shown + applied alongside the fills). `on_apply` is the
+    caller's writer: `on_apply(selected_pairs: set, do_annotate: bool)` — OPTIONAL: when the
+    dialog is driven by the kit ▶ Prepare flow (via the recipe's ``preview`` hook), the flow
+    reads ``selected()`` / ``annotate_selected()`` AFTER ``exec_`` and owns the write, so
+    ``on_apply`` is ``None`` and ``apply()`` just records the choice and accepts.
+    """
+
+    def __init__(self, plan, annotate_n, on_apply=None, cfg=None, parent=None,
+                 components=None, sheet_of=None):
+        super().__init__(parent)
+        self.plan = plan
+        self.annotate_n = int(annotate_n or 0)
+        self._on_apply = on_apply
+        self._cfg = cfg or {}
+        self._components = list(components or [])
+        self._sheet_of = dict(sheet_of or {})
+        self._boxes = []                    # (checkbox, ref, prop) for the fill fields
+        self._annotate_box = None
+        # M3/M4: user-typed fills. _group_edits = [(group, checkbox, {prop: QLineEdit})];
+        # _manual_edits = [(ref, {prop: QLineEdit})]. _extra_selected is filled on apply().
+        self._group_edits = []
+        self._manual_edits = []
+        self._extra_selected = set()
+        # Passive groups (fill-once) + the components that need manual entry (no library
+        # match / distributor data and not a passive) — computed from the components.
+        self._groups = libfill.passive_groups(self._components)
+        grouped = {r for g in self._groups for r in g["refs"]}
+        planned = {it["ref"] for it in (plan or {}).get("items", []) if it.get("changes")}
+        self._manual_components = []
+        for comp in self._components:
+            ref = comp.get("ref", "")
+            if ref in planned or ref in grouped:
+                continue
+            passport = libfill.component_completion(comp)
+            if not passport["is_complete"]:
+                self._manual_components.append((comp, passport))
+        self.applied = False
+        self.setWindowTitle("Prepare Components Preview")
+        self.setModal(True)
+        self.setMinimumSize(560, 460)
+        self.resize(700, 640)
+        self._build()
+        self._sync_apply_enabled()
+
+    # ── construction ─────────────────────────────────────────────────────────
+    def _build(self):
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(20, 18, 20, 18)
+        outer.setSpacing(14)
+
+        self._header = W.subhead("")            # Semibold region label (kit)
+        outer.addWidget(self._header)
+
+        # Bulk affordances: a big board must not be per-field toil.
+        bulk = QHBoxLayout(); bulk.setSpacing(8)
+        b_all = W.btn("Select All", "ghost", "Check every proposed field")
+        b_exact = W.btn("Only Exact", "ghost", "Check only the confident, blank-fill changes")
+        b_clear = W.btn("Clear", "ghost", "Uncheck everything")
+        b_all.clicked.connect(lambda: self._bulk("all"))
+        b_exact.clicked.connect(lambda: self._bulk("exact"))
+        b_clear.clicked.connect(lambda: self._bulk("clear"))
+        for b in (b_all, b_exact, b_clear):
+            bulk.addWidget(b)
+        bulk.addStretch(1)
+        outer.addLayout(bulk)
+
+        # Scrollable body so a long plan never overflows the modal. `W.scroll_body`
+        # owns the transparent-viewport chrome (no direct styling here).
+        body = QWidget()
+        bl = QVBoxLayout(body); bl.setContentsMargins(0, 0, 0, 0); bl.setSpacing(12)
+
+        if self.annotate_n:
+            bl.addWidget(self._annotate_card())
+
+        # Group items by sheet, preserving first-seen order.
+        by_sheet = {}
+        for item in self.plan.get("items", []):
+            if not item.get("changes"):
+                continue
+            by_sheet.setdefault(item.get("sheet") or "", []).append(item)
+        for sheet, items in by_sheet.items():
+            bl.addWidget(W.section_header(_sheet_label(sheet)))
+            for item in items:
+                bl.addWidget(self._component_card(item))
+
+        # Passive groups (mockup ask: "group them so we use the data of one"): one card
+        # per value+footprint, filled once and applied to every ref.
+        if self._groups:
+            bl.addWidget(W.section_header("Passive Groups"))
+            bl.addWidget(W.body("Enter the part number once per group; it fills every "
+                                "component in that group.", dim=True))
+            for group in self._groups:
+                bl.addWidget(self._group_card(group))
+
+        # Still needs your input: components with no library match / distributor data —
+        # type the fields directly so every component ends fully filled.
+        if self._manual_components:
+            bl.addWidget(W.section_header("Still Needs Your Input"))
+            bl.addWidget(W.body("These components have no library match. Fill what you "
+                                "can; blanks are left untouched.", dim=True))
+            for comp, passport in self._manual_components:
+                bl.addWidget(self._manual_card(comp, passport))
+
+        if not self._boxes and not self.annotate_n and not self._groups \
+                and not self._manual_components:
+            bl.addWidget(W.body("Every component is already complete.", dim=True))
+
+        outer.addWidget(W.scroll_body(body), 1)
+
+        # Footer: primary Apply + secondary Cancel (one primary only).
+        footer = QHBoxLayout(); footer.setSpacing(8); footer.addStretch(1)
+        b_cancel = W.btn("Cancel", "ghost", "Close without writing anything")
+        b_cancel.clicked.connect(self.reject)
+        self._apply_btn = W.btn("Apply", "primary", "Write the checked changes, then re-audit")
+        self._apply_btn.clicked.connect(self.apply)
+        footer.addWidget(b_cancel); footer.addWidget(self._apply_btn)
+        outer.addLayout(footer)
+
+    def _annotate_card(self):
+        card = W.Card(pad=14)
+        cb = QCheckBox(f"Annotate {self.annotate_n} unannotated reference"
+                       f"{'s' if self.annotate_n != 1 else ''}")
+        cb.setChecked(True)                 # deterministic + safe: pre-checked
+        cb.setToolTip("Assign the next free designator to each unannotated symbol "
+                      "(each edited file is backed up first).")
+        cb.stateChanged.connect(lambda _=0: self._sync_apply_enabled())
+        self._annotate_box = cb
+        card.body.addWidget(cb)
+        return card
+
+    def _component_card(self, item):
+        match = item.get("match", {})
+        conf = match.get("confidence", "none")
+        lib_part = match.get("lib_part") or {}
+        card = W.Card(pad=14)
+
+        head = QHBoxLayout(); head.setSpacing(8)
+        head.addWidget(W.body(str(item["ref"]), mono=True))
+        # Confidence chip: exact is calm (ok), verify is amber (warn).
+        chip_kind = "ok" if conf == "exact" else ("warn" if conf == "verify" else "mut")
+        chip_txt = "Exact" if conf == "exact" else ("Verify" if conf == "verify" else "No match")
+        head.addWidget(W.tag(chip_txt, chip_kind))
+        alts = match.get("alternatives", 0)
+        if conf == "verify" and alts:
+            head.addWidget(W.body(f"+{alts} other", dim=True))
+        name = lib_part.get("name") or ""
+        if name:
+            head.addWidget(W.body(f"← {name}", dim=True))
+        head.addStretch(1)
+        head_w = QWidget(); head_w.setLayout(head)
+        card.body.addWidget(head_w)
+
+        for ch in item.get("changes", []):
+            card.body.addWidget(self._change_row(item, ch, conf))
+        return card
+
+    def _change_row(self, item, ch, conf):
+        old = _elide(ch.get("old", "")) or "∅"          # empty-set glyph for a blank
+        new = _elide(ch.get("new", ""))
+        label = f"{ch['prop']}:  {old}  →  {new}"
+        cb = QCheckBox(label)
+        # Pre-check ONLY blank-fills on an exact match; overwrites + fuzzy stay off.
+        pre = (conf == "exact" and ch.get("kind") == "fill")
+        cb.setChecked(pre)
+        if ch.get("kind") == "overwrite":
+            cb.setToolTip("Overwrites existing data — opt in per field.")
+        cb.stateChanged.connect(lambda _=0: self._sync_apply_enabled())
+        self._boxes.append((cb, item["ref"], ch["prop"], ch.get("kind"), conf))
+        row = QWidget(); rl = QHBoxLayout(row); rl.setContentsMargins(0, 0, 0, 0); rl.setSpacing(8)
+        rl.addWidget(cb)
+        if ch.get("kind") == "overwrite":
+            rl.addWidget(W.tag("Overwrite", "warn"))
+        rl.addStretch(1)
+        return row
+
+    def _field_row(self, label, prop, placeholder=""):
+        """A labelled editable field row (label + QLineEdit). Returns (row_widget, edit)."""
+        row = QWidget(); rl = QHBoxLayout(row)
+        rl.setContentsMargins(0, 0, 0, 0); rl.setSpacing(8)
+        lab = W.body(label); lab.setFixedWidth(104)
+        rl.addWidget(lab, 0)
+        edit = QLineEdit(); edit.setPlaceholderText(placeholder or f"Add {label.lower()}")
+        edit.setMinimumHeight(30)
+        edit.textChanged.connect(lambda _=0: self._sync_apply_enabled())
+        rl.addWidget(edit, 1)
+        return row, edit
+
+    def _group_card(self, group):
+        card = W.Card(pad=14)
+        head = QHBoxLayout(); head.setSpacing(8)
+        head.addWidget(W.body(group["label"], mono=True))
+        head.addStretch(1)
+        cb = QCheckBox(f"Fill all {len(group['refs'])}")
+        cb.setToolTip("Apply the values below to every component in this group.")
+        cb.stateChanged.connect(lambda _=0: self._sync_apply_enabled())
+        head.addWidget(cb)
+        head_w = QWidget(); head_w.setLayout(head); card.body.addWidget(head_w)
+        refs = ", ".join(group["refs"][:12]) + (" …" if len(group["refs"]) > 12 else "")
+        card.body.addWidget(W.body(refs, dim=True, mono=True))
+        edits = {}
+        for prop, label in libfill._GROUP_FIELDS:
+            row, edit = self._field_row(label, prop)
+            card.body.addWidget(row)
+            edits[prop] = edit
+        self._group_edits.append((group, cb, edits))
+        return card
+
+    def _manual_card(self, comp, passport):
+        card = W.Card(pad=14)
+        head = QHBoxLayout(); head.setSpacing(8)
+        head.addWidget(W.body(str(comp.get("ref", "")), mono=True))
+        val = str(comp.get("value") or "").strip()
+        if val:
+            head.addWidget(W.body(val, dim=True))
+        head.addWidget(W.tag("No match", "mut"))
+        head.addStretch(1)
+        head_w = QWidget(); head_w.setLayout(head); card.body.addWidget(head_w)
+        props = comp.get("props") or {}
+        edits = {}
+        for prop, label in libfill._GROUP_FIELDS:
+            if not libfill._is_blank(props.get(prop)):
+                continue                        # already filled on this instance
+            row, edit = self._field_row(label, prop)
+            card.body.addWidget(row)
+            edits[prop] = edit
+        self._manual_edits.append((comp.get("ref", ""), edits))
+        return card
+
+    def _collect_manual(self):
+        """Gather the user-typed group + manual values into {(ref, prop): value}."""
+        out = {}
+        for group, cb, edits in self._group_edits:
+            if not cb.isChecked():
+                continue
+            fv = {prop: e.text().strip() for prop, e in edits.items() if e.text().strip()}
+            if fv:
+                out.update(libfill.expand_group_fill(group, fv))
+        for ref, edits in self._manual_edits:
+            for prop, e in edits.items():
+                v = e.text().strip()
+                if v:
+                    out[(ref, prop)] = v
+        return out
+
+    # ── selection ────────────────────────────────────────────────────────────
+    def _bulk(self, mode):
+        for cb, _ref, _prop, kind, conf in self._boxes:
+            if mode == "all":
+                cb.setChecked(True)
+            elif mode == "clear":
+                cb.setChecked(False)
+            elif mode == "exact":
+                cb.setChecked(conf == "exact" and kind == "fill")
+        self._sync_apply_enabled()
+
+    def select_all(self):
+        """Check every proposed field (test/programmatic seam for `_bulk('all')`)."""
+        self._bulk("all")
+
+    def selected(self):
+        """The set of (ref, prop) field pairs to write: the checked library/distributor
+        boxes plus the user-typed group/manual fills recorded on apply()."""
+        base = {(ref, prop) for cb, ref, prop, _k, _c in self._boxes if cb.isChecked()}
+        return base | self._extra_selected
+
+    def annotate_selected(self):
+        return bool(self._annotate_box and self._annotate_box.isChecked())
+
+    def _has_selection(self):
+        return bool(self.selected()) or self.annotate_selected() or bool(self._collect_manual())
+
+    def _sync_apply_enabled(self):
+        self._apply_btn.setEnabled(self._has_selection())
+        sel = self.selected()
+        comps = len({r for r, _p in sel})
+        need = sum(1 for cb, _r, _p, _k, conf in self._boxes
+                   if conf == "verify" and cb.isChecked())
+        parts = [f"{comps} component{'s' if comps != 1 else ''}",
+                 f"{len(sel)} field{'s' if len(sel) != 1 else ''}"]
+        if self.annotate_n and self.annotate_selected():
+            parts.append(f"{self.annotate_n} annotation{'s' if self.annotate_n != 1 else ''}")
+        if need:
+            parts.append(f"{need} need your check")
+        self._header.setText("  ·  ".join(parts))
+
+    # ── apply ────────────────────────────────────────────────────────────────
+    def apply(self):
+        """Record the selection and close accepted. When a writer was supplied
+        (``on_apply``) call it; when driven by the ▶ Prepare flow (``on_apply is None``)
+        the flow reads ``selected()`` / ``annotate_selected()`` after ``exec_`` and writes."""
+        if not self._has_selection():
+            return
+        # Merge the user-typed group + manual fills into the plan (as FieldChanges) so the
+        # writer treats them exactly like library/distributor fills; record their keys so
+        # selected() returns them too.
+        manual = self._collect_manual()
+        if manual:
+            libfill.merge_manual_changes(self.plan, manual, self._components,
+                                         self._sheet_of, source="manual")
+            self._extra_selected = set(manual.keys())
+        self.applied = True
+        if callable(self._on_apply):
+            self._on_apply(self.selected(), self.annotate_selected())
+        self.accept()
+
+
+def _sheet_label(sheet: str) -> str:
+    """A sheet path as a short, posix, human label for a group header."""
+    if not sheet:
+        return "Schematic"
+    try:
+        return Path(sheet).name
+    except Exception:  # noqa: BLE001
+        return str(sheet)
+
+
+# ── Overview — project readiness verdict + Next Step, on kit.workbench ────────
+def _overview_panel(ctx, state) -> QWidget:
+    """Project readiness Overview, on the ``kit.workbench`` recipe — a browse/verdict tab (no
+    ▶ primary; a verdict-only surface is legal). It rolls project readiness up across four axes
+    and names the single most useful **Next Step**:
+
+    - **Audit** (reuses ``phealth.audit_project``, memoised by sheet mtime like Health),
+    - **ERC / DRC** (cached on-demand: the subprocess checks are far too costly to run on every
+      verdict refresh, so they are secondaries whose last result folds into the verdict),
+    - **Working tree** (``nd_git.status`` + ``nd_git.ahead_behind`` — uncommitted / ahead / behind),
+    - **KiCad CLI** detection (``kicad_paths.find_kicad_cli`` — PARITY; the "KiCad CLI: <path|not
+      found>" line makes tool detection visible).
+
+    Verdict is quiet-green "Ready" when everything checks out; err/warn chips otherwise. Machinery
+    (Manage): Open in KiCad · Reveal Folder · Clear KiCad Cache (the same two backend calls PCB
+    Setup uses — deduped). Returns the ``host`` body (the caller wraps it in ``W.scroll_body``)."""
+    if not state.project:
+        return _no_project()
+
+    log = getattr(getattr(ctx, "services", None), "log", None)
+
+    def _log(line):
+        if callable(log):
+            log(str(line))
+
+    host = None                        # bound after kit.workbench(); None-safe reads before then
+    memo: dict = {}                    # audit memo, keyed by sheet mtime (mirror Health)
+    checks: dict = {"erc": None, "drc": None}   # last ERC/DRC summary (or {"error": ...})
+    busy = kit.BusyDict()
+
+    def snapshot() -> dict:
+        root = state.root_schematic()
+        return {"schs": [str(s) for s in state.schematics()],
+                "root_sch": str(root) if root else None,
+                "boards": [str(b) for b in state.boards()],
+                "repo": str(ctx.cfg["RepoRoot"]) if ctx.cfg.get("RepoRoot") else None,
+                "fp_dirs": [ctx.cfg["FootprintLib"]] if ctx.cfg.get("FootprintLib") else None,
+                "mdl_dirs": [ctx.cfg["ModelLib"]] if ctx.cfg.get("ModelLib") else None,
+                "name": state.project.name if state.project else "project"}
+
+    def _audit(snap):
+        schs = snap["schs"]
+        try:
+            sig = (tuple((s, Path(s).stat().st_mtime_ns) for s in schs),
+                   tuple(snap["fp_dirs"] or ()), tuple(snap["mdl_dirs"] or ()))
+        except OSError:
+            sig = None
+        if sig is not None and memo.get("sig") == sig:
+            return memo["res"]
+        res = phealth.audit_project(schs, snap["fp_dirs"], snap["mdl_dirs"])
+        if sig is not None:
+            memo["sig"] = sig
+            memo["res"] = res
+        return res
+
+    def _next_step(r, snap):
+        """The single most useful next action → (title, subtitle, kind). Priority: blocked env
+        → audit errors → ERC/DRC errors → un-run checks → git reconcile → warnings → ready."""
+        if not snap["schs"]:
+            return ("Add a schematic sheet", "This project has no schematic to audit or build.", "warn")
+        if r["cli"] is None:
+            return ("Install the KiCad CLI", "ERC/DRC and board rendering need kicad-cli on PATH.", "err")
+        a = r["audit"] or {}
+        if a.get("errs"):
+            n = a["errs"]
+            return (f"Fix {n} audit error{'s' if n != 1 else ''}",
+                    "Open the Health tab → ▶ Prepare Components.", "err")
+        erc, drc = r["erc"], r["drc"]
+        if erc and not erc.get("error") and erc.get("errors"):
+            n = erc["errors"]
+            return (f"Fix {n} ERC violation{'s' if n != 1 else ''}", "Re-run ERC after fixing.", "err")
+        if drc and not drc.get("error") and drc.get("errors"):
+            n = drc["errors"]
+            return (f"Fix {n} DRC violation{'s' if n != 1 else ''}", "Re-run DRC after fixing.", "err")
+        pending = []
+        if erc is None:
+            pending.append("ERC")
+        if drc is None and snap["boards"]:
+            pending.append("DRC")
+        if pending:
+            return (f"Run {' / '.join(pending)}", "Verify the schematic and board before fabrication.", "warn")
+        g = r["git"]
+        if g and not g.get("error"):
+            if g["changed"]:
+                n = g["changed"]
+                return (f"Commit {n} change{'s' if n != 1 else ''}", "Open the Git tab to review and commit.", "warn")
+            if g["ahead"]:
+                n = g["ahead"]
+                return (f"Push {n} commit{'s' if n != 1 else ''}", "Your branch is ahead of the remote.", "warn")
+            if g["behind"]:
+                n = g["behind"]
+                return (f"Pull {n} commit{'s' if n != 1 else ''}", "Your branch is behind the remote.", "warn")
+        if a.get("warns"):
+            n = a["warns"]
+            return (f"Review {n} audit warning{'s' if n != 1 else ''}", "Open the Health tab for detail.", "warn")
+        return ("Ready to fabricate", "Audit clean, checks pass, working tree in sync.", "ok")
+
+    def _readiness(snap):
+        """Roll every readiness axis into one dict (audit memoised; git + cli cheap live reads;
+        ERC/DRC from the on-demand cache). Off-thread-safe — touches no widgets."""
+        out = {"audit": None, "erc": checks["erc"], "drc": checks["drc"], "git": None, "cli": None}
+        out["cli"] = kicad_paths.find_kicad_cli()          # PARITY: surfaces find_kicad_cli
+        if snap["schs"]:
+            res = _audit(snap)
+            bs = res.get("counts", {}).get("by_severity", {})
+            out["audit"] = {"errs": bs.get("error", 0), "warns": bs.get("warning", 0),
+                            "notes": bs.get("info", 0), "healthy": res.get("healthy", 0),
+                            "comps": res.get("components", 0)}
+        repo = snap["repo"]
+        if repo:
+            st = nd_git.status(repo)
+            ab = nd_git.ahead_behind(repo)
+            out["git"] = {"clean": st.get("clean", True), "error": st.get("error"),
+                          "changed": len(st.get("staged", [])) + len(st.get("modified", []))
+                          + len(st.get("untracked", [])),
+                          "ahead": (ab[0] if ab else 0), "behind": (ab[1] if ab else 0),
+                          "tracking": ab is not None}
+        out["next"] = _next_step(out, snap)
+        return out
+
+    # ── verdict: the readiness rollup (quiet-green when ready) ───────────────────────────
+    def verdict(snap):
+        if not snap["schs"]:
+            return W.VerdictState(kind="mut", title="No Schematic",
+                                  subtitle="This project has no schematic sheet.")
+        r = _readiness(snap)
+        a = r["audit"] or {}
+        erc, drc, g = r["erc"], r["drc"], r["git"]
+        chips = []
+        if a.get("errs"):
+            chips.append(("Audit", str(a["errs"]), "err"))
+        if erc and not erc.get("error") and erc.get("errors"):
+            chips.append(("ERC", str(erc["errors"]), "err"))
+        if drc and not drc.get("error") and drc.get("errors"):
+            chips.append(("DRC", str(drc["errors"]), "err"))
+        if g and not g.get("error"):
+            if g["ahead"]:
+                chips.append(("Ahead", str(g["ahead"]), "warn"))
+            if g["behind"]:
+                chips.append(("Behind", str(g["behind"]), "warn"))
+        title, sub, kind = r["next"]
+        if kind == "ok":
+            return W.VerdictState(kind="ok", title="Ready", subtitle=sub, chips=chips)
+        return W.VerdictState(kind=kind, title=title, subtitle=sub, chips=chips)
+
+    # ── detail: the readiness rows + Next Step + KiCad CLI, chrome once / fill repopulates ──
+    def _check_row(label, summary, hint):
+        if summary is None:
+            return (label, "Not run", "mut", hint)
+        if summary.get("error"):
+            return (label, "Could not run", "warn", str(summary.get("error"))[:80])
+        if summary.get("errors"):
+            return (label, f"{summary['errors']} error(s)", "err", f"{summary.get('warnings', 0)} warning(s)")
+        if summary.get("warnings"):
+            return (label, f"{summary['warnings']} warning(s)", "warn", "")
+        return (label, "Clean", "ok", "")
+
+    def _readiness_rows(r, snap):
+        rows = []
+        a = r["audit"]
+        if a is None:
+            rows.append(("Audit", "No schematic", "mut", ""))
+        elif a["errs"]:
+            rows.append(("Audit", f"{a['errs']} error(s)", "err", f"{a['healthy']}/{a['comps']} components healthy"))
+        elif a["warns"]:
+            rows.append(("Audit", f"{a['warns']} warning(s)", "warn", f"{a['healthy']}/{a['comps']} components healthy"))
+        elif a["notes"]:
+            rows.append(("Audit", f"{a['notes']} note(s)", "mut", f"{a['healthy']}/{a['comps']} components healthy"))
+        else:
+            rows.append(("Audit", "Clean", "ok", f"{a['comps']} components healthy"))
+        rows.append(_check_row("ERC", r["erc"], "Run ERC to check the schematic."))
+        if snap["boards"]:
+            rows.append(_check_row("DRC", r["drc"], "Run DRC to check the board."))
+        else:
+            rows.append(("DRC", "No board", "mut", "This project has no PCB to check."))
+        g = r["git"]
+        if g is None:
+            rows.append(("Working Tree", "No repo", "mut", "Not under a git repository."))
+        elif g.get("error"):
+            rows.append(("Working Tree", "Unavailable", "mut", "git status could not be read."))
+        else:
+            parts = []
+            if g["changed"]:
+                parts.append(f"{g['changed']} uncommitted")
+            if g["ahead"]:
+                parts.append(f"{g['ahead']} ahead")
+            if g["behind"]:
+                parts.append(f"{g['behind']} behind")
+            if not parts:
+                rows.append(("Working Tree", "In sync", "ok",
+                             "Clean, level with the remote." if g["tracking"] else "Clean (no upstream tracked)."))
+            else:
+                rows.append(("Working Tree", " · ".join(parts), "warn", "Open the Git tab to reconcile."))
+        cli = r["cli"]
+        rows.append(("KiCad CLI", "Found" if cli else "Not found", "ok" if cli else "warn",
+                     cli or "Install KiCad or add kicad-cli to PATH."))
+        return rows
+
+    def _row_widget(label, status, kind, det):
+        w = QWidget(); h = QHBoxLayout(w); h.setContentsMargins(0, 0, 0, 0); h.setSpacing(10)
+        key = W.body(label); key.setFixedWidth(116)
+        h.addWidget(key)
+        h.addWidget(W.tag(status, kind))
+        if det:
+            h.addWidget(W.body(det, dim=True), 1)
+        else:
+            h.addStretch(1)
+        return w
+
+    def detail(snap, handle):
+        body = QWidget()
+        col = QVBoxLayout(body)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(14)
+        col.addWidget(W.eyebrow("Readiness"))
+        rows_host = QWidget(); rows_box = QVBoxLayout(rows_host)
+        rows_box.setContentsMargins(0, 0, 0, 0); rows_box.setSpacing(8)
+        col.addWidget(rows_host)
+        col.addWidget(W.eyebrow("Next Step"))
+        next_host = QWidget(); next_box = QVBoxLayout(next_host)
+        next_box.setContentsMargins(0, 0, 0, 0); next_box.setSpacing(4)
+        col.addWidget(next_host)
+
+        def fill(s):
+            r = _readiness(s)
+            clear_layout(rows_box)
+            for (label, status, kind, det) in _readiness_rows(r, s):
+                rows_box.addWidget(_row_widget(label, status, kind, det))
+            clear_layout(next_box)
+            title, sub, kind = r["next"]
+            line = QWidget(); lh = QHBoxLayout(line)
+            lh.setContentsMargins(0, 0, 0, 0); lh.setSpacing(8)
+            lh.addWidget(W.tag(title, kind)); lh.addStretch(1)
+            next_box.addWidget(line)
+            if sub:
+                next_box.addWidget(W.body(sub, dim=True))
+
+        return body, fill
+
+    # ── secondary op runners (busy-gated, off-thread) ────────────────────────────────────
+    def _run_check(kind):
+        if busy["on"]:
+            return
+        snap = snapshot()
+        cli = kicad_paths.find_kicad_cli()
+        if not cli:
+            _log("kicad-cli not found on PATH — install KiCad or add it to PATH.")
+            return
+        name = _CHECK_NAME.get(kind, kind)
+        target = snap["root_sch"] if kind == "erc" else (snap["boards"][0] if snap["boards"] else None)
+        if not target:
+            _log(f"No {'schematic' if kind == 'erc' else 'board'} to check.")
+            return
+        busy["on"] = True
+
+        def work():
+            fn = kchecks.run_erc if kind == "erc" else kchecks.run_drc
+            res = fn(target, cli)
+            if not res or res.get("error") or res.get("returncode"):
+                msg = str((res or {}).get("error") or f"kicad-cli exited {(res or {}).get('returncode')}")
+                return {"error": sentence(msg)}
+            return res.get("summary", {})
+
+        def done(summary, ok):
+            busy["on"] = False
+            checks[kind] = summary if ok else {"error": "operation failed"}
+            s = summary or {}
+            if ok and not s.get("error"):
+                _log(f"{name}: {s.get('errors', 0)} errors / {s.get('warnings', 0)} warnings.")
+            elif ok:
+                _log(f"{name}: {s.get('error')}")
+            host._region.handle.refresh()
+
+        run_populate(ctx, work, done, busy=f"{name}...")
+
+    def _pro_file():
+        try:
+            return kicad_tools.project_pro_file(state.project)
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _open_target(path, what):
+        from ..util import _headless
+        if not path or not Path(path).exists():
+            _log(f"No {what} to open for this project.")
+            return
+        if _headless():                                    # offscreen drive / CI: no desktop handoff
+            _log(f"Would open {Path(path).name}.")
+            return
+        from PyQt5.QtGui import QDesktopServices
+        from PyQt5.QtCore import QUrl
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+        _log(f"Opened {Path(path).name}.")
+
+    def _open_in_kicad():
+        _open_target(_pro_file(), "KiCad project")
+
+    def _reveal():
+        pro = _pro_file()
+        folder = Path(pro).parent if pro else (state.project if state.project else None)
+        _open_target(folder, "project folder")
+
+    def _clear_cache():
+        if busy["on"]:
+            return
+        cfg = getattr(ctx, "cfg", None) or {}
+        root_dir = cfg.get("RepoRoot") or (str(Path(state.project).parent) if state.project else None)
+        if not root_dir:
+            _log("No repo root to clear KiCad caches under.")
+            return
+        if not confirm(host, "Clear KiCad Cache",
+                       "Delete KiCad cache files (.kicad_prl, lock files, fp-info-cache, "
+                       "rescue/legacy caches) under the repository? KiCad regenerates them."):
+            return
+        busy["on"] = True
+
+        def work():
+            rp = Path(root_dir)
+            counts = psm.clear_project_cache_files(rp, verbose=False) or {}
+            try:
+                ncm.clear_project_cache(rp)
+            except Exception:  # noqa: BLE001
+                pass
+            n = sum(v for v in counts.values() if isinstance(v, int))
+            return f"Cleared {n} KiCad cache file(s) under {rp.name}."
+
+        def done(line, ok):
+            busy["on"] = False
+            _log(line if ok else "Clearing the KiCad cache failed.")
+
+        run_populate(ctx, work, done, busy="Clearing KiCad cache...")
+
+    secondary = [
+        kit.action("Run Electrical Rules Check", lambda: _run_check("erc"),
+                   tip="Run KiCad's ERC on the root schematic (via kicad-cli); the result folds into readiness"),
+        kit.action("Run Design Rules Check", lambda: _run_check("drc"),
+                   tip="Run KiCad's DRC on the board (via kicad-cli); the result folds into readiness"),
+        kit.action("Refresh", lambda: host._refresh(),
+                   tip="Re-read the audit and git status for this project"),
+    ]
+    machinery = [
+        kit.action("Open in KiCad", _open_in_kicad, tip="Open this project's .kicad_pro in KiCad"),
+        kit.action("Reveal Folder", _reveal, tip="Open the project folder in your file manager"),
+        kit.action("Clear KiCad Cache", _clear_cache,
+                   tip="Delete KiCad cache/lock files under the repo so settings reload cleanly"),
+    ]
+
+    host = kit.workbench(ctx, title="Overview", snapshot=snapshot, verdict=verdict, detail=detail,
+                         secondary=secondary, machinery=machinery, busy=busy, chip_slots=5)
+
+    # Disable every action while a mutating/subprocess op runs (mirror Health).
+    from PyQt5.QtWidgets import QPushButton
+    _buttons = [b for b in host.findChildren(QPushButton) if not b.text().startswith(("▸", "▾"))]
+
+    def _apply_enablement():
+        on = not busy["on"]
+        for b in _buttons:
+            try:
+                b.setEnabled(on)
+            except RuntimeError:                           # a button deleted by a rebuild
+                pass
+
+    busy.on_change = _apply_enablement
+
+    # Test / drive seams.
+    host._snapshot = snapshot
+    host._readiness = _readiness
+    host._audit = _audit
+    host._next_step = _next_step
+    host._run_check = _run_check
+    host._checks = checks
+    host._clear_cache = _clear_cache
+    host._open_in_kicad = _open_in_kicad
+    host._reveal = _reveal
+    return host
+
+
+# ── Health — audit findings + ▶ Prepare This Project, on kit.workbench ────────
+def _health_panel(ctx, state) -> QWidget:
+    """Project health, rebuilt onto the ``kit.workbench`` recipe: a findings-count verdict
+    band (quiet when healthy) → the audit findings table refreshed IN PLACE → the single
+    accent ▶ **Prepare This Project** (Fix-All: annotate + fill-from-Library, previewed
+    through the rich ``FillPreviewDialog`` via the recipe's ``preview`` hook, then a re-audit
+    with a before→after report) → Run ERC / Run DRC / Restore-Last-Prepare secondaries → a
+    Markdown audit-report export. Returns the ``host`` body (the caller wraps it in
+    ``W.scroll_body``).
+
+    Parity: surfaces ``audit_report_markdown`` (the export), ``autofixable`` (the "N
+    Auto-Fixable" chip in the findings summary) and ``autofixable_kinds`` (the annotate op's
+    pre-check). Two audits per refresh (verdict + detail) are memoised by sheet mtime so a
+    project switch reads each sheet once."""
+    log = getattr(getattr(ctx, "services", None), "log", None)
+
+    def _log(line):
+        if callable(log):
+            log(str(line))
+
+    # Holders: the plan + annotate_n stashed between the ▶ audit and its preview/apply, the
+    # backups from the last Prepare (for Restore), and an mtime-keyed audit memo so the
+    # verdict and the detail don't each re-read every sheet on the same refresh.
+    prep: dict = {}
+    last_prepare: dict = {"originals": {}}
+    memo: dict = {}
+    busy = kit.BusyDict()
+
+    _ANNOTATE_KEY = "\x00annotate"
+
+    def _op_key(ref, prop):
+        return f"{ref}\x1f{prop}"
+
+    def snapshot() -> dict:
+        """The GUI-thread selection dict every worker reads (workers never touch a widget):
+        the current project's sheets + boards + the Library dirs, re-derived from state so a
+        project switch takes effect."""
+        root = state.root_schematic()
+        return {"schs": [str(s) for s in state.schematics()],
+                "boards": [str(b) for b in state.boards()],
+                "root_sch": str(root) if root else None,
+                "fp_dirs": [ctx.cfg["FootprintLib"]] if ctx.cfg.get("FootprintLib") else None,
+                "mdl_dirs": [ctx.cfg["ModelLib"]] if ctx.cfg.get("ModelLib") else None,
+                "name": state.project.name if state.project else "project"}
+
+    def _audit(snap):
+        """Audit every sheet, memoised on (sheet, mtime) so the verdict + detail passes of a
+        single refresh read each file once; a Prepare/Restore write bumps the mtime (and
+        clears the memo) so the next audit reflects the change."""
+        schs = snap["schs"]
+        try:
+            sig = (tuple((s, Path(s).stat().st_mtime_ns) for s in schs),
+                   tuple(snap["fp_dirs"] or ()), tuple(snap["mdl_dirs"] or ()))
+        except OSError:
+            sig = None
+        if sig is not None and memo.get("sig") == sig:
+            return memo["res"]
+        res = phealth.audit_project(schs, snap["fp_dirs"], snap["mdl_dirs"])
+        if sig is not None:
+            memo["sig"] = sig
+            memo["res"] = res
+        return res
+
+    cmemo: dict = {}
+
+    def _completion(snap):
+        """Roll up the schematic-scoped completion passport (nd_library_fill.
+        project_completion) over every placed component, memoised on the same
+        sheet-mtime signature as _audit so a refresh reads each sheet once."""
+        schs = snap["schs"]
+        try:
+            sig = tuple((s, Path(s).stat().st_mtime_ns) for s in schs)
+        except OSError:
+            sig = None
+        if sig is not None and cmemo.get("sig") == sig:
+            return cmemo["res"]
+        comps = []
+        for sch in schs:
+            try:
+                comps.extend(phealth.schematic_components(sch))
+            except Exception:  # noqa: BLE001 — a missing/unreadable sheet just isn't counted
+                pass
+        res = libfill.project_completion(comps, ctx.cfg)   # cfg -> include the 3D-model dimension
+        if sig is not None:
+            cmemo["sig"] = sig
+            cmemo["res"] = res
+        return res
+
+    # ── verdict: findings health + how many components are fully filled ─────────────────
+    def verdict(snap):
+        if not snap["schs"]:
+            return W.VerdictState(kind="mut", title="No Schematic",
+                                  subtitle="This project has no schematic sheet to audit.")
+        res = _audit(snap)
+        bs = res.get("counts", {}).get("by_severity", {})
+        errs, warns, notes = bs.get("error", 0), bs.get("warning", 0), bs.get("info", 0)
+        total = errs + warns + notes
+        comp = _completion(snap)
+        n, m = comp["complete"], comp["total"]
+        incomplete = m - n
+        chips = []
+        if incomplete:
+            chips.append(("Incomplete", str(incomplete), "warn"))
+        if errs:
+            chips.append(("Errors", str(errs), "err"))
+        if warns:
+            chips.append(("Warnings", str(warns), "warn"))
+        if notes:
+            chips.append(("Notes", str(notes), "mut"))
+        sub = f"{n}/{m} components fully filled"
+        # Green only when every component is fully filled AND there is no error/warning —
+        # the owner's "every component fully filled" bar. Notes stay benign.
+        if incomplete == 0 and errs + warns == 0:
+            title = "Ready To Build" if m else "No Components"
+            return W.VerdictState(kind="ok", title=title, subtitle=sub, chips=chips)
+        if errs + warns == 0:
+            # Only completeness gaps (no ERC/footprint errors): amber, not red.
+            return W.VerdictState(kind="warn", title=f"{incomplete} To Complete",
+                                  subtitle=sub, chips=chips)
+        kind = "err" if errs else "warn"
+        return W.VerdictState(kind=kind, title=f"{total} Finding{'s' if total != 1 else ''}",
+                              subtitle=sub, chips=chips)
+
+    # ── detail: the findings table, built once, repopulated on refresh ──────────────────
+    def detail(snap, handle):
+        body = QWidget()
+        col = QVBoxLayout(body)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(14)
+        if not snap["schs"]:
+            col.addWidget(W.eyebrow("Findings"))
+            col.addWidget(W.static_label("No schematic sheet in this project to audit.", "dim"))
+            return body, (lambda s: None)
+        col.addWidget(W.eyebrow("Findings"))
+        summary = QHBoxLayout()
+        summary.setSpacing(8)
+        summary_w = QWidget()
+        summary_w.setLayout(summary)
+        col.addWidget(summary_w)
+        table_box = QVBoxLayout()
+        table_box.setContentsMargins(0, 0, 0, 0)
+        table_box.setSpacing(0)
+        table_host = QWidget()
+        table_host.setLayout(table_box)
+        col.addWidget(table_host, 1)
+
+        def fill(s):
+            res = _audit(s)
+            bs = res.get("counts", {}).get("by_severity", {})
+            findings = res.get("findings", [])
+            auto = phealth.autofixable(findings)          # parity: surfaces autofixable()
+            clear_layout(summary)
+            tags = []
+            sheets = res.get("sheets", 1)
+            if sheets > 1:
+                tags.append((f"{sheets} Sheets", "mut"))
+            tags += [(f"{res.get('components', 0)} Components", "mut"),
+                     (f"{res.get('healthy', 0)} Healthy", "mut"),
+                     (f"{bs.get('error', 0)} Errors", "err"),
+                     (f"{bs.get('warning', 0)} Warnings", "warn"),
+                     (f"{bs.get('info', 0)} Notes", "mut")]
+            if auto:
+                tags.append((f"{len(auto)} Auto-Fixable", "ok"))
+            for txt, kind in tags:
+                summary.addWidget(W.tag(txt, kind))
+            summary.addStretch(1)
+            clear_layout(table_box)
+            rows = []
+            for f in findings:
+                raw = str(f.get("kind", ""))
+                kind = _KIND_LABEL.get(raw, raw.replace("_", " ").title())
+                sev = f.get("severity", "info")
+                rows.append([W.body(str(f.get("ref", "")), mono=True), W.body(kind),
+                             W.body(sentence(f.get("detail", ""))),
+                             W.tag(sev.title(), _SEV.get(sev, "mut"))])
+            if not rows:
+                table_box.addWidget(W.empty_state("No issues found", glyph=icons.GLYPHS["check"],
+                                                  sub="Every component is healthy."))
+            else:
+                table_box.addWidget(W.data_table(["Reference", "Kind", "Detail", "Severity"], rows,
+                                                 stretch_col=2, wrap=True), 1)
+
+        return body, fill
+
+    # ── the ▶ Prepare This Project flow (audit → rich preview → apply → re-audit) ────────
+    def _build_fill_plan(schs):
+        """Index the Library and build a fill plan over every sheet's real components.
+        `sheet_of` maps each ref to the sheet it was found on so the writer knows which file
+        to touch. Off-GUI-safe. Returns an nd_library_fill FillPlan."""
+        idx = libfill.library_parts(ctx.cfg)
+        components, sheet_of = [], {}
+        for sch in schs:
+            for comp in phealth.schematic_components(sch):
+                components.append(comp)
+                sheet_of[comp["ref"]] = str(sch)          # last sheet wins on a dup ref
+        prep["components"] = components                    # for the preview's group/manual sections
+        prep["sheet_of"] = sheet_of
+        plan = libfill.build_fill_plan(components, idx, sheet_of)
+        # Enrich identity fields from the distributor (Mouser/LCSC) for any component that
+        # carries a real MPN but is still missing manufacturer/datasheet/description. This
+        # does network lookups, but we are already OFF the GUI thread here (the flow's audit
+        # phase); it degrades to library-only with no key and never fails the plan. Skipped
+        # under offscreen (drive/CI) so the harness never touches the network.
+        from ..util import _headless
+        if not _headless():
+            try:
+                libfill.enrich_plan(plan, components, ctx.cfg, sheet_of)
+            except Exception:  # noqa: BLE001
+                pass
+        return plan
+
+    def _prepare_audit(snap):
+        """OFF-thread: build the Library fill plan + the annotate dry-run, stash them, and
+        return the ops (the annotate op + one op per proposed field). Pre-check: annotate is
+        gated by ``autofixable_kinds`` (parity); a field is safe only on an exact blank-fill."""
+        schs = snap["schs"]
+        plan = _build_fill_plan(schs)
+        annotate_n = phealth.annotate_project(schs, apply=False)
+        prep["plan"] = plan
+        prep["annotate_n"] = annotate_n
+        auto_annotate = "unannotated" in phealth.autofixable_kinds()
+        ops = []
+        if annotate_n:
+            ops.append({"key": _ANNOTATE_KEY,
+                        "label": f"Annotate {annotate_n} unannotated reference"
+                                 f"{'s' if annotate_n != 1 else ''}",
+                        "detail": "Assign the next free designator to each unannotated symbol.",
+                        "safe": bool(auto_annotate)})
+        for item in plan.get("items", []):
+            ref = item["ref"]
+            conf = (item.get("match") or {}).get("confidence", "none")
+            for ch in item.get("changes", []):
+                old = ch.get("old", "") or "∅"
+                over = ch.get("kind") == "overwrite"
+                src = ch.get("source", "library")
+                tag = "  (from Mouser)" if src == "mouser" else ("  (overwrite)" if over else "")
+                # Auto-select an exact-library fill or a distributor fill of a blank field;
+                # a fuzzy "verify" match or an overwrite always needs the user's tick.
+                safe = ch.get("kind") == "fill" and (conf == "exact" or src == "mouser")
+                ops.append({"key": _op_key(ref, ch["prop"]),
+                            "label": f"{ref} · {ch['prop']}",
+                            "detail": f"{old} → {ch.get('new', '')}" + tag,
+                            "safe": bool(safe)})
+        return ops
+
+    def _prepare_intro(snap, ops):
+        n = len(ops)
+        return (f"{n} proposed change{'s' if n != 1 else ''} for {snap['name']}. "
+                "Exact blank fills are pre-checked; overwrites and fuzzy matches need your check.")
+
+    def _prepare_preview(host, label, intro, ops):
+        """The recipe's ``preview`` hook: the rich ``FillPreviewDialog`` (confidence chips,
+        per-field old→new deltas, Only-Exact bulk). HEADLESS: no ``exec_`` — return the
+        safe/pre-checked keys so an offscreen drive runs the whole flow. GUI: parent to the
+        top-level window (never the rebuildable body), then map the checked pairs back to keys."""
+        from ..util import _headless
+        if _headless():
+            return [op["key"] for op in ops if op.get("safe")]
+        dlg = FillPreviewDialog(prep.get("plan") or {"items": []}, prep.get("annotate_n", 0),
+                                cfg=ctx.cfg, parent=host.window(),
+                                components=prep.get("components"), sheet_of=prep.get("sheet_of"))
+        host._fill_dialog = dlg
+        if dlg.exec_() != QDialog.Accepted or not dlg.applied:
+            return None
+        keys = [_op_key(r, p) for (r, p) in dlg.selected()]
+        if dlg.annotate_selected():
+            keys.append(_ANNOTATE_KEY)
+        return keys
+
+    def _prepare_apply(snap, keys):
+        """OFF-thread: write the selected subset (fills + optional annotate) with .bak
+        backups, then re-audit and report before→after. Records the backups for Restore."""
+        plan = prep.get("plan") or {"items": []}
+        selected = set()
+        do_annotate = False
+        for k in keys:
+            if k == _ANNOTATE_KEY:
+                do_annotate = True
+            else:
+                ref, _, prop = k.partition("\x1f")
+                selected.add((ref, prop))
+        before = _audit(snap)
+        b0 = before.get("counts", {}).get("by_severity", {})
+        # Snapshot each sheet's ORIGINAL text BEFORE any writer runs. Fill and annotate each write
+        # <sheet>.bak right before replacing the file, so on a sheet that gets BOTH a fill and an
+        # annotate the second writer's .bak captures the FIRST writer's intermediate — not the
+        # pre-Prepare original. Restore must roll back to THIS captured original (else it would
+        # keep the fills and only undo the annotation, breaking the "undoes this" promise).
+        originals = {}
+        for sch in snap["schs"]:
+            try:
+                originals[sch] = Path(sch).read_text(encoding="utf-8")
+            except OSError:
+                pass
+        res = libfill.apply_fill_plan(plan, selected, ctx.cfg, log)
+        annotated = 0
+        if do_annotate:
+            annotated = phealth.annotate_project(snap["schs"], apply=True)
+        # Count the sheets a writer actually backed up (for the report line only).
+        baks = list(res.get("backups", []))
+        for sch in snap["schs"]:
+            bak = sch + ".bak"
+            if do_annotate and bak not in baks and Path(bak).exists():
+                baks.append(bak)
+        last_prepare["originals"] = originals
+        memo.pop("sig", None)                              # files changed → fresh audit
+        after = _audit(snap)
+        b1 = after.get("counts", {}).get("by_severity", {})
+        filled = res.get("fields_written", 0)
+        comps = res.get("components_changed", 0)
+        done, errors = [], list(res.get("errors", []))
+        if filled:
+            done.append(f"Filled {filled} field(s) across {comps} component(s).")
+        if annotated:
+            done.append(f"Annotated {annotated} reference(s).")
+        if baks:
+            done.append(f"Backups written for {len(baks)} sheet(s) — Restore Last Prepare "
+                        "rolls every changed sheet back to its pre-Prepare state.")
+
+        def _fmt(b):
+            return f"{b.get('error', 0)} errors / {b.get('warning', 0)} warnings / {b.get('info', 0)} notes"
+
+        summary = (f"Prepared {snap['name']}: {_fmt(b0)} → {_fmt(b1)}."
+                   if (filled or annotated) else "Nothing was written.")
+        return {"summary": summary, "done": done, "errors": errors}
+
+    prepare_flow = kit.PrimaryFlow(
+        label="▶ Prepare Components", audit=_prepare_audit, intro=_prepare_intro,
+        apply=_prepare_apply, preview=_prepare_preview,
+        tip="Prepare every component: annotate references + link footprints/models + fill "
+            "each component's fields (part number / manufacturer / datasheet) from the "
+            "Library and Mouser, previewed field-by-field, then re-audit",
+        empty="Nothing to prepare — every component is annotated and there is nothing the "
+              "Library or Mouser can fill.")
+
+    # ── secondary + machinery op runners (busy-gated, off-thread, then refresh) ──────────
+    def _run_op(label, work):
+        if busy["on"]:
+            return
+        busy["on"] = True
+
+        def done(line, ok):
+            busy["on"] = False
+            if line:
+                _log(line)
+            host._region.handle.refresh()
+
+        run_populate(ctx, work, done, busy=f"{label}...")
+
+    def _report_op(label, work):
+        def done(result, ok):
+            kit._report(host, label, result if ok else {"errors": ["operation failed"]}, log=log)
+
+        run_populate(ctx, work, done, busy=f"{label}...")
+
+    def _run_check(kind):
+        snap = snapshot()
+        cli = _kicad_cli()
+        if not cli:
+            _log("kicad-cli not found on PATH — install KiCad or add it to PATH.")
+            return
+        name = _CHECK_NAME.get(kind, kind)
+        target = snap["root_sch"] if kind == "erc" else (snap["boards"][0] if snap["boards"] else None)
+        if not target:
+            _log(f"No {'schematic' if kind == 'erc' else 'board'} to check.")
+            return
+
+        def work():
+            fn = kchecks.run_erc if kind == "erc" else kchecks.run_drc
+            res = fn(target, cli)
+            if not res:
+                return {"errors": [f"{name} failed."]}
+            if res.get("error") or res.get("returncode"):
+                msg = str(res.get("error") or f"kicad-cli exited {res.get('returncode')}")
+                return {"errors": [f"{name} could not run: {sentence(msg)}"]}
+            s = res.get("summary", {})
+            findings = res.get("findings", [])
+            missing = [{"item": str(f.get("rule", "")), "why": sentence(f.get("message", "")),
+                        "how_to_fix": str(f.get("where", "")) or "See this location in the design."}
+                       for f in findings[:200]]
+            return {"summary": f"{name}: {s.get('errors', 0)} errors / {s.get('warnings', 0)} "
+                               f"warnings / {s.get('exclusion', 0)} exclusions.",
+                    "missing": missing}
+
+        _report_op(name, work)
+
+    def _restore_prepare():
+        originals = dict(last_prepare.get("originals") or {})
+        if not originals:
+            _log("No prepare to restore — run Prepare Components first.")
+            return
+
+        def work():
+            restored, errors = [], []
+            for sch, text in originals.items():
+                p = Path(sch)
+                try:
+                    if p.read_text(encoding="utf-8") == text:
+                        continue                           # sheet unchanged — nothing to roll back
+                    p.write_text(text, encoding="utf-8")
+                    restored.append(p.name)
+                except OSError as e:  # noqa: BLE001
+                    errors.append(f"{p.name}: {e}")
+            last_prepare["originals"] = {}                 # consumed
+            memo.pop("sig", None)
+            msg = (f"Restored {len(restored)} sheet(s) to their pre-Prepare state."
+                   if restored else "Nothing to restore — the sheets are unchanged.")
+            if errors:
+                msg += " Errors: " + "; ".join(errors)
+            return msg
+
+        _run_op("Restore Last Prepare", work)
+
+    exports = [
+        kit.export_action("Audit Report (Markdown)...",
+                          lambda snap: phealth.audit_report_markdown(_audit(snap)),
+                          lambda snap: f"{snap['name']}-health.md",
+                          filt="Markdown (*.md)",
+                          tip="A shareable Markdown report of the current audit findings"),
+    ]
+    secondary = [
+        kit.action("Run Electrical Rules Check", lambda: _run_check("erc"),
+                   tip="Run KiCad's ERC on the root schematic (via kicad-cli)"),
+        kit.action("Run Design Rules Check", lambda: _run_check("drc"),
+                   tip="Run KiCad's DRC on the board (via kicad-cli)"),
+        kit.action("Restore Last Prepare", _restore_prepare,
+                   tip="Undo the last Prepare by restoring the .bak backups it wrote"),
+    ]
+
+    host = kit.workbench(ctx, title="Health", snapshot=snapshot, verdict=verdict, detail=detail,
+                         primary=prepare_flow, secondary=secondary, exports=exports, busy=busy)
+
+    # Disable every action while a mutating op runs (no overlapping writes); the ▸/▾
+    # collapsible chevrons are skipped (the busy gate never disables them).
+    from PyQt5.QtWidgets import QPushButton
+    _buttons = [b for b in host.findChildren(QPushButton) if not b.text().startswith(("▸", "▾"))]
+
+    def _apply_enablement():
+        on = not busy["on"]
+        for b in _buttons:
+            try:
+                b.setEnabled(on)
+            except RuntimeError:                           # a button deleted by a rebuild
+                pass
+
+    busy.on_change = _apply_enablement
+
+    # A guarded ▶ so a re-drive / a click during a secondary op can't start a second flow.
+    _raw_run = host._run_primary
+
+    def _guarded_run():
+        if busy["on"]:
+            return
+        _raw_run()
+
+    host._run_primary = _guarded_run
+
+    # Test / drive seams.
+    host._snapshot = snapshot
+    host._audit = _audit
+    host._prepare_audit = _prepare_audit
+    host._prepare_apply = _prepare_apply
+    host._prepare_flow = prepare_flow
+    host._prep = prep                                      # {plan, annotate_n} after _prepare_audit
+    host._run_check = _run_check
+    host._restore_prepare = _restore_prepare
+    host._fill_dialog = None
+    host._fix_all = _guarded_run                           # legacy alias (drives ▶ Prepare)
+    host._verdict_of = verdict                             # test seam (readiness classification)
+    host._last_prepare = last_prepare                      # test seam (captured originals)
+    return host
+
+
+# ── BOM (real bom_from_kicad_schematic / consolidated_bom) ───────────────────
+def _consolidated_boards(projects, selected_names):
+    """Build the {project_name: [schematics]} map consolidated_bom expects from
+    only the CHOSEN subset of projects (selected_names). Pure + import-light so a
+    test can exercise the subset logic without a GUI."""
+    chosen = set(selected_names)
+    return {p.name: nd_wizard.list_schematics(p) for p in projects if p.name in chosen}
+
+
+def _bom_panel(ctx, state) -> QWidget:
+    """BOM & Procurement, rebuilt onto the ``kit.workbench`` recipe with a CACHED-build
+    model. A priced build hits Mouser/LCSC (network) + a Library lookup — far too costly for
+    a recipe refresh — so the detail RENDERS a cached ``_last_bom`` holder and never builds on
+    a refresh. The pieces:
+
+    - ``snapshot()`` carries the live control values (Boards / Price) + the current sheets.
+    - ``verdict()`` reads the cache: cost via ``LibraryManager.bom_cost_summary`` (PARITY —
+      this closes that omission), sourcing risk via ``bom_sourcing_risks``, lead via
+      ``bom_lead_time``. Quiet ``$X · N lines`` when clean; err/warn chips for NRND / No-Stock
+      / Low-Stock / long lead; ``Not Built`` before the first build.
+    - ``detail.fill()`` renders the cached BOM table (project vs consolidated modes, the
+      dynamic Order + Lead columns) — it never builds. Boards changes re-project LIVE via a
+      direct table/summary redraw, guarded off while a diff view is open.
+    - **▶ Build and Cost** is the primary flow: builds + prices OFF-thread, writes the holder,
+      then ``after=_refresh`` renders it. The initial auto-build stays identity-only (pricing
+      off = no network), matching today.
+    - **Build Consolidated…** / **Compare To…** are secondaries; the six exports + Copy
+      Procurement Summary live in the Export collapsible (each owns its own file dialog /
+      binary format, so they ride the recipe's plain-``Action`` export slot).
+
+    Returns the ``host`` body (the caller does NOT wrap it — the recipe's body scrolls itself
+    via ``W.scroll_body`` at the feature level). Every legacy ``panel._xxx`` seam the coupled
+    tests drive is preserved on ``host``."""
+    if not state.project:
+        return _no_project()
+
+    log = getattr(getattr(ctx, "services", None), "log", None)
+
+    def _log(line):
+        if callable(log):
+            log(str(line))
+
+    host = None                        # bound after kit.workbench(); None-safe reads before then
+    base = str(ctx.cfg.get("RepoRoot") or ".")
+    busy = kit.BusyDict()
+
+    def _money(v):
+        p = LM._coerce_price(v)
+        return f"${p:,.2f}" if p is not None else "—"
+
+    # ── controls, built ONCE at panel level (so snapshot() can read them regardless of when
+    #    detail() mounts them, and a project-switch rebuild reseeds them) ──────────────────
+    cb_price = QCheckBox("Price with Mouser")
+    cb_price.setToolTip("Look up live Mouser unit price and stock for each part number, "
+                        "and total the extended cost. Slower on a big BOM (rate-limited).")
+    sp_boards = QSpinBox(); sp_boards.setRange(1, 100000); sp_boards.setValue(1)
+    sp_boards.setToolTip("The number of boards you're building. Drives the volume cost "
+                         "projection (when priced), the Priced BOM (Volume) export, and the "
+                         "Mouser order quantities. The full CSV and JLCPCB exports stay per-board.")
+    lab_boards = W.body("Boards", dim=True)
+    sp_spares = QSpinBox(); sp_spares.setRange(0, 100); sp_spares.setValue(0)
+    sp_spares.setSuffix(" %")
+    sp_spares.setToolTip("Extra passives (R/C/L/FB) to add to the Mouser order for SMT "
+                         "pick-and-place attrition, rounded up. ICs, connectors and the "
+                         "other exports are never padded.")
+    lab_spares = W.body("Spares", dim=True)
+
+    # Project multi-select — only meaningful for the consolidated build. Quiet checkboxes,
+    # all checked by default; the consolidated BOM is built from only the ticked projects.
+    checks = {}
+    picker = QWidget(); pvl = QVBoxLayout(picker); pvl.setContentsMargins(0, 0, 0, 0); pvl.setSpacing(6)
+    if len(state.projects) > 1:
+        pvl.addWidget(pv.field_label("Include Projects"))
+        boxrow = QHBoxLayout(); boxrow.setSpacing(18); boxrow.setContentsMargins(0, 0, 0, 0)
+        col = None
+        for i, p in enumerate(state.projects):
+            if i % 3 == 0:
+                col = QVBoxLayout(); col.setSpacing(4); boxrow.addLayout(col)
+            cb = QCheckBox(p.name); cb.setChecked(True); cb.setToolTip(p.as_posix())
+            checks[p.name] = cb; col.addWidget(cb)
+        boxrow.addStretch(1)
+        pvl.addLayout(boxrow)
+    picker.setVisible(False)
+
+    # The summary row + the result area (BOM table / diff) — panel-level layouts so every
+    # render helper writes into the SAME objects the detail body mounts once.
+    summary = QHBoxLayout(); summary.setSpacing(8)
+    summary_w = QWidget(); summary_w.setLayout(summary)
+    result = QVBoxLayout()
+    result_host = QWidget(); result_host.setLayout(result)
+
+    def snapshot() -> dict:
+        """The GUI-thread selection dict every worker reads (workers never touch a widget):
+        the current project's sheets, the live Boards count, and whether pricing is on."""
+        return {"schs": [str(s) for s in state.schematics()],
+                "boards": sp_boards.value(),
+                "price": cb_price.isChecked(),
+                "name": state.project.name if state.project else "project"}
+
+    # ── verdict: read the cache (cost / risk / lead), quiet-when-clean ───────────────────
+    def verdict(snap):
+        if not snap["schs"]:
+            return W.VerdictState(kind="mut", title="No Schematic",
+                                  subtitle="This project has no schematic sheet to build a BOM from.")
+        res = getattr(host, "_last_bom", None)
+        if not res:
+            return W.VerdictState(kind="mut", title="Not Built",
+                                  subtitle="Press ▶ Build and Cost to build the bill of materials.")
+        rows = res.get("rows", [])
+        cost = LM.bom_cost_summary(rows)                  # PARITY: surfaces bom_cost_summary
+        risks = LM.bom_sourcing_risks(rows, boards=snap["boards"])
+        lead = LM.bom_lead_time(rows)
+        chips = []
+        if risks["not_active"]:
+            chips.append(("NRND/EOL", str(risks["not_active"]), "err"))
+        if risks["no_stock"]:
+            chips.append(("No Stock", str(risks["no_stock"]), "err"))
+        if risks["insufficient_stock"]:
+            chips.append(("Low Stock", str(risks["insufficient_stock"]), "warn"))
+        if lead["any"] and lead["max_weeks"] >= 12:
+            chips.append(("Lead", f"{lead['max_weeks']}wk", "warn"))
+        lines = cost["line_count"]
+        noun = "line" if lines == 1 else "lines"
+        if cost["priced_lines"] > 0:
+            title = f"{_money(cost['total_cost'])} · {lines} {noun}"
+            sub = f"{cost['priced_lines']} priced, {cost['unpriced_lines']} unpriced"
+        else:
+            title = f"{lines} {noun} · unpriced"
+            sub = "Turn on Price with Mouser and rebuild for costs."
+        if risks["not_active"] or risks["no_stock"]:
+            kind = "err"
+        elif risks["insufficient_stock"] or (lead["any"] and lead["max_weeks"] >= 12):
+            kind = "warn"
+        else:
+            kind = "ok"
+        return W.VerdictState(kind=kind, title=title, subtitle=sub, chips=chips)
+
+    # ── detail: controls + summary + result, built ONCE; fill() renders the cache ────────
+    def detail(snap, handle):
+        body = QWidget()
+        col = QVBoxLayout(body)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(14)
+        ctrls = QHBoxLayout(); ctrls.setSpacing(8)
+        ctrls.addWidget(lab_boards); ctrls.addWidget(sp_boards)
+        ctrls.addWidget(lab_spares); ctrls.addWidget(sp_spares)
+        ctrls.addStretch(1)
+        ctrls.addWidget(cb_price)
+        ctrls_w = QWidget(); ctrls_w.setLayout(ctrls)
+        col.addWidget(ctrls_w)
+        col.addWidget(picker)
+        col.addWidget(summary_w)
+        col.addWidget(result_host, 1)
+        return body, (lambda s: _render_cached())
+
+    def _render_cached():
+        """Render the cached BOM into the summary + result area (never builds). Leaves an
+        open diff untouched (it owns the same area), and shows a quiet empty state before the
+        first build. Warms the Compare-To revision cache off-thread on a real render."""
+        if getattr(host, "_summary_owner", None) == "diff":
+            return                                        # a diff view owns the area — don't clobber
+        res = getattr(host, "_last_bom", None)
+        if not res:
+            set_summary([])
+            clear_layout(result)
+            if not snapshot()["schs"]:
+                result.addWidget(W.empty_state("No Schematic", glyph=icons.GLYPHS["alert"],
+                                               sub="This project has no sheet to build a BOM from."))
+            else:
+                result.addWidget(W.empty_state("Not Built", glyph=icons.GLYPHS.get("box", ""),
+                                               sub="Press ▶ Build and Cost to build the bill of materials."))
+            return
+        _apply_summary(getattr(host, "_last_base_tags", []), res)
+        _draw_bom_table(res, getattr(host, "_last_mode", "project"))
+        _refresh_recent_refs()
+
+    # ── build core (shared by the ▶ flow, the initial auto-build, and Consolidated) ──────
+    def _lookup():
+        return LM.chained_lookup(LM.library_lookup(ctx.cfg), LM.providers_from_config(ctx.cfg))
+
+    def _make_price(enabled):
+        """The distributor price provider (Mouser preferred, LCSC fallback), throttled to be
+        gentle on the rate-limited free key — or None when pricing is off / no provider is
+        available. Off-GUI-safe (no widget reads), so a build worker can call it."""
+        if not enabled:
+            return None
+        prov = LM.providers_from_config(ctx.cfg)
+        if not prov:
+            return None
+        import time
+
+        def throttled(mpn):
+            r = prov(mpn)
+            time.sleep(0.15)                              # one unique MPN at a time
+            return r
+        return throttled
+
+    def _base_tags(res, mode):
+        rows = res.get("rows", [])
+        if mode == "consolidated":
+            return [(f"{len(res.get('board_names', []))} Boards", "mut"),
+                    (f"{res.get('line_count', 0)} Line Items", "mut")]
+        basic_n = sum(1 for r in rows if r.get("basic"))
+        return [(f"{res.get('component_count', 0)} Components", "mut"),
+                (f"{res.get('line_count', 0)} Line Items", "mut"),
+                (f"{basic_n} Basic", "mut")]
+
+    def _stash(res, mode):
+        """Write the cache holder (called from the build worker; the following GUI-thread
+        refresh renders it). Pure attribute writes — no widgets."""
+        host._last_bom = res
+        host._last_mode = mode
+        host._last_base_tags = _base_tags(res, mode)
+        host._summary_owner = "bom"
+
+    def _do_build(mode, job, busy_msg):
+        """Run a BOM build (job) OFF-thread, write the cache, then refresh (verdict + fill).
+        Used by the initial auto-build and Consolidated; the ▶ flow builds through its apply."""
+        if busy["on"]:
+            return
+        busy["on"] = True
+        clear_layout(result)
+        result.addWidget(W.skeleton_rows(7, 5))
+
+        def populate(res, ok):
+            busy["on"] = False
+            if not res or res.get("error"):
+                host._last_bom = None
+                host._summary_owner = None
+                set_summary([])
+                clear_layout(result)
+                result.addWidget(W.empty_state("BOM Failed", glyph=icons.GLYPHS["alert"],
+                                               sub=(res or {}).get("error", "")))
+                host._verdict.set(W.VerdictState(kind="err", title="BOM Build Failed",
+                                                 subtitle=(res or {}).get("error", "")))
+                return
+            _stash(res, mode)
+            host._refresh()                               # verdict + fill render from the cache
+
+        run_populate(ctx, job, populate, busy=busy_msg)
+
+    # ── the ▶ Build and Cost primary flow (build → price → cost/lead report) ─────────────
+    def _build_audit(snap):
+        schs = snap["schs"]
+        if not schs:
+            return []
+        n = len(schs); priced = snap["price"]
+        lbl = f"Build BOM from {n} sheet{'s' if n != 1 else ''}"
+        if priced:
+            lbl += " and price on Mouser"
+        det = ("Read every sheet, enrich part numbers from the Library"
+               + (", then look up live Mouser price + stock (network)." if priced else " (offline)."))
+        return [{"key": "build", "label": lbl, "detail": det, "safe": True}]
+
+    def _build_intro(snap, ops):
+        n = len(snap["schs"])
+        if snap["price"]:
+            return (f"Build the bill of materials from {n} sheet(s) and look up live Mouser "
+                    "price + stock for every part number — network calls, slower on a big BOM.")
+        return f"Build the bill of materials from {n} sheet(s) — offline, no pricing."
+
+    def _build_report(res, snap):
+        rows = res.get("rows", [])
+        cost = LM.bom_cost_summary(rows)
+        risks = LM.bom_sourcing_risks(rows, boards=snap["boards"])
+        lead = LM.bom_lead_time(rows)
+        done = [f"{res.get('component_count', 0)} components across {cost['line_count']} line(s)."]
+        if cost["priced_lines"]:
+            done.append(f"Priced {cost['priced_lines']} line(s): {_money(cost['total_cost'])} total"
+                        + (f" · {cost['unpriced_lines']} unpriced." if cost["unpriced_lines"] else "."))
+        else:
+            done.append("Not priced — turn on Price with Mouser and rebuild to cost it.")
+        missing = []
+        if risks["not_active"]:
+            missing.append({"item": f"{risks['not_active']} NRND/EOL part(s)", "why": "lifecycle is not Active",
+                            "how_to_fix": "Find a drop-in replacement before ordering."})
+        if risks["no_stock"]:
+            missing.append({"item": f"{risks['no_stock']} out-of-stock line(s)", "why": "no distributor stock",
+                            "how_to_fix": "Source an alternate or backorder."})
+        if risks["insufficient_stock"]:
+            missing.append({"item": f"{risks['insufficient_stock']} low-stock line(s)",
+                            "why": f"stock below the {snap['boards']}-board build quantity",
+                            "how_to_fix": "Split the order across suppliers or raise the quantity."})
+        if lead["any"] and lead["max_weeks"] >= 12:
+            who = f": {lead['critical_mpn']}" if lead.get("critical_mpn") else ""
+            missing.append({"item": f"{lead['max_weeks']}-week critical-path lead{who}",
+                            "why": "a quarter or more gates the whole order",
+                            "how_to_fix": "Order the long-lead part first."})
+        return {"summary": f"Built {snap['name']} BOM.", "done": done, "missing": missing}
+
+    def _build_apply(snap, keys):
+        schs = snap["schs"]
+        price = _make_price(snap["price"])
+        res = LM.bom_from_project(schs, lookup=_lookup(), price_lookup=price)
+        if not res or res.get("error"):
+            host._last_bom = None
+            return {"errors": [(res or {}).get("error", "BOM build failed.")]}
+        _stash(res, "project")
+        return _build_report(res, snap)
+
+    build_flow = kit.PrimaryFlow(
+        label="▶ Build and Cost", audit=_build_audit, intro=_build_intro, apply=_build_apply,
+        tip="Build the BOM from every sheet, enrich from the Library, and (with Price on) cost it on Mouser",
+        empty="No schematic sheet in this project to build a BOM from.")
+
+    # ── the cached-BOM render helpers (ported verbatim; root → host) ─────────────────────
+    def set_summary(pairs):
+        clear_layout(summary)                             # takeAt + unparent, so old tags don't linger
+        for txt, kind in pairs:
+            summary.addWidget(W.tag(txt, kind))
+        summary.addStretch(1)
+
+    def _risk_tags(rows):
+        """Procurement-risk summary tags from a priced BOM — the failures worth catching
+        before ordering (obsolete parts, empty or short stock). Stock coverage is judged at
+        the Boards count. Empty when all healthy."""
+        r = LM.bom_sourcing_risks(rows, boards=sp_boards.value())
+        out = []
+        if r["not_active"]:
+            out.append((f"{r['not_active']} NRND/EOL", "err"))
+        if r["no_stock"]:
+            out.append((f"{r['no_stock']} No Stock", "err"))
+        if r["insufficient_stock"]:
+            out.append((f"{r['insufficient_stock']} Low Stock", "warn"))
+        return out
+
+    def _lead_tag(rows):
+        """A single tag naming the critical-path part — the priced line with the longest
+        manufacturer lead time. Quiet for a short lead; a long lead (a quarter or more) warns.
+        Empty when no line carries parseable lead data."""
+        r = LM.bom_lead_time(rows)
+        if not r["any"]:
+            return []
+        wk = r["max_weeks"]
+        unit = "wk" if wk == 1 else "wks"
+        who = f": {r['critical_mpn']}" if r["critical_mpn"] else ""
+        kind = "warn" if wk >= 12 else "info"             # ~a quarter is a real schedule risk
+        return [(f"Longest lead {wk} {unit}{who}", kind)]
+
+    def _apply_summary(base_tags, res):
+        """Render the summary row: identity tags with the cost, build-quantity projection, and
+        sourcing-risk tags folded in. Stored on host so the Boards spinner re-projects live."""
+        tags = list(base_tags)
+        cost = res.get("cost")
+        if cost:
+            n = sp_boards.value()
+            head = [(f"{_money(cost['total_cost'])} Total", "ok")]
+            if n > 1:
+                proj = LM.bom_cost_at_qty(res.get("rows", []), n)
+                per_board = proj["total_cost"] / n
+                head.append((f"Build ×{n}: {_money(proj['total_cost'])} · "
+                             f"{_money(per_board)} each", "info"))
+            split = LM.bom_cost_by_source(res.get("rows", []), n).get("sources", {})
+            if len(split) > 1:
+                pieces = " · ".join(f"{name} {_money(v['total_cost'])}" for name, v in
+                                    sorted(split.items(), key=lambda kv: -kv[1]["total_cost"]))
+                head.append((pieces, "mut"))
+            tags = head + tags
+            if cost["unpriced_lines"]:
+                tags.append((f"{cost['unpriced_lines']} Unpriced", "warn"))
+            tags += _risk_tags(res.get("rows", []))
+            tags += _lead_tag(res.get("rows", []))
+        set_summary(tags)
+        host._summary_state = (base_tags, res)
+        host._summary_owner = "bom"                       # a real BOM summary — spinner may re-project
+
+    def _resummarize():
+        if getattr(host, "_summary_owner", None) != "bom":
+            return
+        st = getattr(host, "_summary_state", None)
+        if st:
+            _apply_summary(*st)
+
+    def _draw_bom_table(res, mode):
+        """Render the BOM table into the result area for the current Boards count, and arm the
+        spinner to redraw it live. `mode` picks the column layout ('project' vs 'consolidated').
+        When priced AND Boards>1 an Order column is inserted and Unit/Ext are re-read from each
+        line's price-break ladder at that run quantity."""
+        clear_layout(result)
+        data = res.get("rows", [])
+        priced = res.get("cost") is not None
+        n = sp_boards.value()
+        at_qty = priced and n > 1
+        has_lead = any(LM._lead_weeks(r.get("lead_time")) is not None for r in data)
+        if mode == "consolidated":
+            cols = ["Part Number", "Manufacturer", "Value", "Footprint", "Total"]
+            if at_qty:
+                cols.append("Order")
+            if priced:
+                cols += ["Unit", "Ext"]
+        else:
+            cols = ["Refs", "Qty"]
+            if at_qty:
+                cols.append("Order")
+            cols += ["Value", "Part Number", "Manufacturer", "Type"]
+            if priced:
+                cols += ["Source", "Unit", "Ext"]
+        if has_lead:
+            cols.append("Lead (wks)")
+        ix = {name: i for i, name in enumerate(cols)}
+
+        def _pn_cell(r):
+            names = LM.part_display_names(r)
+            return str(r.get("mpn", "")) if names["orderable"] else names["flag"]
+
+        trows = []
+        for r in data:
+            order_qty, vunit, vext = LM._row_cost_at_qty(r, n) if at_qty else (None, None, None)
+            if mode == "consolidated":
+                row = [_pn_cell(r), str(r.get("manufacturer", "")),
+                       str(r.get("value", "")), str(r.get("footprint", "")),
+                       str(r.get("total_qty", ""))]
+                if at_qty:
+                    row.append(str(order_qty))
+                if priced:
+                    row += ([_money(vunit), _money(vext)] if at_qty
+                            else [_money(r.get("unit_price")), _money(r.get("extended"))])
+            else:
+                refs = r.get("refs", [])
+                ref_txt = ", ".join(refs[:4]) + (f"  +{len(refs) - 4}" if len(refs) > 4 else "")
+                row = [ref_txt, str(r.get("qty", ""))]
+                if at_qty:
+                    row.append(str(order_qty))
+                row += [str(r.get("value", "")), _pn_cell(r),
+                        str(r.get("manufacturer", "")), "Basic" if r.get("basic") else "Extended"]
+                if priced:
+                    src = str(r.get("source", "") or "")
+                    row += ([src, _money(vunit), _money(vext)] if at_qty
+                            else [src, _money(r.get("unit_price")), _money(r.get("extended"))])
+            if has_lead:
+                lw = LM._lead_weeks(r.get("lead_time"))
+                row.append("" if lw is None else str(lw))
+            trows.append(row)
+        if mode == "consolidated":
+            stretch = (ix["Manufacturer"], ix["Footprint"])
+            mono = {ix["Part Number"]}
+            dim = {ix["Value"], ix["Footprint"]}
+        else:
+            stretch = ix["Manufacturer"]
+            mono = {ix["Refs"], ix["Part Number"]}
+            dim = {ix["Value"]}
+        if priced:
+            mono |= {ix["Unit"], ix["Ext"]}
+        if at_qty:
+            mono |= {ix["Order"]}
+        if has_lead:
+            mono |= {ix["Lead (wks)"]}; dim |= {ix["Lead (wks)"]}
+        result.addWidget(W.data_table(cols, trows, stretch_col=stretch,
+                                      mono_cols=mono, dim_cols=dim, wrap=True), 1)
+        host._render_table = lambda: _draw_bom_table(res, mode)
+
+    def _on_boards_changed(_v):
+        # Re-project the cost tags AND redraw the priced table at the new quantity — but never
+        # over an open diff, which shares both the summary row and the result area.
+        if getattr(host, "_summary_owner", None) == "diff":
+            return
+        _resummarize()
+        rt = getattr(host, "_render_table", None)
+        if rt:
+            rt()
+        # The sourcing-risk verdict scales with the board count too (stock coverage), so keep the
+        # band in step with the live summary/table. verdict() reads only the cached rows (pure, no
+        # network), so it's cheap to recompute synchronously per spinner change — no off-thread hop.
+        try:
+            host._verdict.set(verdict(snapshot()))
+        except RuntimeError:                               # band deleted by a concurrent rebuild
+            pass
+    sp_boards.valueChanged.connect(_on_boards_changed)
+
+    # ── exports (ported verbatim; root → host) ───────────────────────────────────────────
+    def _save_csv(title, default_name, text):
+        fn, _ = QFileDialog.getSaveFileName(host, title, str(Path(base) / default_name),
+                                            "CSV Files (*.csv)")
+        if not fn:                                       # cancelled (or headless: no dialog)
+            return
+        try:
+            Path(fn).write_text(text, encoding="utf-8", newline="")
+            ctx.services.log(f"Wrote {Path(fn).name}.")
+        except Exception as e:                           # noqa: BLE001
+            ctx.services.log(f"Write failed: {e}")
+
+    def _save_bytes(title, default_name, data, file_filter):
+        fn, _ = QFileDialog.getSaveFileName(host, title, str(Path(base) / default_name),
+                                            file_filter)
+        if not fn:                                       # cancelled (or headless: no dialog)
+            return
+        try:
+            Path(fn).write_bytes(data)
+            ctx.services.log(f"Wrote {Path(fn).name}.")
+        except Exception as e:                           # noqa: BLE001
+            ctx.services.log(f"Write failed: {e}")
+
+    def _export_csv():
+        res = getattr(host, "_last_bom", None)
+        if not res:
+            ctx.services.log("Build a BOM first."); return
+        _save_csv("Export BOM CSV", "bom.csv", res.get("csv", ""))
+
+    def _export_xlsx():
+        res = getattr(host, "_last_bom", None)
+        if not res:
+            ctx.services.log("Build a BOM first."); return
+        data = LM.bom_xlsx(res.get("rows", []))
+        _save_bytes("Export BOM (Excel)", "bom.xlsx", data, "Excel Workbook (*.xlsx)")
+
+    def _procurement_opts():
+        """Ask for the Procurement-Sheet-specific parameters — PCB pack size, Tax/Tariff rate,
+        and order Shipping — pre-filled with the last-used values. Returns (pcb_pack,
+        tax_fraction, shipping), or None if cancelled."""
+        from ..util import _headless
+        if _headless():                                    # offscreen drive/CI: never enter a modal
+            return int(host._proc_pack), float(host._proc_tax_pct) / 100.0, float(host._proc_ship)
+        dlg = QDialog(host); dlg.setWindowTitle("Procurement Sheet Options")
+        form = QFormLayout(dlg)
+        sp_pack = QSpinBox(); sp_pack.setRange(1, 1000); sp_pack.setValue(int(host._proc_pack))
+        sp_pack.setToolTip("Boards ship from the fab in packs of this many, so quantities "
+                           "round up to a full pack (a 1-board build buys parts for 3). Set 1 for none.")
+        sp_tax = QDoubleSpinBox(); sp_tax.setRange(0, 100); sp_tax.setDecimals(2)
+        sp_tax.setValue(float(host._proc_tax_pct)); sp_tax.setSuffix(" %")
+        sp_tax.setToolTip("Tax or import tariff applied to each line's Cost @ QTY and summed in the Total row.")
+        sp_ship = QDoubleSpinBox(); sp_ship.setRange(0, 100000); sp_ship.setDecimals(2)
+        sp_ship.setValue(float(host._proc_ship)); sp_ship.setPrefix("$ ")
+        sp_ship.setToolTip("One order-level shipping charge, shown and added in the Total row.")
+        form.addRow("PCB Pack", sp_pack)
+        form.addRow("Tax/Tariff", sp_tax)
+        form.addRow("Shipping", sp_ship)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject)
+        form.addRow(bb)
+        if dlg.exec_() != QDialog.Accepted:
+            return None
+        host._proc_pack = sp_pack.value()                 # remember for next time
+        host._proc_tax_pct = sp_tax.value()
+        host._proc_ship = sp_ship.value()
+        return sp_pack.value(), sp_tax.value() / 100.0, sp_ship.value()
+
+    def _export_procurement(opts=None):
+        """Export the buy-side procurement sheet (Excel). Quantities honor the PCB pack size and
+        the passives spares buffer; Tax/Tariff applies the rate to each line. `opts` is a
+        (pcb_pack, tax_fraction, shipping) test seam; None opens the options dialog."""
+        res = getattr(host, "_last_bom", None)
+        if not res:
+            ctx.services.log("Build a BOM first."); return
+        if opts is None:
+            opts = _procurement_opts()
+            if opts is None:                              # cancelled
+                return
+        pack, tax_frac, ship = opts
+        data = LM.procurement_xlsx(res.get("rows", []), boards=sp_boards.value(),
+                                   spares_pct=sp_spares.value(), pcb_multiple=pack,
+                                   tax_rate=tax_frac, shipping=ship)
+        _save_bytes("Export Procurement Sheet", "procurement.xlsx", data,
+                    "Excel Workbook (*.xlsx)")
+
+    def _export_order():
+        res = getattr(host, "_last_bom", None)
+        if not res:
+            ctx.services.log("Build a BOM first."); return
+        boards = sp_boards.value()
+        spares = sp_spares.value()
+        cart = LM.procurement_cart_csv(res.get("rows", []), boards=boards, spares_pct=spares)
+        if not cart["line_count"]:
+            ctx.services.log("No part numbers to order — every line is a bare passive."); return
+        run = f" for {boards} boards" if boards > 1 else ""
+        note = f"{cart['line_count']} order lines · {cart['total_qty']} parts{run}"
+        if cart["padded_lines"]:
+            note += f" · +{spares}% spares on {cart['padded_lines']} passive lines"
+        if cart["skipped_no_mpn"]:
+            note += f" · {cart['skipped_no_mpn']} passives without a part number skipped"
+        ctx.services.log(note)
+        default = f"mouser_cart_x{boards}.csv" if boards > 1 else "mouser_cart.csv"
+        _save_csv("Export Mouser Cart", default, cart["csv"])
+
+    def _export_priced():
+        """The priced BOM as a purchasing sheet for the whole run. Needs a priced BOM."""
+        res = getattr(host, "_last_bom", None)
+        if not res:
+            ctx.services.log("Build a BOM first."); return
+        boards = sp_boards.value()
+        sheet = LM.priced_bom_csv_at_qty(res.get("rows", []), boards=boards)
+        if not sheet["priced_lines"]:
+            ctx.services.log("Price the BOM first — turn on Price with Mouser, then rebuild.")
+            return
+        run = f" for {boards} boards" if boards > 1 else ""
+        note = f"Priced sheet: {_money(sheet['total_cost'])}{run}"
+        if sheet["unpriced_lines"]:
+            note += f" · {sheet['unpriced_lines']} unpriced"
+        ctx.services.log(note)
+        default = f"priced_bom_x{boards}.csv" if boards > 1 else "priced_bom.csv"
+        _save_csv("Export Priced BOM", default, sheet["csv"])
+
+    def _export_jlcpcb():
+        res = getattr(host, "_last_bom", None)
+        if not res:
+            ctx.services.log("Build a BOM first."); return
+        bom = LM.jlcpcb_bom_csv(res.get("rows", []))
+        if not bom["line_count"]:
+            ctx.services.log("Nothing to place — no BOM line has a value or part number."); return
+        note = f"{bom['line_count']} assembly lines · {bom['total_qty']} parts"
+        if bom["without_lcsc"]:
+            note += f" · {bom['without_lcsc']} without an LCSC Part # (fill before assembly)"
+        ctx.services.log(note)
+        _save_csv("Export JLCPCB Assembly BOM", "jlcpcb_bom.csv", bom["csv"])
+
+    def _copy_summary():
+        """Copy a one-line procurement digest of the built BOM to the clipboard, scaled to the
+        current Boards count. No file, no dialog."""
+        res = getattr(host, "_last_bom", None)
+        if not res:
+            ctx.services.log("Build a BOM first."); return
+        text = LM.bom_procurement_summary(res.get("rows", []), sp_boards.value())
+        QApplication.clipboard().setText(text)
+        ctx.services.log(f"Copied to clipboard — {text}")
+
+    # ── compare / diff (ported verbatim; root → host) ────────────────────────────────────
+    def _diff_cost_tags(c):
+        if not c or not c.get("priced"):
+            return []
+        d = c["delta"]
+        if d > 0:
+            out = [(f"+{_money(d)}/board", "warn")]
+        elif d < 0:
+            out = [(f"-{_money(abs(d))}/board", "ok")]
+        else:
+            out = [(f"{_money(0)}/board", "mut")]
+        if c.get("removed_unpriced"):
+            n = c["removed_unpriced"]
+            out.append((f"{n} removed not costed", "mut"))
+        return out
+
+    def _diff_lead_tags(l):
+        if not l or not l.get("any"):
+            return []
+        out = []
+        aw = l.get("added_max_weeks")
+        if aw is not None:
+            who = f" ({l['added_critical_mpn']})" if l.get("added_critical_mpn") else ""
+            if l.get("on_critical_path"):
+                out.append((f"+{aw} wk lead{who}, critical path", "warn"))
+            else:
+                out.append((f"+{aw} wk lead{who}, off critical path", "mut"))
+        if l.get("removed_unassessed"):
+            n = l["removed_unassessed"]
+            out.append((f"{n} removed, lead not assessed", "mut"))
+        return out
+
+    def _render_diff(d):
+        """Render a BOM diff: added / removed / qty-changed lines vs a prior export, with the
+        per-board cost delta when the current build is priced."""
+        clear_layout(result)
+        n_add, n_rem, n_chg = len(d["added"]), len(d["removed"]), len(d["changed"])
+        set_summary([(f"{n_add} Added", "ok"), (f"{n_rem} Removed", "warn"),
+                     (f"{n_chg} Changed", "mut"), (f"{d['unchanged']} Unchanged", "mut")]
+                    + _diff_cost_tags(d.get("cost"))
+                    + _diff_lead_tags(d.get("lead")))
+        host._summary_owner = "diff"                      # the Boards spinner must not clobber this
+        if not (n_add or n_rem or n_chg):
+            result.addWidget(W.body("No differences — the BOMs match.", dim=True)); return
+        exp = W.btn("Export Diff CSV", "ghost", "Save this comparison as a CSV",
+                    on_click=lambda: _save_csv("Export BOM Diff", "bom_diff.csv", d.get("csv", "")))
+        erow = QHBoxLayout(); erow.addWidget(exp); erow.addStretch(1)
+        result.addLayout(erow)
+        priced = bool(d.get("cost") and d["cost"].get("priced"))
+        bprice = {}
+        if priced:
+            for row in (getattr(host, "_last_bom", None) or {}).get("rows", []):
+                k = LM._bom_line_key(row)
+                if k not in bprice:
+                    bprice[k] = LM._coerce_price(row.get("unit_price"))
+
+        def _line_cost(entry, qty):
+            u = bprice.get(LM._bom_line_key(entry))
+            return None if u is None else u * qty
+
+        def _cost_cell(c):
+            if c is None:
+                return ""
+            return f"+{_money(c)}" if c > 0 else (f"-{_money(abs(c))}" if c < 0 else _money(0))
+
+        cols = ["Change", "Part Number", "Value", "From", "To", "Delta"]
+        if priced:
+            cols.append("Cost Δ")
+
+        def _drow(change, entry, frm, to, dqty, cost):
+            row = [change, entry["mpn"], entry["value"], frm, to, dqty]
+            if priced:
+                row.append(_cost_cell(cost))
+            return row
+        tbl = []
+        for r in d["added"]:
+            tbl.append(_drow("Added", r, "0", str(r["qty"]), f"+{r['qty']}", _line_cost(r, r["qty"])))
+        for r in d["removed"]:
+            tbl.append(_drow("Removed", r, str(r["qty"]), "0", f"-{r['qty']}", None))
+        for r in d["changed"]:
+            tbl.append(_drow("Changed", r, str(r["from_qty"]), str(r["to_qty"]),
+                             f"{r['delta']:+d}", _line_cost(r, r["delta"])))
+        mono = {1, 3, 4, 5}
+        if priced:
+            mono.add(cols.index("Cost Δ"))
+        result.addWidget(W.data_table(cols, tbl, stretch_col=1, mono_cols=mono,
+                                      dim_cols={2}, wrap=True), 1)
+
+    def _compare_to_csv(path=None):
+        res = getattr(host, "_last_bom", None)
+        if not res:
+            ctx.services.log("Build a BOM first."); return
+        if path is None:
+            path, _ = QFileDialog.getOpenFileName(host, "Compare To BOM CSV", base,
+                                                  "CSV Files (*.csv)")
+        if not path:                                      # cancelled (or headless: no dialog)
+            return
+        try:
+            text = Path(path).read_text(encoding="utf-8", errors="replace")
+        except Exception as e:                            # noqa: BLE001
+            ctx.services.log(f"Couldn't read {Path(path).name}: {e}"); return
+        old_rows = LM.bom_rows_from_csv(text)
+        if not old_rows:
+            ctx.services.log("No BOM lines found in that CSV — is it a bill of materials export?")
+            return
+        rows_b = res.get("rows", [])
+        d = LM.bom_diff(old_rows, rows_b)
+        d["cost"] = LM.bom_diff_cost(old_rows, rows_b)    # per-board $ delta from rev B's prices
+        d["lead"] = LM.bom_diff_lead(old_rows, rows_b)    # does the change move the critical path?
+        d["csv"] = LM.bom_diff_csv(d, rows_b)             # exported diff carries the cost column too
+        host._last_diff = d
+        ctx.services.log(f"Diff vs {Path(path).name}: {len(d['added'])} added, "
+                         f"{len(d['removed'])} removed, {len(d['changed'])} changed.")
+        _render_diff(d)
+
+    def _sheet_rels():
+        repo = ctx.cfg.get("RepoRoot")
+        if not repo:
+            return None, []
+        rels = []
+        root_p = Path(repo).resolve()
+        for s in state.schematics():
+            try:
+                rels.append(Path(s).resolve().relative_to(root_p).as_posix())
+            except Exception:                             # noqa: BLE001 — outside the repo
+                continue
+        return str(repo), rels
+
+    def _recent_refs():
+        repo, _ = _sheet_rels()
+        return nd_git.recent_commits(repo) if repo else []
+
+    def _refresh_recent_refs():
+        """Recompute the recent-commits list for the Compare To… menu OFF the GUI thread and
+        cache it on host, so opening the menu never shells out to git inline."""
+        def done(refs, ok):
+            host._recent_refs_cache = refs or []
+        run_populate(ctx, _recent_refs, done)
+
+    def _compare_to_ref(ref):
+        res = getattr(host, "_last_bom", None)
+        if not res:
+            ctx.services.log("Build a BOM first."); return
+        repo, rels = _sheet_rels()
+        if not repo or not rels:
+            ctx.services.log("No schematics under the repo root to compare."); return
+
+        def show(rel):
+            g = nd_git.show(repo, ref, rel)
+            return g.out if g.ok else None
+        old = LM.bom_rows_at_ref(rels, show)
+        if not old["sheets_found"]:
+            ctx.services.log(f"No schematic existed at {ref} — nothing to compare."); return
+        rows_b = res.get("rows", [])
+        d = LM.bom_diff(old["rows"], rows_b)
+        d["cost"] = LM.bom_diff_cost(old["rows"], rows_b)
+        d["lead"] = LM.bom_diff_lead(old["rows"], rows_b)
+        d["csv"] = LM.bom_diff_csv(d, rows_b)
+        host._last_diff = d
+        miss = f" ({old['sheets_missing']} sheet(s) absent at {ref})" if old["sheets_missing"] else ""
+        ctx.services.log(f"Diff vs {ref}: {len(d['added'])} added, {len(d['removed'])} "
+                         f"removed, {len(d['changed'])} changed{miss}.")
+        _render_diff(d)
+
+    def _other_projects():
+        return [p for p in state.projects if p != state.project]
+
+    def _compare_to_project(name):
+        res = getattr(host, "_last_bom", None)
+        if not res:
+            ctx.services.log("Build a BOM first."); return
+        proj = next((p for p in state.projects if p.name == name), None)
+        if proj is None:
+            ctx.services.log(f"Project not found: {name}"); return
+        schs = nd_wizard.list_schematics(proj)
+        if not schs:
+            ctx.services.log(f"{name} has no schematic to compare."); return
+        other = LM.bom_from_project(schs)                 # offline: no lookup, no pricing
+        rows_b = res.get("rows", [])
+        d = LM.bom_diff(other.get("rows", []), rows_b)
+        d["cost"] = LM.bom_diff_cost(other.get("rows", []), rows_b)
+        d["lead"] = LM.bom_diff_lead(other.get("rows", []), rows_b)
+        d["csv"] = LM.bom_diff_csv(d, rows_b)
+        host._last_diff = d
+        ctx.services.log(f"Diff vs {name}: {len(d['added'])} added, {len(d['removed'])} "
+                         f"removed, {len(d['changed'])} changed.")
+        _render_diff(d)
+
+    def _compare_menu():
+        """Pick what to compare the built BOM against: a prior CSV export, a git revision, or
+        another project. Opens at the cursor (its trigger is the Compare To… secondary)."""
+        if not getattr(host, "_last_bom", None):
+            ctx.services.log("Build a BOM first."); return
+        from PyQt5.QtGui import QCursor
+        m = QMenu(host)
+        m.addAction("Exported CSV…", _compare_to_csv)
+        sub = m.addMenu("Git Revision")
+        refs = getattr(host, "_recent_refs_cache", [])
+        if not refs:
+            a = sub.addAction("No revisions available"); a.setEnabled(False)
+        for c in refs:
+            label = f"{c['ref']}  {c['subject'][:48]}  · {c['when']}"
+            sub.addAction(label, lambda _=False, r=c["ref"]: _compare_to_ref(r))
+        others = _other_projects()
+        if others:
+            psub = m.addMenu("Another Project")
+            for p in others:
+                psub.addAction(p.name, lambda _=False, n=p.name: _compare_to_project(n))
+        m.exec_(QCursor.pos())
+
+    # ── Consolidated build (secondary): reveal the multi-select, then build ──────────────
+    def _consolidated():
+        picker.setVisible(len(state.projects) > 1)
+        selected = [n for n, cb in checks.items() if cb.isChecked()] if checks \
+            else [p.name for p in state.projects]
+        boards_map = _consolidated_boards(state.projects, selected)
+        price = _make_price(cb_price.isChecked())
+
+        def job():
+            return LM.consolidated_bom(boards_map, lookup=_lookup(), price_lookup=price)
+        _do_build("consolidated", job,
+                  "Pricing the consolidated BOM on Mouser..." if price else "Consolidating BOM...")
+
+    # ── assemble the recipe ──────────────────────────────────────────────────────────────
+    secondary = [
+        kit.action("Build Consolidated…", _consolidated,
+                   tip="Merge the bill of materials across the chosen projects (board variants)"),
+        kit.action("Compare To…", _compare_menu,
+                   tip="Diff the built BOM against a prior CSV, a git revision, or another project"),
+    ]
+    exports = [
+        kit.action("Procurement Sheet (Excel)…", _export_procurement,
+                   tip="Buy-side sheet: pack-rounded quantities, tax/tariff, shipping, totals"),
+        kit.action("Full BOM CSV…", _export_csv, tip="Every line, per board, as CSV"),
+        kit.action("Full BOM (Excel)…", _export_xlsx,
+                   tip="Every line as a formatted Excel workbook (numbers sort + sum)"),
+        kit.action("Priced BOM (Volume)…", _export_priced,
+                   tip="A purchasing sheet projected to the Boards count (needs pricing)"),
+        kit.action("Mouser Cart…", _export_order,
+                   tip="Cart-upload CSV, scaled to the Boards count with the spares buffer"),
+        kit.action("JLCPCB Assembly BOM…", _export_jlcpcb,
+                   tip="Assembly BOM for JLCPCB (LCSC part numbers)"),
+        kit.action("Copy Procurement Summary", _copy_summary,
+                   tip="One-line digest to the clipboard, scaled to the Boards count"),
+    ]
+
+    host = kit.workbench(ctx, title="BOM & Procurement", snapshot=snapshot, verdict=verdict,
+                         detail=detail, primary=build_flow, secondary=secondary,
+                         exports=exports, busy=busy, chip_slots=4)
+
+    # ── holder defaults (set BEFORE any handler can read them) ───────────────────────────
+    host._proc_pack = 3                                    # PCBs ship in packs of this many
+    host._proc_tax_pct = 0.0                               # tax/tariff percent on each line
+    host._proc_ship = 0.0                                  # order-level shipping charge
+    host._last_bom = None
+    host._last_mode = "project"
+    host._last_base_tags = []
+    host._summary_owner = None
+    host._summary_state = None
+    host._render_table = None
+    host._last_diff = None
+    host._recent_refs_cache = []
+
+    # ── disable every action while a mutating op runs (mirror Health) ────────────────────
+    from PyQt5.QtWidgets import QPushButton
+    _buttons = [b for b in host.findChildren(QPushButton) if not b.text().startswith(("▸", "▾"))]
+
+    def _apply_enablement():
+        on = not busy["on"]
+        for b in _buttons:
+            try:
+                b.setEnabled(on)
+            except RuntimeError:                           # a button deleted by a rebuild
+                pass
+
+    busy.on_change = _apply_enablement
+
+    # A guarded ▶ so a re-drive / a click during a build can't start a second flow.
+    _raw_run = host._run_primary
+
+    def _guarded_run():
+        if busy["on"]:
+            return
+        _raw_run()
+    host._run_primary = _guarded_run
+
+    # ── test / cross-panel / drive seams (every legacy panel._xxx preserved) ─────────────
+    host._price_cb = cb_price
+    host._boards_spin = sp_boards
+    host._spares_spin = sp_spares
+    host._proj_checks = checks
+    host._snapshot = snapshot
+    host._export_csv = _export_csv
+    host._export_xlsx = _export_xlsx
+    host._export_procurement = _export_procurement
+    host._procurement_opts = _procurement_opts
+    host._export_priced = _export_priced
+    host._export_order = _export_order
+    host._export_jlcpcb = _export_jlcpcb
+    host._copy_summary = _copy_summary
+    host._compare_to_csv = _compare_to_csv
+    host._compare_to_ref = _compare_to_ref
+    host._compare_to_project = _compare_to_project
+    host._recent_refs = _recent_refs
+    host._refresh_recent_refs = _refresh_recent_refs
+    host._compare_menu = _compare_menu
+    host._render_diff = _render_diff
+    host._diff_cost_tags = _diff_cost_tags
+    host._diff_lead_tags = _diff_lead_tags
+    host._risk_tags = _risk_tags
+    host._lead_tag = _lead_tag
+    host._apply_summary = _apply_summary
+    host._resummarize = _resummarize
+    host._draw_bom_table = _draw_bom_table
+    host._consolidated = _consolidated
+    host._build_flow = build_flow
+
+    # ── initial auto-build: identity-only (pricing off = no network), matching today ─────
+    if state.schematics():
+        def _initial_job():
+            return LM.bom_from_project([str(s) for s in state.schematics()], lookup=_lookup())
+        _do_build("project", _initial_job, "Building BOM from every sheet...")
+    else:
+        host._refresh()                                    # verdict → No Schematic; fill → empty
+    return host
+
+
+# ── Refactor (real preview + apply, per-op controls) ─────────────────────────
+# (op label, op key, one-line explanation shown under the controls). Each op gets
+# its own control page so the fields match what the op actually consumes.
+_OPS = [("Find And Replace", "find_replace"), ("Add Tag", "add_tag"),
+        ("Strip All", "strip_all"), ("Unannotate", "unannotate")]
+_OP_KEYS = [o[1] for o in _OPS]
+_OP_HELP = {
+    "find_replace": "Replace a substring across references and labels.",
+    "add_tag": "Prefix references and labels with a hierarchy tag.",
+    "strip_all": "Remove every tag prefix from references and labels.",
+    "unannotate": "Clear reference annotations (R? style).",
+}
+
+
+def _rename_panel(ctx, state) -> QWidget:
+    if not state.project:
+        return _no_project()
+    root = QWidget(); lay = QVBoxLayout(root); lay.setContentsMargins(24, 16, 24, 24); lay.setSpacing(14)
+    op_state = {"op": "find_replace"}
+    top = QHBoxLayout(); top.setSpacing(8)
+    seg = W.Segmented([o[0] for o in _OPS], tip="Choose the refactor operation")
+    top.addWidget(seg); top.addStretch(1)
+    b_prev = W.btn("Preview", "ghost", "Preview the refactor without writing")
+    b_apply = W.btn("Apply To Project", "primary",
+                    "Write the change to every sheet and board — each file is backed up (.bak) first")
+    top.addWidget(b_prev); top.addWidget(b_apply)
+    lay.addLayout(top)
+    intro = W.body("Rename references and net labels across every sheet and board at once. "
+                   "Preview first; applying backs up each file (.bak) before writing.", dim=True)
+    intro.setWordWrap(True); lay.addWidget(intro)
+    root._op_seg = seg
+    root._op_state = op_state
+
+    # ── per-op control pages (swapped when the op changes) ──────────────────
+    # find_replace: Find + Replace fields · add_tag: one Tag field · strip_all /
+    # unannotate: no field, just a one-line explanation. Generic quiet placeholders
+    # only (no worked-example strings baked into the UI).
+    stack = QStackedWidget()
+
+    # find_replace page
+    p_fr = QWidget(); frl = QVBoxLayout(p_fr); frl.setContentsMargins(0, 0, 0, 0); frl.setSpacing(10)
+    fr = QHBoxLayout(); fr.setSpacing(12)
+    find = QLineEdit(); find.setPlaceholderText("Find text"); find.setMinimumHeight(32)
+    repl = QLineEdit(); repl.setPlaceholderText("Replace with"); repl.setMinimumHeight(32)
+    fcol = QVBoxLayout(); fcol.setSpacing(6); fcol.addWidget(pv.field_label("Find")); fcol.addWidget(find)
+    rcol = QVBoxLayout(); rcol.setSpacing(6); rcol.addWidget(pv.field_label("Replace With")); rcol.addWidget(repl)
+    fr.addLayout(fcol); fr.addLayout(rcol)
+    frl.addLayout(fr)
+    stack.addWidget(p_fr)
+
+    # add_tag page
+    p_tag = QWidget(); tgl = QVBoxLayout(p_tag); tgl.setContentsMargins(0, 0, 0, 0); tgl.setSpacing(6)
+    tag = QLineEdit(); tag.setPlaceholderText("Tag prefix (e.g. SH-)"); tag.setMinimumHeight(32); tag.setMaximumWidth(320)
+    tgl.addWidget(pv.field_label("Tag Prefix")); tgl.addWidget(tag)
+    stack.addWidget(p_tag)
+
+    # strip_all page (no field)
+    p_strip = QWidget(); spl = QVBoxLayout(p_strip); spl.setContentsMargins(0, 0, 0, 0)
+    spl.addWidget(W.body(_OP_HELP["strip_all"], dim=True))
+    stack.addWidget(p_strip)
+
+    # unannotate page (no field)
+    p_un = QWidget(); unl = QVBoxLayout(p_un); unl.setContentsMargins(0, 0, 0, 0)
+    unl.addWidget(W.body(_OP_HELP["unannotate"], dim=True))
+    stack.addWidget(p_un)
+
+    lay.addWidget(stack)
+
+    # A one-line explanation of the current op (sentence case, quiet).
+    help_lbl = W.body(_OP_HELP["find_replace"], dim=True)
+    lay.addWidget(help_lbl)
+
+    cb_refs = QCheckBox("References"); cb_refs.setChecked(True)
+    cb_lbls = QCheckBox("Labels"); cb_lbls.setChecked(True)
+    cbs = QHBoxLayout(); cbs.setSpacing(18); cbs.addWidget(cb_refs); cbs.addWidget(cb_lbls); cbs.addStretch(1)
+    lay.addLayout(cbs)
+
+    def _on_op(name):
+        op = dict(_OPS).get(name, "find_replace")
+        op_state["op"] = op
+        idx = _OP_KEYS.index(op)
+        stack.setCurrentIndex(idx)
+        # find_replace shows its own inline Find/Replace eyebrows, so only add the
+        # help line for the value-less / single-field ops where it clarifies intent.
+        help_lbl.setText("" if op == "find_replace" else _OP_HELP[op])
+        help_lbl.setVisible(op != "find_replace")
+    seg.on_change(_on_op)
+    _on_op("Find And Replace")
+
+    result = QVBoxLayout(); lay.addLayout(result, 1); lay.addStretch(1)
+
+    def _placeholder():
+        # An intentional empty state for the results region, so the panel doesn't
+        # read as a broken void before the first Preview (design-rules §5).
+        clear_layout(result)
+        ph = W.body("Matches will appear here after you run Preview — each is shown as "
+                    "old → new before anything is written.", dim=True)
+        ph.setWordWrap(True)
+        result.addWidget(ph)
+    _placeholder()
+
+    def _run(apply):
+        op = op_state["op"]
+        # find_replace reads Find; add_tag reads Tag; the value-less ops send "".
+        tag_or_find = (find.text().strip() if op == "find_replace"
+                       else tag.text().strip() if op == "add_tag" else "")
+        replacement = repl.text().strip() if op == "find_replace" else ""
+        # An empty Find/Tag is DESTRUCTIVE, not a no-op: nd_wizard's transforms do
+        # str.replace(tag_or_find, repl) / ref.replace('', repl), and an empty needle
+        # inserts repl between every character ('GND' -> 'XGXNXDX') on every sheet and
+        # board. Refuse it up front — for both Preview and Apply — with a clear reason.
+        if op in ("find_replace", "add_tag") and not tag_or_find:
+            clear_layout(result)
+            need = "text to find" if op == "find_replace" else "a tag prefix"
+            msg = (f"Enter {need} first — an empty value would rewrite every "
+                   f"reference and label.")
+            result.addWidget(W.body(msg, dim=True))
+            ctx.services.log(msg)
+            return
+        schs = state.schematics(); boards = state.boards()
+        clear_layout(result); result.addWidget(W.body("Applying..." if apply else "Previewing...", dim=True))
+
+        def job():
+            # Apply is all-or-nothing: stage every sheet + board transform in memory,
+            # then commit with rollback (nd_wizard.apply_transforms_atomically), so a
+            # mid-loop failure (lock/permission/encoding) never leaves the project
+            # half-renamed. Preview still runs the per-file dry-run path.
+            if apply:
+                tasks = [(sch, nd_wizard._make_sch_task(
+                            sch, op, tag_or_find, replacement or None,
+                            cb_refs.isChecked(), cb_lbls.isChecked())) for sch in schs]
+                tasks += [(brd, nd_wizard._make_pcb_task(brd, op, tag_or_find, replacement or None))
+                          for brd in boards]
+                try:
+                    changes, _backups = nd_wizard.apply_transforms_atomically(tasks, _ts())
+                except nd_wizard.ApplyError as e:
+                    return {"error": True, "stage": e.stage, "path": Path(e.path).name}
+                return {"total": len(changes), "changes": changes}
+            changes, total = [], 0
+            for sch in schs:
+                counts, samples, ch = nd_wizard.schematic_preview_and_apply(
+                    sch, op, tag_or_find, replacement or None, apply=False,
+                    touch_refs=cb_refs.isChecked(), touch_labels=cb_lbls.isChecked())
+                total += sum(counts.values()) if isinstance(counts, dict) else 0
+                changes += ch
+            for brd in boards:
+                cnt, samples, ch = nd_wizard.pcb_preview_and_apply(brd, op, tag_or_find, replacement or None, apply=False)
+                total += cnt
+                changes += ch
+            return {"total": total, "changes": changes}
+
+        def populate(res, ok):
+            clear_layout(result)
+            if not res:
+                result.addWidget(W.body("Refactor failed.", dim=True)); return
+            if res.get("error"):
+                # Atomic apply rolled back — say so, and name the file/phase, so the
+                # user knows NO files were left modified (not a silent partial write).
+                result.addWidget(W.body(
+                    f"Refactor aborted — {res['stage']} failed on {res['path']}. "
+                    f"No files were modified.", dim=True))
+                ctx.services.log(f"Refactor aborted ({res['stage']} on {res['path']}); "
+                                 f"nothing was written."); return
+            verb = "Applied" if apply else "Preview"
+            changes = res["changes"]
+            result.addWidget(W.section_header(f"{verb}   {res['total']} Changes"))
+            card = W.Card(pad=16)
+            # Show EVERY change — the preview is the safety mechanism for a destructive
+            # bulk write, so no row is hidden. A long list is put behind a scroll body
+            # (below) rather than truncated, so an unshown corrupting rename can't slip
+            # through unseen before Apply.
+            for (typ, old, new, path) in changes:
+                row = QHBoxLayout(); row.setSpacing(8)
+                row.addWidget(W.tag(str(typ), "mut")); row.addWidget(W.body(str(old), dim=True, mono=True))
+                row.addWidget(W.body("→", dim=True)); row.addWidget(W.body(str(new), mono=True)); row.addStretch(1)
+                card.body.addLayout(row)
+            if not changes:
+                card.body.addWidget(W.body("No matching changes.", dim=True))
+            # A big list scrolls inside a bounded viewport so the whole page doesn't grow
+            # without limit; a short list renders inline as before.
+            if len(changes) > 60:
+                sb = W.scroll_body(card); sb.setMinimumHeight(360)
+                result.addWidget(sb, 1)
+            else:
+                result.addWidget(card)
+
+        run_populate(ctx, job, populate, busy=("Applying refactor..." if apply else "Previewing refactor..."))
+
+    b_prev.clicked.connect(lambda: _run(False))
+    b_apply.clicked.connect(lambda: _run(True))
+    # Test / programmatic seams: drive a refactor headless and read the fields.
+    root._run = _run
+    root._find_edit = find
+    root._repl_edit = repl
+    root._tag_edit = tag
+    root._result_layout = result
+    return root
+
+
+# ── PCB Setup — merged Net Classes + Design Rules + Board Geometry + Fab ──────
+# One scrollable tab. A single mm ⇄ mils unit toggle governs every LENGTH field
+# (canonical mm is stored; display and edit-commit convert). One profile selector
+# drives the net-class defaults, the design-rule seed floors and the fab facts.
+
+_MM = "mm"
+_MILS = "mils"
+
+# Design-rule fields (UI label -> ProjectSettings attr). PSM stores these in MILS;
+# the UI keeps canonical mm, so we mils_to_mm on load and mm_to_mils on save.
+_DR_FIELDS = [
+    ("Min Clearance", "default_clearance"), ("Min Track Width", "default_track_width"),
+    ("Via Diameter", "default_via_diameter"), ("Via Drill", "default_via_drill"),
+    ("Min Via Diameter", "min_via_diameter"), ("Min Annular Ring", "min_via_annular_width"),
+    ("Min Through Hole", "min_through_hole"), ("Min Hole To Hole", "min_hole_to_hole"),
+    ("Min Microvia Diameter", "min_microvia_diameter"), ("Min Microvia Drill", "min_microvia_drill"),
+    ("Min Copper Edge Clearance", "min_copper_edge_clearance"),
+]
+# Which design-rule attr each NETCLASS_PROFILES floor seeds (Seed From Profile).
+_DR_SEED = {"default_clearance": "min_clearance", "default_track_width": "min_track",
+            "default_via_diameter": "min_via", "default_via_drill": "min_drill",
+            "min_via_annular_width": "min_annular"}
+# Net-class length columns: (NetClass attr, table column index). Mirrors KiCad's own
+# Net Classes dialog — routing floors, microvia, diff-pair, then schematic wire/bus stroke.
+_NC_LEN = [("clearance", 1), ("track_width", 2), ("via_diameter", 3), ("via_drill", 4),
+           ("microvia_diameter", 5), ("microvia_drill", 6),
+           ("diff_pair_width", 7), ("diff_pair_gap", 8), ("diff_pair_via_gap", 9),
+           ("wire_thickness", 10), ("bus_thickness", 11)]
+_NC_COLS = ["Class", "Clearance", "Track Width", "Via Diameter", "Via Drill",
+            "Microvia Dia", "Microvia Drill", "Diff Pair W", "Diff Pair G", "Diff Pair Via",
+            "Wire Thick", "Bus Thick", "Line Style", "Priority", "Patterns", ""]
+# The non-length net-class columns (fixed indices, past the _NC_LEN block).
+_NC_COL_STYLE, _NC_COL_PRIORITY, _NC_COL_PATTERNS, _NC_COL_DELETE = 12, 13, 14, 15
+# Schematic line style: display label -> NetClass.line_style enum (KiCad int on save).
+_NC_LINE_STYLES = [("Solid", "solid"), ("Dashed", "dashed"),
+                   ("Dotted", "dotted"), ("Dash-Dot", "dash_dot")]
+
+# ── extended design-rule state (DRC/ERC severities, pin map, predefined tables) ──────
+# "Unmanaged" (the 4th severity choice) = leave the project's current value untouched —
+# it maps to NOT calling set_*_severity for that rule (preserve-by-default, matching the
+# PSM backend). Only error/warning/ignore are written.
+_SEV_UNMANAGED = "Unmanaged"
+_SEV_CHOICES = (_SEV_UNMANAGED,) + psm.SEVERITY_LEVELS   # ("Unmanaged","error","warning","ignore")
+# Short axis labels for the 12x12 ERC pin-conflict grid (psm.ERC_PIN_TYPES order).
+_PIN_ABBR = {"input": "In", "output": "Out", "bidirectional": "Bi", "tri_state": "Tri",
+             "passive": "Pas", "free": "Free", "unspecified": "Uns", "power_in": "PwI",
+             "power_out": "PwO", "open_collector": "OC", "open_emitter": "OE",
+             "no_connect": "NC"}
+
+
+def _humanize_rule(rule_id: str) -> str:
+    """'pin_not_connected' -> 'Pin Not Connected' for a readable rule label."""
+    return " ".join(w.capitalize() for w in str(rule_id).split("_"))
+
+
+def _dre_fingerprint(pm) -> tuple:
+    """A hashable snapshot of the EXTENDED managed state (severities / pin map / predefined
+    size tables). ▶ Save compares this before/after the GUI flush so the extended write is
+    surfaced + performed only when the user actually changed something (no idle churn)."""
+    if pm is None:
+        return ()
+    return (
+        tuple(sorted(pm.drc_severities.items())),
+        tuple(sorted(pm.erc_severities.items())),
+        tuple(tuple(int(x) for x in row) for row in pm.erc_pin_map),
+        tuple(round(float(w), 6) for w in pm.track_widths),
+        tuple((round(v.diameter, 6), round(v.drill, 6)) for v in pm.via_dimensions),
+        tuple((round(d.width, 6), round(d.gap, 6), round(d.via_gap, 6))
+              for d in pm.diff_pair_dimensions),
+        # M4: the editable Default net class (clearance/track/microvia) rides the same "dre"
+        # write — include its managed fields so a Default-row edit is detected as dirty.
+        tuple((k, round(float(v), 6)) for k, v in pm.default_netclass.managed_items()),
+        # M5: project text variables + the set the editor removed (both ride "dre") so an
+        # add/edit/remove is surfaced by ▶ Save (a removal shrinks the dict → fingerprint moves).
+        tuple(sorted(pm.text_variables.items())),
+        tuple(sorted(pm._removed_text_vars)),
+    )
+
+
+def _to_disp(mm, unit):
+    """Canonical mm -> the number shown in the current display unit."""
+    return mm_to_mils(mm) if unit == _MILS else mm
+
+
+def _to_mm(disp, unit):
+    """The number shown in the current display unit -> canonical mm."""
+    return mils_to_mm(disp) if unit == _MILS else disp
+
+
+def _snap_mm_display(mm):
+    """Round a canonical mm value to the cleanest short decimal for DISPLAY only.
+
+    PSM stores design rules 0.1-mil-quantized, so a round mm original (0.2 / 0.6 /
+    0.25) re-reads as noise (0.2007 / 0.5994 / 0.2489). The mils→mm round-trip error
+    is bounded by one 0.1-mil quantum (~0.00127 mm), so if a value rounds cleanly to
+    1/2/3 decimals within that quantum, prefer the rounder figure — recovering
+    0.2000 / 0.6000 / 0.2500 while leaving a genuinely fine value (e.g. 0.127 mm =
+    5 mils) untouched. Canonical storage (sp._mm) is never changed by this."""
+    for decimals in (1, 2, 3):
+        snapped = round(mm, decimals)
+        if abs(snapped - mm) <= 0.0013:
+            return snapped
+    return round(mm, 4)
+
+
+def _len_spin(unit, mm_value, width=104, lo_mm=0.0, hi_mm=25.0, snap=False):
+    """A quiet QDoubleSpinBox that holds a LENGTH. Canonical mm lives on sp._mm;
+    the box re-renders (value/suffix/decimals/range) in the current unit and syncs
+    sp._mm back on every user edit. Style comes from the container (borderless).
+    `snap` cleans the mm DISPLAY of 0.1-mil quantization noise (design rules only)."""
+    sp = QDoubleSpinBox()
+    sp.setButtonSymbols(QDoubleSpinBox.NoButtons)
+    sp.setAlignment(Qt.AlignRight)
+    sp.setFixedWidth(width)
+    sp._mm = float(mm_value or 0.0)
+    sp._saved_mm = float(mm_value or 0.0)      # PCB-13: last-saved value (undo safety)
+    sp._syncing = False
+    sp._snap = snap
+
+    def _mark_saved():
+        sp._saved_mm = sp._mm
+        sp.setToolTip("")
+    sp._mark_saved = _mark_saved
+
+    def render():
+        u = unit["u"]
+        sp._syncing = True
+        if u == _MILS:
+            sp.setDecimals(2); sp.setSingleStep(0.5); sp.setSuffix(" mils")
+            sp.setRange(_to_disp(lo_mm, u), _to_disp(hi_mm, u))
+            sp.setValue(_to_disp(sp._mm, u))
+        else:
+            sp.setDecimals(4); sp.setSingleStep(0.005); sp.setSuffix(" mm")
+            sp.setRange(lo_mm, hi_mm)
+            # Snap the shown mm only; sp._mm stays canonical (the _syncing guard
+            # stops setValue from writing the snapped figure back into sp._mm).
+            sp.setValue(_snap_mm_display(sp._mm) if sp._snap else sp._mm)
+        sp._syncing = False
+
+    def changed(_v):
+        if not sp._syncing:
+            sp._mm = _to_mm(sp.value(), unit["u"])
+            # PCB-13: while the value differs from the last-saved one, show the
+            # original in the tooltip so an edit is reversible/visible until saved.
+            if abs(sp._mm - sp._saved_mm) > 1e-9:
+                sp.setToolTip(f"Edited — saved value {_to_disp(sp._saved_mm, unit['u']):.4g} "
+                              f"{'mils' if unit['u'] == _MILS else 'mm'}")
+            else:
+                sp.setToolTip("")
+
+    sp.valueChanged.connect(changed)
+    sp._render = render
+    render()
+    return sp
+
+
+def _int_spin(val, width=72):
+    s = QSpinBox(); s.setButtonSymbols(QSpinBox.NoButtons); s.setAlignment(Qt.AlignRight)
+    s.setFixedWidth(width); s.setRange(0, 999999); s.setValue(int(val or 0))
+    return s
+
+
+def _ratio_spin(val, width=104, lo=-1.0, hi=1.0):
+    """A dimensionless value (e.g. the paste clearance ratio) — never unit-converted."""
+    s = QDoubleSpinBox(); s.setButtonSymbols(QDoubleSpinBox.NoButtons); s.setAlignment(Qt.AlignRight)
+    s.setFixedWidth(width); s.setDecimals(4); s.setSingleStep(0.01); s.setRange(lo, hi)
+    s.setValue(float(val or 0.0))
+    return s
+
+
+def _ts():
+    import time
+    return time.strftime("%Y%m%d-%H%M%S")
+
+
+def _save_summary(done, stats):
+    """A per-section digest of what a PCB-Setup save wrote to the file, so the user can
+    tell what actually happened (not just a flat 'Saved'): design-rule fields, net
+    classes written, the user/unmanaged classes deliberately preserved in the KiCad
+    file, and board-geometry keys touched."""
+    parts = []
+    if "design rules" in done:
+        parts.append(f"{stats.get('dr_fields', 0)} design-rule field(s)")
+    if "rule tables & severities" in done:
+        parts.append(f"{stats.get('dre', 0)} rule/severity/size-table setting(s)")
+    if "net classes" in done:
+        seg = f"{stats.get('nc_written', 0)} net class(es) written"
+        pres = stats.get("nc_preserved") or []
+        if pres:
+            shown = ", ".join(pres[:4]) + (f" +{len(pres) - 4} more" if len(pres) > 4 else "")
+            seg += f" ({len(pres)} user class(es) preserved: {shown})"
+        parts.append(seg)
+    if "board geometry" in done:
+        parts.append(f"{stats.get('bg_keys', 0)} board-geometry key(s)")
+    if "fab floor" in done:
+        fb = stats.get("fab_board") or {}
+        bits = [b for b, on in (("stackup", fb.get("stackup")),
+                                ("board thickness", fb.get("thickness"))) if on]
+        parts.append("fab floor (" + " + ".join(bits) + ")" if bits else "fab floor")
+    tail = "."
+    synced = stats.get("profile_synced")
+    if synced:
+        # PCB-15: name the profile kept in lockstep so the user knows the JSON now
+        # matches what was written to KiCad (no silent divergence to reseed from).
+        tail = f"; profile '{synced}' updated to match."
+    return "Saved to project: " + "; ".join(parts) + tail
+
+
+def _pcb_targets(p):
+    """Text-size targets for nd_object_conform, drawn from the selected preset."""
+    t = {}
+    for layer, h, w in (("silk", "silk_text_height", "silk_text_thickness"),
+                        ("fab", "fab_text_height", "fab_text_thickness")):
+        hv = getattr(p, h, None); wv = getattr(p, w, None)
+        if hv is not None and wv is not None:
+            t[layer] = (hv, wv)
+    return t
+
+
+def _pcb_setup_panel(ctx, state) -> QWidget:
+    """PCB Setup — rebuilt onto the ``kit.editor`` recipe (spec 2026-07-10-phase2-projects
+    -kit-editor). The four editable sections — Fabrication Profile (+ text-size Conform),
+    Design Rules, Net Classes, Board Geometry — are the editor BODY, built ONCE by
+    ``build_body`` so a verdict push never clobbers an in-progress edit. ``Save To Project``
+    is the single accent ▶ primary flow (audit lists what will be written → preview → apply
+    writes it); ``Validate`` pushes the colour verdict band; ``Pull From KiCad`` + profile
+    New / Save / Delete are the 2-col secondary grid; ``Clear KiCad Cache`` is Manage
+    machinery.
+
+    Net Classes stay MERGED here (Section C) rather than as a standalone tab — the split is a
+    logged follow-up (deep profile/unit state shared with this editor). Every legacy test seam
+    the panel exposed (``_ncmgr`` / ``_profile_seg`` / ``_load_profile`` / ``_save`` /
+    ``_validate`` / ``_nc_*`` / ``_dr_fields`` / ``_run_conform`` / ``_prof_state`` / …) is
+    preserved on the returned host, so the coupled tests drive it unchanged."""
+    from types import SimpleNamespace
+    project = state.project if state else None
+    boards = (state.boards() if (state and project) else []) or []
+    board = boards[0] if boards else None
+    pro = kicad_tools.project_pro_file(project) if project else None
+
+    log = getattr(getattr(ctx, "services", None), "log", None)
+
+    def _log(m):
+        if callable(log):
+            log(str(m))
+
+    # ── shared mutable state (outer scope; build_body fills the widget-bearing bits) ──────
+    unit = {"u": U.mode()}     # seed from the app-wide Length Units preference
+    all_fields = []            # design-rule + board-geometry length spins
+    nc_fields = []             # net-class table length spins (rebuilt on profile / CRUD)
+    psize_fields = []          # predefined track/via/diff-pair length spins (rebuilt on add/remove)
+    fab_labels = []            # unit-aware fab-fact labels (rebuilt on profile switch)
+    stack_labels = []          # unit-aware stackup-layer thickness labels (rebuilt on switch)
+    dr_fields = {}
+    bg_fields = {}
+    busy = kit.BusyDict()
+    S = {}     # scalars build_body fills: pm, dr_writable, setup, explicit, nc_status, last_done
+
+    def _profile_names():
+        return [p.name for p in pcbprof.load_profiles()]
+
+    _pnames = _profile_names()
+    _default_prof = pcbprof.NETDECK if pcbprof.NETDECK in _pnames else _pnames[0]
+    prof_state = {"name": _default_prof,
+                  "fab": (pcbprof.get_profile(_default_prof).fab
+                          if pcbprof.get_profile(_default_prof) else pcbprof.BARE_OSH_4)}
+
+    def _seed_mgr(profile_name):
+        prof = pcbprof.get_profile(profile_name)
+        m = ncm.NetClassManager()
+        if prof is not None:
+            for nc in prof.netclasses:
+                m.add_netclass(nc)
+        return m
+
+    nc_state = {"mgr": _seed_mgr(_default_prof), "rows": []}
+
+    def refresh_units():
+        for sp in all_fields:
+            sp._render()
+        for sp in nc_fields:
+            sp._render()
+        for sp in psize_fields:
+            sp._render()
+        for fn in fab_labels:
+            fn()
+        for fn in stack_labels:
+            fn()
+
+    def _commit_netclasses():
+        mgr = nc_state["mgr"]
+        for row in nc_state["rows"]:
+            nc = mgr.get_netclass(row["name"])
+            if not nc:
+                continue
+            for field, sp in row["spins"].items():
+                # PCB-14: a diff-pair dimension of 0 means "no diff pair" — store None
+                # (clears the attr) so to_kicad_dict / save_to_project omit it, rather
+                # than persisting a fabricated 0.0. Any positive value enables it.
+                if field in ("diff_pair_width", "diff_pair_gap"):
+                    setattr(nc, field, float(sp._mm) if sp._mm > 0 else None)
+                else:
+                    setattr(nc, field, float(sp._mm))
+            nc.priority = int(row["priority"].value())
+            nc.patterns = [s.strip() for s in row["patterns"].text().split(",") if s.strip()]
+            nc.line_style = row["line_style"].currentData()
+
+    def _mark_persisted(done):
+        # PCB-13: clear the "Edited — saved value X" tooltip on exactly the fields that
+        # reached disk, so _saved_mm now tracks the persisted value.
+        def mark(widgets):
+            for w in widgets:
+                fn = getattr(w, "_mark_saved", None)
+                if fn:
+                    fn()
+        if "design rules" in done:
+            mark(dr_fields.values())
+        if "rule tables & severities" in done:
+            mark(psize_fields)
+            # Re-baseline the extended dirty snapshot to what we just wrote, so a repeat ▶ Save
+            # with no further edit no longer re-offers/re-writes save_extended (idle churn) —
+            # dre_base was only ever set at panel build.
+            _pm = S.get("pm")
+            if _pm is not None:
+                S["dre_base"] = _dre_fingerprint(_pm)
+        if "net classes" in done:
+            mark(nc_fields)
+        if "board geometry" in done:
+            bg_spins = []
+            for kind, w in bg_fields.values():
+                bg_spins += list(w) if kind == "coord" else [w]
+            mark(bg_spins)
+
+    # ── the editable body — built ONCE by kit.editor ─────────────────────────────────────
+    def build_body(ctx, host):
+        root = QWidget()
+        lay = QVBoxLayout(root); lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(10)
+
+        def add_section(title, first=False):
+            if not first:
+                lay.addSpacing(12)
+            lay.addWidget(W.section_header(title))
+
+        # ── selector row: Profile + Units (the two controls that govern the body) ─────────
+        top = QHBoxLayout(); top.setSpacing(10)
+        prof_combo = QComboBox()
+        prof_combo.addItems(_pnames)
+        prof_combo.setCurrentText(_default_prof)      # set BEFORE connecting so it doesn't fire the loader
+        prof_combo.setToolTip("Board-setup profile: a fab floor + a net-class set. NETDECK = OSH Park "
+                              "4-layer + all net classes; the bare OSH Park profiles carry no nets.")
+        unit_seg = W.Segmented([_MM, _MILS], selected=(1 if unit["u"] == _MILS else 0),
+                               tip="Length units, applied app-wide (also in Settings)")
+        top.addWidget(pv.field_label("Profile")); top.addWidget(prof_combo)
+        top.addStretch(1)
+        top.addWidget(pv.field_label("Units")); top.addWidget(unit_seg)
+        lay.addLayout(top)
+
+        def _apply_unit(u):
+            """Adopt an app-wide unit change (from Settings or another panel): re-render the
+            length fields and sync the toggle silently. A no-op if already current."""
+            if u == unit["u"]:
+                return
+            unit["u"] = u
+            unit_seg.select_value(u)
+            refresh_units()
+
+        def _on_unit(u):
+            unit["u"] = u
+            refresh_units()
+            bus = getattr(ctx, "bus", None)
+            if bus is not None:
+                bus.emit("units.set_mode", u)
+        unit_seg.on_change(_on_unit)
+
+        _bus = getattr(ctx, "bus", None)
+        if _bus is not None:
+            # Owner = the host (the editor top widget): a project switch (ws.rebuild_all ->
+            # deleteLater) auto-unsubscribes this closure instead of leaking a dead one.
+            _bus.on_owned("units.changed", _apply_unit, host)
+
+        # ── Section A — Fabrication Profile (locked fab facts, quiet read-only text) ───────
+        add_section("Fabrication Profile", first=True)
+        fab_holder = QWidget(); fhl = QVBoxLayout(fab_holder); fhl.setContentsMargins(0, 4, 0, 0); fhl.setSpacing(0)
+        lay.addWidget(fab_holder)
+        pv.apply_fabfacts_style(fab_holder)
+        _fab_key = pv.fab_key
+        _fab_val = pv.fab_val
+
+        def _fab_len(mm):
+            lab = pv.fab_val("", mono=True)
+
+            def render():
+                lab.setText(f"{mm_to_mils(mm):.2f} mils" if unit["u"] == _MILS else f"{round(mm, 4):g} mm")
+            fab_labels.append(render); render()
+            return lab
+
+        def rebuild_fabfacts():
+            clear_layout(fhl); fab_labels.clear()
+            preset = fabp.PRESETS.get(prof_state["fab"])
+            if not preset:
+                fhl.addWidget(W.empty_state("No fabrication preset",
+                                            glyph=icons.GLYPHS["alert"],
+                                            sub="This profile has no associated fab floor.")); return
+            pairs = [
+                ("Min Track Width", _fab_len(preset.min_track_width)),
+                ("Min Clearance", _fab_len(preset.min_clearance)),
+                ("Min Drill", _fab_len(preset.min_drill)),
+                ("Copper Weight", _fab_val(f"{round(preset.copper_oz, 2):g} oz", mono=True)),
+                ("Finish", _fab_val(str(preset.finish))),
+                ("Board Thickness", _fab_len(preset.board_thickness_mm)),
+                ("Material", _fab_val(str(preset.material))),
+            ]
+            grid = QWidget(); g = QGridLayout(grid); g.setContentsMargins(0, 0, 0, 0)
+            g.setHorizontalSpacing(16); g.setVerticalSpacing(12); g.setColumnMinimumWidth(0, 170)
+            for r, (k, v) in enumerate(pairs):
+                g.addWidget(_fab_key(k), r, 0, Qt.AlignTop)
+                g.addWidget(v, r, 1, Qt.AlignTop)
+            g.setColumnStretch(1, 1)
+            fhl.addWidget(grid)
+        rebuild_fabfacts()
+
+        # ── Section — Text & Silkscreen (editable sizes + retroactive conform) ────────────
+        # The owner's master-controller slice: SET the silk / fab / copper + schematic text
+        # sizes here, then Conform rewrites the fonts on EXISTING objects in the real files
+        # (silk is checked by default — the owner's "pcb silkscreen sizes"; the rest opt-in).
+        add_section("Text & Silkscreen")
+
+        def _text_seed():
+            # (key -> (human label, (size_mm, thick_mm) default, conform-on-by-default)).
+            # silk / fab defaults track the selected fabrication profile; the rest are the
+            # KiCad stock defaults (1.0 mm PCB text, 1.27 mm schematic text).
+            preset = fabp.PRESETS.get(prof_state["fab"])
+            pt = _pcb_targets(preset) if preset else {}
+            return {
+                "silk":   ("Silk screen (F/B.Silkscreen)", pt.get("silk", (1.0, 0.15)), True),
+                "fab":    ("Fab layer (F/B.Fab)",          pt.get("fab", (1.0, 0.15)),  False),
+                "copper": ("Copper text (Cu layers)",      (1.0, 0.15),                 False),
+                "text":   ("Schematic text",               (1.27, 0.0),                 False),
+                "labels": ("Schematic net labels",         (1.27, 0.0),                 False),
+            }
+
+        text_fields = {}      # key -> (size_spin, thick_spin)
+        text_checks = {}      # key -> QCheckBox (include this type when conforming)
+        tw = QWidget(); tg = QGridLayout(tw); tg.setContentsMargins(0, 4, 0, 0)
+        tg.setHorizontalSpacing(16); tg.setVerticalSpacing(10)
+        for ci, htxt in ((1, "Object"), (2, "Size"), (3, "Thickness")):
+            tg.addWidget(pv.field_label(htxt), 0, ci)
+        for r, (key, (label, (sz, th), on)) in enumerate(_text_seed().items(), start=1):
+            chk = QCheckBox(); chk.setChecked(on)
+            chk.setToolTip("Include this object type when Conform rewrites existing text")
+            sp_sz = _len_spin(unit, sz, width=104, hi_mm=25.0)
+            sp_th = _len_spin(unit, th, width=104, hi_mm=5.0)
+            sp_th.setToolTip("Font stroke thickness. KiCad only stores a thickness on text that "
+                             "already carries one, so a thickness edit is skipped on text using "
+                             "the default stroke.")
+            all_fields.append(sp_sz); all_fields.append(sp_th)
+            text_fields[key] = (sp_sz, sp_th); text_checks[key] = chk
+            tg.addWidget(chk, r, 0, Qt.AlignCenter)
+            tg.addWidget(pv.field_label(label), r, 1)
+            tg.addWidget(sp_sz, r, 2)
+            tg.addWidget(sp_th, r, 3)
+        tg.setColumnStretch(4, 1)
+        pv.apply_quiet_fields(tw)
+        lay.addWidget(tw)
+
+        text_top = QHBoxLayout(); text_top.setSpacing(8)
+        b_text_seed = W.btn("Seed From Profile", "ghost",
+                            "Fill the silk & fab text sizes from the selected fabrication profile")
+        text_top.addWidget(b_text_seed); text_top.addStretch(1)
+        lay.addLayout(text_top)
+
+        def seed_text_sizes():
+            preset = fabp.PRESETS.get(prof_state["fab"])
+            pt = _pcb_targets(preset) if preset else {}
+            for key in ("silk", "fab"):
+                if key in pt and key in text_fields:
+                    sz, th = pt[key]; s_sp, t_sp = text_fields[key]
+                    s_sp._mm = float(sz); s_sp._render()
+                    t_sp._mm = float(th); t_sp._render()
+            _log("Text sizes seeded from the fabrication profile (silk + fab).")
+        b_text_seed.clicked.connect(seed_text_sizes)
+        host._seed_text_sizes = seed_text_sizes
+
+        conf_actions = QHBoxLayout(); conf_actions.setSpacing(8)
+        b_conf_prev = W.btn("Preview Conform", "ghost",
+                            "Preview how many existing text objects would be resized")
+        b_conf_apply = W.btn("Apply Conform", "default",
+                             "Rewrite existing text sizes to the values above (a .bak is kept per "
+                             "file). Run Preview first to see how many objects would change.")
+        b_conf_apply.setEnabled(False)
+        conf_actions.addWidget(b_conf_prev); conf_actions.addWidget(b_conf_apply); conf_actions.addStretch(1)
+        lay.addLayout(conf_actions)
+        conform_result = QVBoxLayout(); conform_result.setSpacing(4); lay.addLayout(conform_result)
+        conform_state = {"previewed": 0}
+
+        def _text_targets():
+            """(pcb_targets, sch_targets) from the CHECKED rows with a positive size. A
+            thickness of 0 is passed as None so Conform leaves the font stroke untouched."""
+            pcb_t, sch_t = {}, {}
+            for key, (s_sp, t_sp) in text_fields.items():
+                if not text_checks[key].isChecked() or s_sp._mm <= 0:
+                    continue
+                pair = (s_sp._mm, t_sp._mm if t_sp._mm > 0 else None)
+                (sch_t if key in conform.SCH_TYPES else pcb_t)[key] = pair
+            return pcb_t, sch_t
+
+        def run_conform(apply):
+            # Conform WRITES the .kicad_pcb / .kicad_sch (apply) off-thread — the SAME files ▶ Save
+            # touches. It rides the shared busy gate so it can't overlap a Save (or another Conform)
+            # and race two backup-then-write passes on one file (lost update / corruption).
+            if busy["on"]:
+                return
+            pcb_t, sch_t = _text_targets()
+            schs = list(state.schematics()) if (state and hasattr(state, "schematics")) else []
+            files = [str(b) for b in boards] + [str(s) for s in schs]
+            if (not pcb_t and not sch_t) or not files:
+                _log("Nothing to conform: check at least one object type with a positive size, "
+                     "on a project that has board or schematic files."); return
+            if apply:
+                n = conform_state["previewed"]
+                if not confirm(host, "Apply Text Conform",
+                               f"Rewrite text sizes on {n} object(s) across {len(files)} file(s)? "
+                               f"A .bak is kept per file."):
+                    return
+            ts = _ts()
+            clear_layout(conform_result)
+            conform_result.addWidget(W.body("Applying..." if apply else "Previewing...", dim=True))
+            busy["on"] = True
+
+            def job():
+                return conform.conform_project(files, pcb_t, sch_t, ts, dry_run=not apply)
+
+            def populate(rep, ok):
+                busy["on"] = False
+                clear_layout(conform_result)
+                if not rep:
+                    conform_result.addWidget(W.body("Conform unavailable, see status.", dim=True)); return
+                total = rep.get("total") or 0
+                conform_result.addWidget(W.body(f"{'Applied' if apply else 'Preview'}   {total} Text Objects", dim=True))
+                if apply:
+                    conform_state["previewed"] = 0
+                    b_conf_apply.setEnabled(False)
+                    _log(f"Text conform applied to {total} object(s) across {len(files)} file(s); "
+                         f"a .bak was kept per file.")
+                else:
+                    conform_state["previewed"] = total
+                    b_conf_apply.setEnabled(total > 0)
+                    _log(f"Text conform preview: {total} object(s) would change.")
+
+            run_populate(ctx, job, populate, busy=("Applying conform..." if apply else "Previewing conform..."))
+        b_conf_prev.clicked.connect(lambda: run_conform(False))
+        b_conf_apply.clicked.connect(lambda: run_conform(True))
+        host._run_conform = run_conform                    # test seam
+        host._conform_apply_btn = b_conf_apply
+        host._text_fields = text_fields                    # drive/test seam
+        host._text_checks = text_checks
+
+        # ── Section — Stackup & Thickness ─────────────────────────────────────────────────
+        # The physical board: an EDITABLE thickness (written into the .kicad_pcb (general)
+        # block by the ONE ▶ Save To Project, seeded from the profile so the two never drift)
+        # + a read-only view of the profile's physical layer stack. Per-layer stackup editing
+        # is a KiCad-GUI job (no file-rewrite backend) — logged gap; summary only here.
+        add_section("Stackup & Thickness")
+
+        _preset0 = fabp.PRESETS.get(prof_state["fab"])
+        st_top = QWidget(); stg = QGridLayout(st_top); stg.setContentsMargins(0, 4, 0, 0)
+        stg.setHorizontalSpacing(16); stg.setVerticalSpacing(10)
+        thick_field = _len_spin(unit, (_preset0.board_thickness_mm if _preset0 else 1.6),
+                                width=104, hi_mm=10.0)
+        thick_field.setToolTip("Physical board thickness written into the .kicad_pcb by "
+                               "▶ Save To Project. Seeded from the profile; edit to override.")
+        all_fields.append(thick_field)
+        S["thick_field"] = thick_field
+        stg.addWidget(pv.field_label("Board Thickness"), 0, 0)
+        stg.addWidget(thick_field, 0, 1)
+        stg.setColumnStretch(2, 1)
+        pv.apply_quiet_fields(st_top)
+        lay.addWidget(st_top)
+
+        stack_holder = QWidget()
+        shl = QVBoxLayout(stack_holder); shl.setContentsMargins(0, 4, 0, 0); shl.setSpacing(0)
+        lay.addWidget(stack_holder)
+        pv.apply_fabfacts_style(stack_holder)
+
+        def _stack_len(mm):
+            lab = pv.fab_val("", mono=True)
+
+            def render():
+                lab.setText(f"{mm_to_mils(mm):.2f} mils" if unit["u"] == _MILS else f"{round(mm, 4):g} mm")
+            stack_labels.append(render); render()
+            return lab
+
+        def rebuild_stackup():
+            clear_layout(shl); stack_labels.clear()
+            preset = fabp.PRESETS.get(prof_state["fab"])
+            if not preset or not preset.stackup:
+                shl.addWidget(W.empty_state("No stackup",
+                                            glyph=icons.GLYPHS["alert"],
+                                            sub="This profile's fab floor carries no physical layer stack.")); return
+            grid = QWidget(); g = QGridLayout(grid); g.setContentsMargins(0, 0, 0, 0)
+            g.setHorizontalSpacing(16); g.setVerticalSpacing(8); g.setColumnMinimumWidth(0, 170)
+            for c, h in enumerate(("Layer", "Type", "Thickness", "Material")):
+                g.addWidget(pv.fab_key(h), 0, c, Qt.AlignTop)
+            for r, (lname, kind, thick, mat) in enumerate(preset.stackup, start=1):
+                g.addWidget(pv.fab_val(lname, mono=True), r, 0, Qt.AlignTop)
+                g.addWidget(pv.fab_val(kind), r, 1, Qt.AlignTop)
+                g.addWidget(_stack_len(thick), r, 2, Qt.AlignTop)
+                g.addWidget(pv.fab_val(mat), r, 3, Qt.AlignTop)
+            g.setColumnStretch(4, 1)
+            shl.addWidget(grid)
+        rebuild_stackup()
+
+        def reseed_stackup():
+            # profile switched: re-seed the editable thickness to the new fab floor + redraw
+            # the read-only stack, so the section always reflects the selected profile.
+            p = fabp.PRESETS.get(prof_state["fab"])
+            if p is not None:
+                thick_field._mm = float(p.board_thickness_mm); thick_field._render()
+            rebuild_stackup()
+
+        host._thick_field = thick_field                    # drive/test seam
+
+        # ── Section B — Design Rules (PSM, editable) ──────────────────────────────────────
+        add_section("Design Rules")
+        pm = psm.ProjectSettingsManager()
+        dr_writable = True
+        if pro:
+            try:
+                dr_writable = bool(pm.load_from_project(pro))
+            except Exception:  # noqa: BLE001
+                dr_writable = False
+            if not dr_writable:
+                _log("Could not read the project's design rules; the Design "
+                     "Rules section is read-only so it cannot overwrite them.")
+        S["pm"] = pm
+        S["dr_writable"] = dr_writable
+        drw = QWidget(); drg = QGridLayout(drw); drg.setContentsMargins(0, 4, 0, 0)
+        drg.setHorizontalSpacing(22); drg.setVerticalSpacing(10)
+        _PER_ROW = 3
+        for i, (label, attr) in enumerate(_DR_FIELDS):
+            r, c = divmod(i, _PER_ROW)
+            mmv = mils_to_mm(getattr(pm.settings, attr, 0.0))
+            sp = _len_spin(unit, mmv, width=112, hi_mm=25.0, snap=True)
+            sp.setEnabled(dr_writable)
+            all_fields.append(sp); dr_fields[attr] = sp
+            cell = QVBoxLayout(); cell.setSpacing(2)
+            cell.addWidget(pv.field_label(label)); cell.addWidget(sp)
+            drg.addLayout(cell, r, c)
+        drg.setColumnStretch(_PER_ROW, 1)
+        pv.apply_quiet_fields(drw)
+        lay.addWidget(drw)
+
+        dr_actions = QHBoxLayout(); dr_actions.setSpacing(8)
+        b_seed = W.btn("Seed From Profile", "ghost", "Fill the design-rule floors from the selected fabrication profile")
+        b_seed.setEnabled(dr_writable)
+        dr_actions.addWidget(b_seed); dr_actions.addStretch(1)
+        lay.addLayout(dr_actions)
+
+        def seed_design_rules():
+            floor = ncm.NETCLASS_PROFILES.get(prof_state["fab"], ncm.NETCLASS_PROFILES[ncm.DEFAULT_NETCLASS_PROFILE])
+            for attr, key in _DR_SEED.items():
+                sp = dr_fields.get(attr)
+                if sp is not None and key in floor:
+                    sp._mm = float(floor[key]); sp._render()
+            _log("Design rules seeded from the fabrication profile.")
+        b_seed.clicked.connect(seed_design_rules)
+        host._seed_design_rules = seed_design_rules
+
+        # ── Section B.2 — extended design rules: predefined size tables, DRC/ERC severities,
+        #    ERC pin-conflict map (PSM extended coverage, written by ▶ Save via save_extended).
+        #    Load the extended state separately (load_from_project reads only the flat settings)
+        #    so every widget below seeds from the .kicad_pro; all dense controls tuck into
+        #    collapsed-by-default sections so the panel reads unchanged at a glance.
+        dre_writable = False
+        if pro and dr_writable:
+            try:
+                dre_writable = bool(pm.load_extended(pro))
+            except Exception:  # noqa: BLE001
+                dre_writable = False
+        S["dre_writable"] = dre_writable
+
+        # ---- Predefined Sizes (track widths / vias / diff pairs) --------------------------
+        _PS_SPEC = {
+            "track": (1, ["Track Width"], (0.25,)),
+            "via": (2, ["Via Ø", "Via Drill"], (0.6, 0.3)),
+            "dp": (3, ["Pair Width", "Pair Gap", "Via Gap"], (0.2, 0.15, 0.2)),
+        }
+        pd_state = {
+            "track": [(w,) for w in pm.track_widths if w > 0.0],
+            "via": [(v.diameter, v.drill) for v in pm.via_dimensions
+                    if not (v.diameter == 0.0 and v.drill == 0.0)],
+            "dp": [(d.width, d.gap, d.via_gap) for d in pm.diff_pair_dimensions
+                   if not (d.width == 0.0 and d.gap == 0.0 and d.via_gap == 0.0)],
+        }
+        pd_tables = {}
+
+        def _ps_read(key):
+            tbl = pd_tables[key]; ncols = _PS_SPEC[key][0]
+            return [tuple(float(tbl.cellWidget(r, c)._mm) for c in range(ncols))
+                    for r in range(tbl.rowCount())]
+
+        def rebuild_predefined():
+            # Full rebuild from pd_state: clears every predefined spin from psize_fields and
+            # refills all three tables. Called on add/remove — never deletes a widget from
+            # inside its own signal (the +/- buttons live outside the tables), so it is safe
+            # synchronously (mirrors rebuild_netclasses).
+            psize_fields.clear()
+            for key, (ncols, _hdrs, _def) in _PS_SPEC.items():
+                tbl = pd_tables[key]
+                tbl.clearContents(); tbl.setRowCount(len(pd_state[key]))
+                for r, row in enumerate(pd_state[key]):
+                    for c in range(ncols):
+                        sp = _len_spin(unit, row[c] if c < len(row) else 0.0, width=98, hi_mm=25.0)
+                        pv.nc_cell_font(sp); sp.setEnabled(dre_writable)
+                        psize_fields.append(sp); tbl.setCellWidget(r, c, sp)
+
+        ps_body = QWidget(); psl = QVBoxLayout(ps_body)
+        psl.setContentsMargins(0, 2, 0, 0); psl.setSpacing(10)
+        for key, (ncols, hdrs, default) in _PS_SPEC.items():
+            row = QVBoxLayout(); row.setSpacing(4)
+            head = QHBoxLayout(); head.setSpacing(8)
+            head.addWidget(pv.field_label(
+                {"track": "Track Widths", "via": "Via Sizes", "dp": "Diff-Pair Sizes"}[key]))
+            head.addStretch(1)
+            b_add = W.btn("Add", "ghost", f"Add a row to the predefined {key} table")
+            b_del = W.btn("Remove", "ghost", f"Remove the last row from the predefined {key} table")
+            b_add.setEnabled(dre_writable); b_del.setEnabled(dre_writable)
+            head.addWidget(b_add); head.addWidget(b_del)
+            row.addLayout(head)
+            tbl = QTableWidget(0, ncols); tbl.setHorizontalHeaderLabels(hdrs)
+            tbl.verticalHeader().hide(); tbl.setShowGrid(False)
+            tbl.setSelectionMode(QAbstractItemView.NoSelection)
+            tbl.setFocusPolicy(Qt.NoFocus)
+            tbl.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            tbl.setMaximumHeight(150)
+            _h = tbl.horizontalHeader(); _h.setHighlightSections(False)
+            for c in range(ncols):
+                _h.setSectionResizeMode(c, QHeaderView.Stretch)
+            pv.apply_netclass_table(tbl)
+            pd_tables[key] = tbl
+            row.addWidget(tbl)
+
+            def _mk_add(k):
+                def _add():
+                    for kk in _PS_SPEC:
+                        pd_state[kk] = _ps_read(kk)
+                    pd_state[k] = pd_state[k] + [tuple(_PS_SPEC[k][2])]
+                    rebuild_predefined()
+                return _add
+
+            def _mk_del(k):
+                def _del():
+                    for kk in _PS_SPEC:
+                        pd_state[kk] = _ps_read(kk)
+                    if pd_state[k]:
+                        pd_state[k] = pd_state[k][:-1]
+                    rebuild_predefined()
+                return _del
+
+            b_add.clicked.connect(_mk_add(key)); b_del.clicked.connect(_mk_del(key))
+            psl.addLayout(row)
+        rebuild_predefined()
+        lay.addWidget(W.CollapsibleSection("Predefined Sizes", ps_body))
+
+        # ---- DRC & ERC severities -----------------------------------------------------------
+        sev_combos = {"drc": {}, "erc": {}}
+
+        def _sev_table(rule_ids, loaded, store):
+            tbl = QTableWidget(len(rule_ids), 2)
+            tbl.setHorizontalHeaderLabels(["Rule", "Severity"])
+            tbl.verticalHeader().hide(); tbl.setShowGrid(False)
+            tbl.setSelectionMode(QAbstractItemView.NoSelection)
+            tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
+            tbl.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            tbl.setMaximumHeight(300)
+            _h = tbl.horizontalHeader(); _h.setHighlightSections(False)
+            _h.setSectionResizeMode(0, QHeaderView.Stretch)
+            _h.setSectionResizeMode(1, QHeaderView.Fixed); tbl.setColumnWidth(1, 128)
+            from PyQt5.QtWidgets import QTableWidgetItem
+            for r, rid in enumerate(rule_ids):
+                it = QTableWidgetItem(_humanize_rule(rid))
+                it.setToolTip(rid)
+                tbl.setItem(r, 0, it)
+                cb = QComboBox(); cb.addItems(_SEV_CHOICES)
+                cb.setCurrentText(loaded.get(rid, _SEV_UNMANAGED))
+                cb.setEnabled(dre_writable)
+                cb.setToolTip("Unmanaged = leave the project's current value untouched.")
+                store[rid] = cb
+                tbl.setCellWidget(r, 1, cb)
+            pv.apply_netclass_table(tbl)
+            return tbl
+
+        sev_body = QWidget(); svl = QVBoxLayout(sev_body)
+        svl.setContentsMargins(0, 2, 0, 0); svl.setSpacing(8)
+        sev_filter = QLineEdit(); sev_filter.setPlaceholderText("Filter rules")
+        sev_filter.setFixedWidth(240)
+        sev_filter.setToolTip("Show only rules whose name contains this text")
+        svl.addWidget(sev_filter)
+        drc_tbl = _sev_table(psm.DRC_RULE_IDS, pm.drc_severities, sev_combos["drc"])
+        erc_tbl = _sev_table(psm.ERC_RULE_IDS, pm.erc_severities, sev_combos["erc"])
+        svl.addWidget(pv.field_label("DRC rules (board)")); svl.addWidget(drc_tbl)
+        svl.addWidget(pv.field_label("ERC rules (schematic)")); svl.addWidget(erc_tbl)
+
+        def _filter_sev(text):
+            t = (text or "").strip().lower()
+            for ids, tb in ((psm.DRC_RULE_IDS, drc_tbl), (psm.ERC_RULE_IDS, erc_tbl)):
+                for r, rid in enumerate(ids):
+                    tb.setRowHidden(r, bool(t) and t not in rid.lower()
+                                    and t not in _humanize_rule(rid).lower())
+        sev_filter.textChanged.connect(_filter_sev)
+        lay.addWidget(W.CollapsibleSection("DRC & ERC Severities", sev_body))
+
+        # ---- ERC pin-conflict map (12×12, symmetric) ---------------------------------------
+        pin_types = list(psm.ERC_PIN_TYPES)
+        n_pin = len(pin_types)
+        pin_matrix = [list(row) for row in pm.erc_pin_map] if pm.erc_pin_map \
+            else [[0] * n_pin for _ in range(n_pin)]
+        pin_cells = {}
+        pinmap_state = {"touched": False}
+
+        pin_body = QWidget(); pbl = QVBoxLayout(pin_body)
+        pbl.setContentsMargins(0, 2, 0, 0); pbl.setSpacing(8)
+        pbl.addWidget(W.body(
+            "Pin-to-pin conflict severity used by ERC. Click a cell to cycle "
+            "OK → warning → error; the matrix is symmetric so the mirror updates too.",
+            dim=True))
+        grid_holder = QWidget(); gl = QGridLayout(grid_holder)
+        gl.setContentsMargins(0, 0, 0, 0); gl.setHorizontalSpacing(3); gl.setVerticalSpacing(3)
+        for j, pt in enumerate(pin_types):
+            h = QLabel(_PIN_ABBR.get(pt, pt[:3])); h.setObjectName("pmHdr")
+            h.setAlignment(Qt.AlignCenter); h.setToolTip(pt)
+            gl.addWidget(h, 0, j + 1)
+        for i, pt in enumerate(pin_types):
+            rh = QLabel(_PIN_ABBR.get(pt, pt[:3])); rh.setObjectName("pmHdr")
+            rh.setToolTip(pt); gl.addWidget(rh, i + 1, 0)
+            for j in range(n_pin):
+                cell = QPushButton(); cell.setFixedSize(26, 24)
+                cell.setCursor(Qt.PointingHandCursor)
+                cell.setEnabled(dre_writable)
+                cell.setToolTip(f"{pin_types[i]} × {pin_types[j]}")
+                pv.pinmap_cell_apply(cell, pin_matrix[i][j])
+                pin_cells[(i, j)] = cell
+
+                def _mk_click(ci, cj):
+                    def _click():
+                        nv = (int(pin_matrix[ci][cj]) + 1) % 3
+                        pin_matrix[ci][cj] = nv; pin_matrix[cj][ci] = nv
+                        pv.pinmap_cell_apply(pin_cells[(ci, cj)], nv)
+                        if (cj, ci) in pin_cells:
+                            pv.pinmap_cell_apply(pin_cells[(cj, ci)], nv)
+                        pinmap_state["touched"] = True
+                    return _click
+                cell.clicked.connect(_mk_click(i, j))
+                gl.addWidget(cell, i + 1, j + 1)
+        pv.apply_pinmap_grid(grid_holder)
+        _pin_row = QHBoxLayout(); _pin_row.setContentsMargins(0, 0, 0, 0)
+        _pin_row.addWidget(grid_holder); _pin_row.addStretch(1)   # pack to content, don't spread
+        pbl.addLayout(_pin_row)
+        n_excl = len(pm.erc_exclusions)
+        if n_excl:
+            pbl.addWidget(W.body(f"{n_excl} ERC exclusion(s) preserved from the project "
+                                 f"(kept verbatim on save).", dim=True))
+        lay.addWidget(W.CollapsibleSection("ERC Pin Conflict Map", pin_body))
+
+        # ---- Default Net Class (the design's Default routing class) ------------------------
+        #    Rides ▶ Save's "dre" key (save_extended). Manages clearance / track / microvia
+        #    ONLY — the Default class's via size/drill are owned by the flat Design-Rules
+        #    "Via Diameter/Drill" spins above (save_design_rules_only, "dr"). Leaving via
+        #    unmanaged here keeps dr and dre on DISJOINT keys of the Default class, so dre
+        #    never reverts a flat via edit (the M3 landmine). Built BEFORE flush_dre so the
+        #    closure below can read dnc_fields.
+        dnc_fields = {}
+        _DNC_SPEC = [("Clearance", "clearance"), ("Track Width", "track_width"),
+                     ("Microvia Dia", "microvia_diameter"), ("Microvia Drill", "microvia_drill")]
+        # KiCad's stock Default-class values (mm) — the seed fallback only when the file's
+        # Default class omitted a key (older KiCad); present keys seed from the file verbatim.
+        _DNC_DEFAULTS = {"clearance": 0.2, "track_width": 0.2,
+                         "microvia_diameter": 0.3, "microvia_drill": 0.1}
+        dnc_body = QWidget(); dncg = QGridLayout(dnc_body)
+        dncg.setContentsMargins(0, 2, 0, 0); dncg.setHorizontalSpacing(22); dncg.setVerticalSpacing(10)
+        for _i, (_label, _attr) in enumerate(_DNC_SPEC):
+            _loaded = getattr(pm.default_netclass, _attr, None)
+            _present = _loaded is not None
+            _mmv = float(_loaded) if _present else _DNC_DEFAULTS[_attr]
+            sp = _len_spin(unit, _mmv, width=112, hi_mm=25.0, snap=True)
+            sp.setEnabled(dre_writable)
+            sp._seed_present = _present          # preserve-by-default: only manage a field the
+            sp._seed_mm = float(_mmv)            # file carried, or one the user changed from seed
+            all_fields.append(sp); dnc_fields[_attr] = sp
+            cell = QVBoxLayout(); cell.setSpacing(2)
+            cell.addWidget(pv.field_label(_label)); cell.addWidget(sp)
+            dncg.addLayout(cell, _i // 2, _i % 2)
+        dncg.setColumnStretch(2, 1)
+        pv.apply_quiet_fields(dnc_body)
+        dnc_wrap = QWidget(); dncw = QVBoxLayout(dnc_wrap)
+        dncw.setContentsMargins(0, 0, 0, 0); dncw.setSpacing(6)
+        dncw.addWidget(dnc_body)
+        dncw.addWidget(W.body("Via size and drill for the Default class live in Design Rules -> "
+                              "Via Diameter / Via Drill above.", dim=True))
+        lay.addWidget(W.CollapsibleSection("Default Net Class", dnc_wrap))
+        host._dnc_fields = dnc_fields                        # drive/test seam
+
+        # ---- Project Meta (text variables: project-wide ${VAR} substitutions) --------------
+        #    Rides ▶ Save's "dre" key (save_extended). Add/Remove live OUTSIDE the table and
+        #    rebuild from meta_state (blessed-safe idiom — no widget deleted inside its own
+        #    signal). A row with a cleared Variable name is dropped, and the manager records
+        #    the removal so a delete actually drops the key from the file (not just stops
+        #    re-writing it). Built BEFORE flush_dre so the closure can read the rows.
+        meta_state = {"vars": sorted(pm.text_variables.items()), "rows": []}
+        meta_body = QWidget(); metal = QVBoxLayout(meta_body)
+        metal.setContentsMargins(0, 2, 0, 0); metal.setSpacing(8)
+        meta_top = QHBoxLayout(); meta_top.setSpacing(8)
+        meta_top.addWidget(pv.field_label("Text Variables")); meta_top.addStretch(1)
+        b_meta_add = W.btn("Add", "ghost", "Add a project text variable ({VAR} -> value)")
+        b_meta_del = W.btn("Remove", "ghost", "Remove the last text variable row")
+        b_meta_add.setEnabled(dre_writable); b_meta_del.setEnabled(dre_writable)
+        meta_top.addWidget(b_meta_add); meta_top.addWidget(b_meta_del)
+        metal.addLayout(meta_top)
+        meta_tbl = QTableWidget(0, 2)
+        meta_tbl.setHorizontalHeaderLabels(["Variable", "Value"])
+        meta_tbl.verticalHeader().hide(); meta_tbl.setShowGrid(False)
+        meta_tbl.setSelectionMode(QAbstractItemView.NoSelection)
+        meta_tbl.setFocusPolicy(Qt.NoFocus)
+        meta_tbl.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        meta_tbl.setMaximumHeight(200)
+        _mh = meta_tbl.horizontalHeader(); _mh.setHighlightSections(False)
+        _mh.setSectionResizeMode(0, QHeaderView.Stretch); _mh.setSectionResizeMode(1, QHeaderView.Stretch)
+        pv.apply_netclass_table(meta_tbl)
+        metal.addWidget(meta_tbl)
+        metal.addWidget(W.body("Project-wide ${VAR} substitutions. Clear a Variable's name or "
+                               "Remove it, then Save, to delete it from the project.", dim=True))
+
+        def _meta_capture():
+            meta_state["vars"] = [(r["name"].text().strip(), r["value"].text())
+                                  for r in meta_state["rows"]]
+
+        def rebuild_meta():
+            meta_state["rows"] = []
+            meta_tbl.clearContents(); meta_tbl.setRowCount(len(meta_state["vars"]))
+            for r, (nm, vv) in enumerate(meta_state["vars"]):
+                meta_tbl.setRowHeight(r, 34)
+                ne = pv.nc_cell_font(QLineEdit(str(nm))); ne.setEnabled(dre_writable)
+                ne.setPlaceholderText("VARIABLE"); ne.setCursorPosition(0)
+                ve = pv.nc_cell_font(QLineEdit(str(vv))); ve.setEnabled(dre_writable)
+                ve.setPlaceholderText("value"); ve.setCursorPosition(0)
+                meta_tbl.setCellWidget(r, 0, ne); meta_tbl.setCellWidget(r, 1, ve)
+                meta_state["rows"].append({"name": ne, "value": ve})
+
+        def _meta_add():
+            _meta_capture(); meta_state["vars"] = meta_state["vars"] + [("", "")]; rebuild_meta()
+
+        def _meta_del():
+            _meta_capture()
+            if meta_state["vars"]:
+                meta_state["vars"] = meta_state["vars"][:-1]
+            rebuild_meta()
+
+        b_meta_add.clicked.connect(lambda: _meta_add())
+        b_meta_del.clicked.connect(lambda: _meta_del())
+        rebuild_meta()
+        lay.addWidget(W.CollapsibleSection("Project Meta", meta_body))
+        host._meta_tbl = meta_tbl                             # drive/test seam
+        host._meta_add = _meta_add
+
+        # ---- flush closure: push every extended edit into pm, for ▶ Save (save_extended) ----
+        def flush_dre():
+            for key in _PS_SPEC:
+                pd_state[key] = _ps_read(key)
+            track_vals = [t[0] for t in pd_state["track"] if t[0] > 0]
+            if track_vals or pm.was_present("track_widths"):
+                pm.set_track_widths(track_vals)
+            else:
+                pm.track_widths = []
+            via_vals = [(t[0], t[1]) for t in pd_state["via"] if not (t[0] == 0 and t[1] == 0)]
+            if via_vals or pm.was_present("via_dimensions"):
+                pm.set_via_dimensions(via_vals)
+            else:
+                pm.via_dimensions = []
+            dp_vals = [(t[0], t[1], t[2]) for t in pd_state["dp"]
+                       if not (t[0] == 0 and t[1] == 0 and t[2] == 0)]
+            if dp_vals or pm.was_present("diff_pair_dimensions"):
+                pm.set_diff_pair_dimensions(dp_vals)
+            else:
+                pm.diff_pair_dimensions = []
+            pm.drc_severities = {}
+            for rid, cb in sev_combos["drc"].items():
+                if cb.currentText() in psm.SEVERITY_LEVELS:
+                    pm.set_drc_severity(rid, cb.currentText())
+            pm.erc_severities = {}
+            for rid, cb in sev_combos["erc"].items():
+                if cb.currentText() in psm.SEVERITY_LEVELS:
+                    pm.set_erc_severity(rid, cb.currentText())
+            if pinmap_state["touched"] or pm.was_present("erc.pin_map"):
+                pm.ensure_erc_pin_map()
+                for a in range(n_pin):
+                    for b in range(n_pin):
+                        pm.set_erc_pin_map_entry(a, b, pin_matrix[a][b], symmetric=False)
+            pm.set_erc_exclusions(list(pm.erc_exclusions))   # round-trip preserve (opaque)
+            # M4 Default Net Class: manage clearance/track/microvia from the Default-row spins.
+            # via_diameter/via_drill stay owned by the flat Design-Rules "Via Diameter/Drill"
+            # spins (save_design_rules_only, "dr") — leaving them None (unmanaged) keeps dre on
+            # DISJOINT keys from dr, so dre never reverts a flat via edit (the M3 landmine).
+            # Preserve-by-default: only manage a field the file actually carried, or one the
+            # user changed from its seed, so an untouched panel never materialises a Default
+            # class into a project that lacked one.
+            pm.default_netclass = psm.DefaultNetClassSettings()
+
+            def _dnc_val(_sp):
+                if _sp._seed_present or abs(_sp._mm - _sp._seed_mm) > 1e-9:
+                    return _sp._mm
+                return None
+            pm.set_default_netclass(
+                clearance=_dnc_val(dnc_fields["clearance"]),
+                track_width=_dnc_val(dnc_fields["track_width"]),
+                microvia_diameter=_dnc_val(dnc_fields["microvia_diameter"]),
+                microvia_drill=_dnc_val(dnc_fields["microvia_drill"]),
+            )
+
+            # M5 Project Meta: reconcile pm.text_variables to exactly the table (rows with a
+            # non-empty name). Any loaded var no longer wanted is REMOVED (recorded so the save
+            # deletes it from the file). set/remove keep pm._removed_text_vars consistent.
+            want = {}
+            for _r in meta_state["rows"]:
+                _nm = _r["name"].text().strip()
+                if _nm:
+                    want[_nm] = _r["value"].text()
+            for _nm in list(pm.text_variables.keys()):
+                if _nm not in want:
+                    pm.remove_text_variable(_nm)
+            for _nm, _vv in want.items():
+                pm.set_text_variable(_nm, _vv)
+
+        # Baseline AFTER an initial flush so sentinel/normalisation is folded in and an
+        # untouched panel reproduces the same fingerprint (→ ▶ Save reports nothing to write).
+        flush_dre()
+        S["dre_flush"] = flush_dre
+        S["dre_base"] = _dre_fingerprint(pm)
+        host._dre_flush = flush_dre                          # drive/test seams
+        host._sev_combos = sev_combos
+        host._pin_matrix = pin_matrix
+        host._psize_tables = pd_tables
+
+        # ── Section C — Net Classes (ncm, editable, sticky-header table) ───────────────────
+        add_section("Net Classes")
+
+        nc_top = QHBoxLayout(); nc_top.setSpacing(8)
+        nc_filter = QLineEdit(); nc_filter.setPlaceholderText("Filter classes"); nc_filter.setFixedWidth(240)
+        nc_filter.setToolTip("Narrow the visible classes by name or pattern")
+        nc_top.addWidget(nc_filter); nc_top.addStretch(1)
+        b_newnc = W.btn("New Net Class", "ghost", "Add a new net class defaulted to the profile floors")
+        nc_top.addWidget(b_newnc)
+        lay.addLayout(nc_top)
+
+        tbl = QTableWidget(0, len(_NC_COLS))
+        tbl.setHorizontalHeaderLabels(_NC_COLS)
+        tbl.verticalHeader().hide()
+        tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        tbl.setSelectionMode(QAbstractItemView.NoSelection)
+        tbl.setShowGrid(False)
+        tbl.setWordWrap(False)
+        tbl.setFocusPolicy(Qt.NoFocus)
+        # 16 columns (KiCad-native breadth) overflow the panel — scroll horizontally rather
+        # than crush the cells.
+        tbl.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        tbl.setMinimumHeight(240); tbl.setMaximumHeight(360)
+        hdr = tbl.horizontalHeader(); hdr.setHighlightSections(False)
+        hdr.setSectionResizeMode(0, QHeaderView.Interactive); tbl.setColumnWidth(0, 150)
+        for _f, ci in _NC_LEN:
+            hdr.setSectionResizeMode(ci, QHeaderView.Fixed); tbl.setColumnWidth(ci, 100)
+        hdr.setSectionResizeMode(_NC_COL_STYLE, QHeaderView.Fixed); tbl.setColumnWidth(_NC_COL_STYLE, 104)
+        hdr.setSectionResizeMode(_NC_COL_PRIORITY, QHeaderView.Fixed); tbl.setColumnWidth(_NC_COL_PRIORITY, 76)
+        hdr.setSectionResizeMode(_NC_COL_PATTERNS, QHeaderView.Interactive); tbl.setColumnWidth(_NC_COL_PATTERNS, 200)
+        hdr.setSectionResizeMode(_NC_COL_DELETE, QHeaderView.Fixed); tbl.setColumnWidth(_NC_COL_DELETE, 104)
+
+        pv.apply_netclass_table(tbl)
+        lay.addWidget(tbl)
+
+        nc_status = QVBoxLayout(); nc_status.setSpacing(4); lay.addLayout(nc_status)
+        S["nc_status"] = nc_status
+
+        def _apply_filter():
+            t = nc_filter.text().strip().lower()
+            for r, row in enumerate(nc_state["rows"]):
+                name = row["name"].lower(); pats = row["patterns"].text().lower()
+                vis = True if not t else (t in name or t in pats)
+                tbl.setRowHidden(r, not vis)
+
+        def _nc_visible_count():
+            return sum(1 for r in range(tbl.rowCount()) if not tbl.isRowHidden(r))
+
+        def rebuild_netclasses():
+            nc_fields.clear(); nc_state["rows"] = []
+            tbl.clearContents()
+            mgr = nc_state["mgr"]
+            names = mgr.list_netclasses()
+            tbl.setRowCount(len(names))
+            for r, name in enumerate(names):
+                nc = mgr.get_netclass(name)
+                tbl.setRowHeight(r, 34)
+                tbl.setCellWidget(r, 0, pv.nc_name_cell(
+                    nc,
+                    on_pick=lambda _nc: _log(f"{_nc.name} color set to {_nc.color}."),
+                    on_rename=_nc_rename))
+                spins = {}
+                for field, ci in _NC_LEN:
+                    mmv = getattr(nc, field, None)
+                    is_dp = field in ("diff_pair_width", "diff_pair_gap")
+                    sp = _len_spin(unit, mmv if mmv is not None else 0.0, width=104, hi_mm=25.0)
+                    pv.nc_cell_font(sp)
+                    if is_dp:
+                        sp.setToolTip("Diff-pair dimension: 0 means this class has no diff pair. "
+                                      "Set both width and gap to enable one.")
+
+                        def _sync_dp_dim(_v=None, _sp=sp):
+                            want = "nc_dp_zero" if _sp._mm <= 0 else ""
+                            if _sp.objectName() != want:
+                                _sp.setObjectName(want)
+                                _sp.style().unpolish(_sp); _sp.style().polish(_sp)
+                        _sync_dp_dim()
+                        sp.valueChanged.connect(_sync_dp_dim)
+                    nc_fields.append(sp); spins[field] = sp
+                    tbl.setCellWidget(r, ci, sp)
+                style_cb = QComboBox()
+                for _disp, _val in _NC_LINE_STYLES:
+                    style_cb.addItem(_disp, _val)
+                _si = style_cb.findData(getattr(nc, "line_style", "solid"))
+                style_cb.setCurrentIndex(_si if _si >= 0 else 0)
+                style_cb.setToolTip("Schematic wire/bus line style for this net class")
+                pv.nc_cell_font(style_cb)
+                tbl.setCellWidget(r, _NC_COL_STYLE, style_cb)
+                pr = pv.nc_cell_font(_int_spin(getattr(nc, "priority", 0), width=72))
+                tbl.setCellWidget(r, _NC_COL_PRIORITY, pr)
+                edit = pv.nc_cell_font(QLineEdit(", ".join(nc.patterns or [])))
+                edit.setToolTip("Member nets or patterns, comma separated")
+                edit.setCursorPosition(0)
+                edit.textChanged.connect(lambda _t: _apply_filter())
+                tbl.setCellWidget(r, _NC_COL_PATTERNS, edit)
+                dbtn = W.btn("Delete", "ghost", f"Remove {name}"); dbtn.setFixedHeight(26)
+                dbtn.clicked.connect(lambda _=False, _nc=nc: _nc_delete(_nc.name))
+                dwrap = QWidget(); dwl = QHBoxLayout(dwrap); dwl.setContentsMargins(2, 3, 6, 3)
+                dwl.addWidget(dbtn); dwl.addStretch(1)
+                tbl.setCellWidget(r, _NC_COL_DELETE, dwrap)
+                nc_state["rows"].append({"name": name, "spins": spins, "priority": pr,
+                                         "patterns": edit, "line_style": style_cb})
+            _apply_filter()
+
+        def _nc_new():
+            _commit_netclasses()
+            mgr = nc_state["mgr"]; base = "NEW_CLASS"; name = base; i = 2
+            while mgr.get_netclass(name) is not None:
+                name = f"{base}_{i}"; i += 1
+            floor = ncm.NETCLASS_PROFILES.get(prof_state["fab"], ncm.NETCLASS_PROFILES[ncm.DEFAULT_NETCLASS_PROFILE])
+            mgr.add_netclass(ncm.NetClass(
+                name=name, clearance=floor["min_clearance"], track_width=floor["min_track"],
+                via_diameter=floor["min_via"], via_drill=floor["min_drill"]))
+            rebuild_netclasses()
+
+        def _nc_rename(nc, new_name):
+            old = nc.name
+            if not nc_state["mgr"].rename_netclass(old, new_name):
+                if new_name and new_name != old:
+                    _log(f"Could not rename '{old}' to '{new_name}' (name already in use).")
+                return None
+            for row in nc_state["rows"]:
+                if row["name"] == old:
+                    row["name"] = new_name
+                    break
+            _apply_filter()
+            _log(f"Net class '{old}' renamed to '{new_name}'. Save To Project to persist it.")
+            return new_name
+
+        def _nc_delete(name):
+            if not confirm(host, "Delete Net Class",
+                           f"Remove the net class '{name}' from this profile?\n\n"
+                           f"It is applied when you save the profile."):
+                return
+            _commit_netclasses()
+            nc_state["mgr"].remove_netclass(name)
+            rebuild_netclasses()
+
+        nc_filter.textChanged.connect(lambda _t: _apply_filter())
+        b_newnc.clicked.connect(lambda: _nc_new())
+        rebuild_netclasses()
+
+        host._nc_new = _nc_new
+        host._nc_delete = _nc_delete
+        host._nc_rename = _nc_rename
+        host._nc_name_cell = lambda r: tbl.cellWidget(r, 0)
+        host._nc_filter_edit = nc_filter
+        host._nc_filter = nc_filter.setText
+        host._nc_visible_count = _nc_visible_count
+        host._nc_rows = lambda: nc_state["rows"]
+
+        # ── Section D — Board Geometry (nd_board_setup, editable) ──────────────────────────
+        add_section("Board Geometry")
+        setup = {}
+        if board is None:
+            lay.addWidget(W.empty_state("No board found", glyph=icons.GLYPHS["cube"],
+                                        sub="This project has no .kicad_pcb to configure."))
+        else:
+            try:
+                setup = nd_board_setup.load_board_setup(board, include_aliases=False)
+            except Exception as e:  # noqa: BLE001
+                lay.addWidget(W.body(f"Could not read board setup: {e}", dim=True))
+        explicit = set(setup)
+        S["setup"] = setup
+        S["explicit"] = explicit
+
+        if board is not None:
+            bgw = QWidget(); bgg = QGridLayout(bgw); bgg.setContentsMargins(0, 4, 0, 0)
+            bgg.setHorizontalSpacing(16); bgg.setVerticalSpacing(10)
+            rr = 0
+
+            def _notset(key):
+                return W.body("Not Set", dim=True) if key not in explicit else None
+
+            for key in sorted(nd_board_setup.SETUP_NUMERIC_KEYS):
+                bgg.addWidget(pv.field_label(key.replace("_", " ").title()), rr, 0)
+                if key.endswith("_ratio"):
+                    sp = _ratio_spin(setup.get(key, 0.0)); bg_fields[key] = ("ratio", sp)
+                else:
+                    sp = _len_spin(unit, setup.get(key, 0.0), width=112, lo_mm=-10.0, hi_mm=50.0)
+                    all_fields.append(sp); bg_fields[key] = ("num", sp)
+                bgg.addWidget(sp, rr, 1)
+                ns = _notset(key)
+                if ns:
+                    bgg.addWidget(ns, rr, 2)
+                rr += 1
+            for key in sorted(nd_board_setup.SETUP_COORD_KEYS):
+                bgg.addWidget(pv.field_label(key.replace("_", " ").title()), rr, 0)
+                val = setup.get(key, (0.0, 0.0))
+                sx = _len_spin(unit, val[0], width=112, lo_mm=-1000.0, hi_mm=1000.0)
+                sy = _len_spin(unit, val[1], width=112, lo_mm=-1000.0, hi_mm=1000.0)
+                all_fields.append(sx); all_fields.append(sy)
+                cw = QWidget(); ch = QHBoxLayout(cw); ch.setContentsMargins(0, 0, 0, 0); ch.setSpacing(8)
+                ch.addWidget(sx); ch.addWidget(sy); ch.addStretch(1)
+                bgg.addWidget(cw, rr, 1)
+                bg_fields[key] = ("coord", (sx, sy))
+                ns = _notset(key)
+                if ns:
+                    bgg.addWidget(ns, rr, 2)
+                rr += 1
+            for key in sorted(nd_board_setup.SETUP_BOOL_KEYS):
+                bgg.addWidget(pv.field_label(key.replace("_", " ").title()), rr, 0)
+                cb = QCheckBox(); cb.setChecked(bool(setup.get(key, False)))
+                bg_fields[key] = ("bool", cb)
+                bgg.addWidget(cb, rr, 1)
+                ns = _notset(key)
+                if ns:
+                    bgg.addWidget(ns, rr, 2)
+                rr += 1
+            bgg.setColumnStretch(3, 1)
+            pv.apply_quiet_fields(bgw)
+            lay.addWidget(bgw)
+            lay.addWidget(W.body(board.name, dim=True, mono=True))
+        host._bg_fields = bg_fields                         # drive/test seam
+
+        # ── profile CRUD + load/pull (need the combo + rebuild_* — live here) ──────────────
+        def _mgr_from_netclasses(netclasses):
+            m = ncm.NetClassManager()
+            for nc in netclasses:
+                m.add_netclass(nc)
+            return m
+
+        def _load_profile(name):
+            prof = pcbprof.get_profile(name)
+            if prof is None:
+                return
+            _commit_netclasses()
+            prof_state["name"] = name
+            prof_state["fab"] = prof.fab
+            nc_state["mgr"] = _mgr_from_netclasses(prof.netclasses)
+            host._ncmgr = nc_state["mgr"]
+            rebuild_netclasses()
+            rebuild_fabfacts()
+            reseed_stackup()
+            refresh_units()
+            clear_layout(nc_status)
+
+        def _pull_from_kicad():
+            pro_ = kicad_tools.project_pro_file(state.project) if state.project else None
+            if not pro_ or not Path(pro_).exists():
+                _log("No .kicad_pro found for this project."); return
+            prof = pcbprof.profile_from_project(pro_, f"{Path(pro_).stem} (from KiCad)", prof_state["fab"])
+            if not prof.netclasses:
+                _log("No net classes found in the KiCad project."); return
+            prof_state["name"] = prof.name
+            nc_state["mgr"] = _mgr_from_netclasses(prof.netclasses)
+            host._ncmgr = nc_state["mgr"]
+            prof_combo.blockSignals(True)
+            if prof_combo.findText(prof.name) < 0:
+                prof_combo.addItem(prof.name)
+            prof_combo.setCurrentText(prof.name)
+            prof_combo.blockSignals(False)
+            rebuild_netclasses(); refresh_units(); clear_layout(nc_status)
+            _log(f"Pulled {len(prof.netclasses)} net class(es) from {Path(pro_).name}. "
+                 f"Use Save Profile to keep it.")
+
+        def _refresh_profile_list(select=None):
+            prof_combo.blockSignals(True)
+            prof_combo.clear()
+            prof_combo.addItems(_profile_names())
+            if select:
+                prof_combo.setCurrentText(select)
+            prof_combo.blockSignals(False)
+
+        def _profile_from_current():
+            _commit_netclasses()
+            return pcbprof.Profile(prof_state["name"], prof_state["fab"],
+                                   list(nc_state["mgr"].net_classes.values()))
+
+        def _new_profile():
+            from PyQt5.QtWidgets import QInputDialog
+            name, ok = QInputDialog.getText(host, "New Profile", "Profile name:")
+            name = (name or "").strip()
+            if not ok or not name:
+                return
+            _commit_netclasses()
+            prof = pcbprof.Profile(name, prof_state["fab"],
+                                   list(nc_state["mgr"].net_classes.values()))
+            errs = pcbprof.validate_profile(prof)
+            if errs:
+                _log("Cannot save profile: " + "; ".join(errs)); return
+            pcbprof.save_profile(prof)
+            prof_state["name"] = name
+            _refresh_profile_list(select=name)
+            _log(f"Saved profile '{name}'.")
+
+        def _save_profile():
+            prof = _profile_from_current()
+            errs = pcbprof.validate_profile(prof)
+            if errs:
+                _log("Cannot save profile: " + "; ".join(errs)); return
+            pcbprof.save_profile(prof)
+            _log(f"Updated profile '{prof.name}'.")
+
+        def _delete_profile():
+            name = prof_state["name"]
+            builtin = pcbprof.is_builtin(name)
+            if builtin and not pcbprof.has_user_profile(name):
+                _log(f"'{name}' is a built-in profile and can't be deleted.")
+                return
+            verb = "Revert your override of" if builtin else "Delete"
+            detail = ("This restores the built-in defaults."
+                      if builtin else "This permanently removes it from disk and cannot be undone.")
+            if not confirm(host, "Delete Profile", f"{verb} the profile '{name}'?\n\n{detail}"):
+                return
+            if pcbprof.delete_profile(name):
+                _log(f"{'Reverted' if builtin else 'Deleted'} profile '{name}'.")
+            else:
+                _log(f"'{name}' is a built-in profile and can't be deleted.")
+            names = _profile_names()
+            sel = name if name in names else (
+                pcbprof.NETDECK if pcbprof.NETDECK in names else (names[0] if names else None))
+            _refresh_profile_list(select=sel)
+            if sel:
+                _load_profile(sel)
+
+        def _load_vault_template():
+            # PARITY: ncm.create_vault_standard_template / ncm.netclass_profiles — generate the
+            # vault-standard net classes for the current fab profile into the editor.
+            prof = prof_state["fab"] if prof_state["fab"] in ncm.netclass_profiles() \
+                else ncm.DEFAULT_NETCLASS_PROFILE
+            if not confirm(host, "Load Vault-Standard Template",
+                           f"Replace the net classes in the editor with the vault standard for "
+                           f"{prof}? Unsaved edits are discarded."):
+                return
+            nc_state["mgr"] = ncm.create_vault_standard_template(prof)
+            host._ncmgr = nc_state["mgr"]
+            prof_state["name"] = f"Vault Standard ({prof})"
+            rebuild_netclasses(); refresh_units(); clear_layout(nc_status)
+            _log(f"Loaded the vault-standard template for {prof}. Use Save Profile to keep it.")
+
+        def _load_vault_saved():
+            # PARITY: ncm.load_vault_standard — load the saved editable vault standard (or the
+            # built-in default) into the editor.
+            if not confirm(host, "Load Saved Vault Standard",
+                           "Replace the net classes in the editor with the saved vault standard? "
+                           "Unsaved edits are discarded."):
+                return
+            nc_state["mgr"] = ncm.load_vault_standard()
+            host._ncmgr = nc_state["mgr"]
+            prof_state["name"] = "Vault Standard"
+            rebuild_netclasses(); refresh_units(); clear_layout(nc_status)
+            _log(f"Loaded the saved vault standard "
+                 f"({len(nc_state['mgr'].list_netclasses())} class(es)).")
+
+        def _save_vault():
+            # PARITY: ncm.save_vault_standard — persist the current net classes as the canonical
+            # vault standard other projects load from.
+            _commit_netclasses()
+            path = ncm.save_vault_standard(nc_state["mgr"])
+            _log(f"Saved the current net classes as the vault standard: {Path(path).name}.")
+
+        prof_combo.currentTextChanged.connect(_load_profile)
+        host._profile_seg = prof_combo
+        host._profile_combo = prof_combo
+        host._unit_seg = unit_seg
+        host._load_profile = _load_profile
+        host._pull_from_kicad = _pull_from_kicad
+        host._new_profile = _new_profile
+        host._save_profile = _save_profile
+        host._delete_profile = _delete_profile
+        host._load_vault_template = _load_vault_template
+        host._load_vault_saved = _load_vault_saved
+        host._save_vault = _save_vault
+
+        controller = SimpleNamespace(nc_state=nc_state, prof_state=prof_state,
+                                     prof_combo=prof_combo, unit_seg=unit_seg)
+        return root, controller
+
+    # ── the write path (▶ Save To Project) — GUI-thread capture + off-thread write ────────
+    _ALL = {"dr", "dre", "nc", "bg", "fab"}
+
+    def _capture():
+        """GUI thread: flush live edits into the managers, then snapshot everything the
+        off-thread write needs (workers never touch a widget)."""
+        _commit_netclasses()
+        pm = S.get("pm")
+        dr_writable = S.get("dr_writable", False)
+        if dr_writable and pm is not None:
+            for attr, sp in dr_fields.items():
+                setattr(pm.settings, attr, mm_to_mils(sp._mm))
+        setup = S.get("setup", {}) or {}
+        explicit = S.get("explicit", set())
+
+        def _bg_seed(key, kind):
+            if kind == "coord":
+                return setup.get(key, (0.0, 0.0))
+            if kind == "bool":
+                return bool(setup.get(key, False))
+            return float(setup.get(key, 0.0))
+
+        def _bg_changed(kind, val, seed):
+            if kind == "coord":
+                return abs(val[0] - seed[0]) > 1e-9 or abs(val[1] - seed[1]) > 1e-9
+            if kind == "bool":
+                return bool(val) != bool(seed)
+            return abs(float(val) - float(seed)) > 1e-9
+
+        bvals = {}
+        for key, (kind, w) in bg_fields.items():
+            if kind == "bool":
+                val = w.isChecked()
+            elif kind == "coord":
+                val = (w[0]._mm, w[1]._mm)
+            elif kind == "ratio":
+                val = w.value()
+            else:
+                val = w._mm
+            if key in explicit or _bg_changed(kind, val, _bg_seed(key, kind)):
+                bvals[key] = val
+
+        mgr = nc_state["mgr"]
+        prof_snapshot = pcbprof.Profile(prof_state["name"], prof_state["fab"],
+                                        list(mgr.net_classes.values()))
+        # Bake the edited physical thickness into the fab-preset copy so the ONE fab write
+        # (▶ Save) uses the spinner value, never silently reverting it to the preset default.
+        # The stackup stays the preset's (per-layer editing is a KiCad-GUI job — logged gap).
+        fab_preset = fabp.PRESETS.get(prof_state["fab"])
+        thick_sp = S.get("thick_field")
+        if fab_preset is not None and thick_sp is not None:
+            import dataclasses
+            tmm = float(getattr(thick_sp, "_mm", 0.0) or 0.0)
+            if tmm > 0 and abs(tmm - fab_preset.board_thickness_mm) > 1e-9:
+                fab_preset = dataclasses.replace(fab_preset, board_thickness_mm=tmm)
+        # Extended design rules (severities / pin map / predefined tables): flush the live
+        # widgets into pm, then diff the fingerprint so ▶ Save writes save_extended ONLY when
+        # something actually changed (no idle .kicad_pro churn).
+        dre_ok = False; dre_dirty = False; n_dre = 0
+        dre_flush = S.get("dre_flush")
+        if dre_flush is not None and pm is not None and S.get("dre_writable"):
+            dre_flush()
+            dre_ok = True
+            dre_dirty = _dre_fingerprint(pm) != S.get("dre_base")
+            n_dre = (len(pm.drc_severities) + len(pm.erc_severities)
+                     + sum(1 for row in pm.erc_pin_map for x in row if x)
+                     + max(0, len(pm.track_widths) - 1) + max(0, len(pm.via_dimensions) - 1)
+                     + max(0, len(pm.diff_pair_dimensions) - 1)
+                     + sum(1 for _ in pm.default_netclass.managed_items())
+                     + len(pm.text_variables) + len(pm._removed_text_vars))
+        return {
+            "project": project, "pro": pro, "board": board,
+            "dr_ok": dr_writable, "pm": pm, "n_dr": len(dr_fields),
+            "dre_ok": dre_ok, "dre_dirty": dre_dirty, "n_dre": n_dre,
+            "mgr": mgr, "n_nc": len(mgr.list_netclasses()), "bvals": bvals,
+            "prof_snapshot": prof_snapshot, "prof_ok": not pcbprof.validate_profile(prof_snapshot),
+            "fab_preset": fab_preset,
+        }
+
+    def _save_job(snap, sections):
+        """OFF thread: write the selected sections from the snapshot; returns (done, err,
+        stats). Mirrors the legacy save() exactly, gated per section by ``sections``."""
+        done = []
+        err = None
+        stats = {"dr_fields": 0, "dre": 0, "nc_written": 0, "nc_preserved": [], "bg_keys": 0,
+                 "profile_synced": None, "fab_board": None}
+        pro_ = snap["pro"]; board_ = snap["board"]; pm = snap["pm"]; mgr = snap["mgr"]
+        if pro_:
+            # Three writers touch the SAME .kicad_pro (design rules, extended, net classes) —
+            # only the first makes the .bak so a pristine pre-save copy survives (save_extended
+            # writes DISJOINT keys from save_design_rules_only, so running both is safe).
+            pro_backed_up = False
+            if "dr" in sections and snap["dr_ok"] and pm is not None and pm.save_design_rules_only(pro_, backup=True):
+                done.append("design rules"); stats["dr_fields"] = snap["n_dr"]; pro_backed_up = True
+            if ("dre" in sections and snap.get("dre_ok") and snap.get("dre_dirty")
+                    and pm is not None and pm.save_extended(pro_, backup=not pro_backed_up)):
+                done.append("rule tables & severities"); stats["dre"] = snap.get("n_dre", 0)
+                pro_backed_up = True
+            if "nc" in sections and mgr.save_to_project(pro_, backup=not pro_backed_up):
+                done.append("net classes"); pro_backed_up = True
+                stats["nc_written"] = snap["n_nc"]
+                stats["nc_preserved"] = [n for n in mgr.last_preserved_unmanaged if n]
+                if snap["prof_ok"]:
+                    pcbprof.save_profile(snap["prof_snapshot"])
+                    stats["profile_synced"] = snap["prof_snapshot"].name
+        # Two writers touch the SAME .kicad_pcb (board geometry, then fab floor) — only the
+        # first makes the .bak so the surviving backup is the PRISTINE pre-save board, mirroring
+        # the pro_backed_up scheme above (else fab's .bak would overwrite bg's with the already-
+        # geometry-edited board, and the board-geometry edit could not be rolled back).
+        board_backed_up = False
+        if "bg" in sections and board_ is not None and snap["bvals"]:
+            try:
+                nd_board_setup.save_board_setup(board_, snap["bvals"], backup=not board_backed_up)
+                done.append("board geometry"); stats["bg_keys"] = len(snap["bvals"])
+                board_backed_up = True
+            except Exception as e:  # noqa: BLE001
+                err = str(e)
+        if "fab" in sections and board_ is not None and snap["fab_preset"] is not None:
+            try:
+                rep = conform.write_fab_to_board(board_, snap["fab_preset"], backup=not board_backed_up)
+                if rep.get("written"):
+                    done.append("fab floor")
+                    stats["fab_board"] = rep
+                    board_backed_up = True
+            except Exception as e:  # noqa: BLE001
+                err = (err + "; " if err else "") + f"fab floor: {e}"
+        S["last_done"] = list(done)
+        return done, err, stats
+
+    def save():
+        """The legacy ``_save`` seam — capture on the GUI thread, write ALL sections off it,
+        then log the digest + mark persisted + refresh the verdict."""
+        if not project:
+            _log("No project selected to save into."); return
+        if busy.get("on"):
+            return
+        snap = _capture()
+        busy["on"] = True
+
+        def populate(res, ok):
+            busy["on"] = False
+            done, err, stats = res if res else ([], None, {})
+            if done:
+                _log(_save_summary(done, stats))
+                _mark_persisted(done)
+            elif not err:
+                _log("Nothing saved (no project files found).")
+            if err:
+                _log(f"Some board writes did not save: {err}")
+            _push_verdict()
+        run_populate(ctx, lambda: _save_job(snap, _ALL), populate, busy="Saving to project...")
+
+    # ── the ▶ Save To Project primary flow (audit → preview → apply, headless-safe) ───────
+    def _save_audit(snap):
+        if not snap["project"]:
+            save_flow.empty = "No project selected to save into."
+            return []
+        ops = []
+        if snap["pro"]:
+            if snap["dr_ok"] and snap["n_dr"]:
+                ops.append({"key": "dr", "label": f"Design rules: {snap['n_dr']} field(s)",
+                            "detail": "", "safe": True})
+            if snap.get("dre_ok") and snap.get("dre_dirty"):
+                ops.append({"key": "dre",
+                            "label": "Rule severities, size tables, pin map, Default class & meta",
+                            "detail": "", "safe": True})
+            if snap["n_nc"]:
+                ops.append({"key": "nc", "label": f"Net classes: {snap['n_nc']} class(es)",
+                            "detail": "", "safe": True})
+        if snap["board"] is not None and snap["bvals"]:
+            ops.append({"key": "bg", "label": f"Board geometry: {len(snap['bvals'])} key(s)",
+                        "detail": "", "safe": True})
+        if snap["board"] is not None and snap["fab_preset"] is not None:
+            ops.append({"key": "fab",
+                        "label": f"Fab floor: stackup + {snap['fab_preset'].board_thickness_mm:g} mm thickness",
+                        "detail": "", "safe": True})
+        if not ops:
+            save_flow.empty = "Nothing to write: no project files, or nothing changed."
+        return ops
+
+    def _save_intro(snap, ops):
+        where = Path(snap["pro"]).name if snap["pro"] else "the board"
+        return f"Write the checked sections into {where} (a .bak is kept per file):"
+
+    def _save_apply(snap, keys):
+        done, err, stats = _save_job(snap, set(keys))
+        r = {"summary": _save_summary(done, stats) if done else "Nothing was written.",
+             "done": [f"wrote {d}" for d in done]}
+        if err:
+            r["errors"] = [f"Some board writes did not save: {err}"]
+        return r
+
+    def _after_save():
+        if S.get("last_done"):
+            _mark_persisted(S["last_done"])
+        _push_verdict()
+
+    save_flow = kit.PrimaryFlow(
+        label="▶ Save To Project", audit=_save_audit, intro=_save_intro, apply=_save_apply,
+        tip="Preview what will be written, then write the design rules, net classes, board "
+            "geometry and fab floor into the project",
+        empty="Nothing to write: no project files, or nothing changed.")
+
+    # ── verdict (push): net classes vs the profile's fab floor ────────────────────────────
+    def _compute_verdict():
+        if not project:
+            return None
+        _commit_netclasses()
+        try:
+            issues = ncm.validate_netclasses(nc_state["mgr"], prof_state["fab"])
+        except Exception:  # noqa: BLE001
+            return None
+        if not issues:
+            return W.VerdictState(kind="ok", title="In Spec",
+                                  subtitle="Net classes meet the fabrication minimums.")
+        names = []
+        for i in issues:
+            for tok in str(i.get("netclass", "")).split(","):
+                tok = tok.strip()
+                if tok and tok not in names:
+                    names.append(tok)
+        shown = ", ".join(names[:4]) + (f" +{len(names) - 4} more" if len(names) > 4 else "")
+        sub = (f"Under the profile minimum: {shown}" if shown
+               else "One or more classes fall under the fabrication floor.")
+        return W.VerdictState(kind="warn", title=f"{len(issues)} Below Fab Floor", subtitle=sub)
+
+    def _push_verdict():
+        try:
+            host._set_verdict(_compute_verdict())
+        except Exception:  # noqa: BLE001
+            pass
+
+    def validate():
+        if busy.get("on"):
+            return
+        nc_status = S.get("nc_status")
+        if nc_status is not None:
+            clear_layout(nc_status)
+        _commit_netclasses()
+        issues = ncm.validate_netclasses(nc_state["mgr"], prof_state["fab"])
+        if not issues:
+            if nc_status is not None:
+                nc_status.addWidget(W.body("All classes meet the fabrication minimums.", dim=True))
+            _log("Net classes valid.")
+        else:
+            if nc_status is not None:
+                for iss in issues[:20]:
+                    nc_status.addWidget(W.body(f"{iss.get('netclass', '')}: {iss.get('issue', '')}", dim=True))
+            _log(f"{len(issues)} net-class issue(s) found.")
+        _push_verdict()
+
+    # ── Manage machinery: Clear KiCad Cache (parity: clear_project_cache[_files]) ──────────
+    def _clear_cache():
+        if busy.get("on"):
+            return
+        cfg = getattr(ctx, "cfg", None) or {}
+        root_dir = cfg.get("RepoRoot") or cfg.get("SymbolLib")
+        if not root_dir and project:
+            root_dir = str(Path(project).parent)
+        if not root_dir:
+            _log("No repo root to clear KiCad caches under."); return
+        if not confirm(host, "Clear KiCad Cache",
+                       "Delete KiCad cache files (.kicad_prl, lock files, fp-info-cache, "
+                       "rescue/legacy caches) under the repository? KiCad regenerates them."):
+            return
+
+        def work():
+            rp = Path(root_dir)
+            counts = psm.clear_project_cache_files(rp, verbose=False) or {}
+            try:
+                ncm.clear_project_cache(rp)
+            except Exception:  # noqa: BLE001
+                pass
+            n = sum(v for v in counts.values() if isinstance(v, int))
+            return f"Cleared {n} KiCad cache file(s) under {rp.name}."
+
+        def done(line, ok):
+            _log(line if ok else "Clearing the KiCad cache failed.")
+
+        run_populate(ctx, work, done, busy="Clearing KiCad cache...")
+
+    # ── assemble the editor ───────────────────────────────────────────────────────────────
+    secondary = [
+        kit.action("Validate", validate, tip="Check the net classes against the profile's fab minimums"),
+        kit.action("Pull From KiCad", lambda: host._pull_from_kicad(),
+                   tip="Read the net classes from this project's KiCad file into the editor"),
+        kit.action("New Profile", lambda: host._new_profile(),
+                   tip="Save the current fab + net classes as a new named profile"),
+        kit.action("Save Profile", lambda: host._save_profile(),
+                   tip="Update the selected profile with the current net classes"),
+        kit.action("Delete Profile", lambda: host._delete_profile(),
+                   tip="Delete the selected user profile (a built-in reverts to its default)"),
+        kit.action("Load Vault-Standard Template", lambda: host._load_vault_template(),
+                   tip="Fill the editor with the vault-standard net classes for the current fab profile"),
+        kit.action("Load Saved Vault Standard", lambda: host._load_vault_saved(),
+                   tip="Fill the editor with the saved vault-standard net classes"),
+        kit.action("Save As Vault Standard", lambda: host._save_vault(),
+                   tip="Persist the current net classes as the canonical vault standard"),
+    ]
+    machinery = [
+        kit.action("Clear KiCad Cache", _clear_cache,
+                   tip="Delete KiCad cache/lock files under the repo so settings reload cleanly"),
+    ]
+
+    host = kit.editor(ctx, title="Editor", snapshot=_capture, build_body=build_body,
+                      primary=save_flow, after=_after_save,
+                      secondary=secondary, machinery=machinery, busy=busy)
+
+    # Disable every action while a mutating op runs (▶ Save / Validate / Conform / Clear Cache).
+    # kit.editor only guards RE-ENTRY of the ▶ flow itself, so — like the workbench panels — wire
+    # the shared busy gate to button enablement so an in-flight write can't overlap another op on
+    # the same project files. The Conform-Apply button owns its own enabled state (preview count),
+    # so it's excluded here and protected purely by run_conform's busy guard.
+    _skip = {getattr(host, "_conform_apply_btn", None)}
+    _buttons = [b for b in host.findChildren(QPushButton)
+                if not b.text().startswith(("▸", "▾")) and b not in _skip]
+
+    def _apply_enablement():
+        on = not busy["on"]
+        for b in _buttons:
+            try:
+                b.setEnabled(on)
+            except RuntimeError:                           # a button deleted by a rebuild
+                pass
+
+    busy.on_change = _apply_enablement
+
+    # ── seams the coupled tests + cross-panel code read ───────────────────────────────────
+    host._save = save
+    host._validate = validate
+    host._commit_netclasses = _commit_netclasses
+    host._dr_fields = dr_fields
+    host._prof_state = prof_state
+    host._unit = unit
+    host._ncmgr = nc_state["mgr"]
+    host._capture = _capture
+
+    _push_verdict()          # initial verdict (hidden when there is no project)
+    return host
+
+
+def _netclass_panel(ctx, state) -> QWidget:
+    """Backward-compat shim: Net Classes merged into the PCB Setup tab. An existing
+    test builds this and drives ._profile_seg, so it still resolves to the merged
+    panel (which exposes the same handle)."""
+    return _pcb_setup_panel(ctx, state)
+
+class ProjectsFeature(F.Feature):
+    id = "projects"
+    title = "Projects"
+    order = 20
+
+    def build(self, ctx: F.Context) -> QWidget:
+        state = ProjectsState(ctx.cfg)
+        header = None
+        if state.names():
+            # Each item shows the project name; its full path rides along as the
+            # item tooltip so identically-named projects stay distinguishable, and
+            # the combo's own tooltip tracks the current project's path.
+            combo = QComboBox(); combo.setFixedWidth(260)
+            for i, (p, lab) in enumerate(zip(state.projects, state.labels())):
+                combo.addItem(lab)                         # name, disambiguated by path
+                combo.setItemData(i, p.as_posix(), Qt.ToolTipRole)   # posix: Windows-safe display
+            if state.project and state.project in state.projects:
+                combo.setCurrentIndex(state.projects.index(state.project))   # preferred default
+            combo.setToolTip(state.project.as_posix() if state.project else "Choose a discovered KiCad project")
+
+            def _on_pick(i):
+                state.select_index(i)                      # index, not name — dup-safe
+                combo.setToolTip(state.project.as_posix() if state.project else "")
+            combo.currentIndexChanged.connect(_on_pick)
+            header = W.hstack(W.eyebrow("Project"), combo, spacing=8)
+        panels = [
+            ("Overview", lambda c: W.scroll_body(_overview_panel(c, state))),
+            ("Health", lambda c: W.scroll_body(_health_panel(c, state))),
+            ("Bill of Materials", lambda c: _bom_panel(c, state)),
+            ("Editor", lambda c: W.scroll_body(_pcb_setup_panel(c, state))),
+            ("Refactor", lambda c: W.scroll_body(_rename_panel(c, state))),
+        ]
+        ws = kit.tabbed_page("Projects", panels, header=header, ctx=ctx)
+        # Switching the project rebuilds EVERY sub-panel wholesale (mirrors Bench),
+        # so PCB Setup / Refactor can't be left showing — or SAVING INTO — the
+        # previously-selected project. This is the single refresh mechanism; panels
+        # must NOT also self-register on_change (that leaks stale closures per rebuild).
+        state.on_change(ws.rebuild_all)
+        self.state = state          # drive/test seam: lets drive_audit switch projects
+        return ws
+
+
+F.register(ProjectsFeature())

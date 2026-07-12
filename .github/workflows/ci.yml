@@ -1,0 +1,26 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install dependencies
+        # numpy/scipy/shapely: fp_render mesh loading + the routing-engine python paths
+        # (declared in requirements.txt); tzdata: Windows has no system tz database, so
+        # zoneinfo("America/Chicago") in the DST tests needs the pip tzdata package.
+        run: pip install PyQt5 watchdog pytest numpy scipy shapely tzdata
+      - name: Run tests
+        run: python -m pytest tests -q

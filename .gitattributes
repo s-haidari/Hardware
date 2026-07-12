@@ -1,0 +1,38 @@
+# --- Default text normalization (safe cross-platform) ---
+* text=auto
+
+# --- Explicit binary types (no EOL conversion, no diffs) ---
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.zip binary
+*.tgz binary
+*.gz binary
+*.exe binary
+*.dll binary
+*.dylib binary
+*.so  binary
+*.pyd binary
+
+# --- KiCad structured files: NEVER 3-way auto-merge ---
+# These are machine-rewritten S-expression files. A textual 3-way merge injects
+# <<<<<<< / ======= / >>>>>>> markers that KiCad cannot load (this bit us once).
+# `-merge` makes git keep our version on conflict (resolve manually) instead of
+# corrupting the file; `-text` skips EOL munging that causes spurious conflicts.
+*.kicad_sym -merge -text
+*.kicad_pcb -merge -text
+*.kicad_sch -merge -text
+*.kicad_pro -merge -text
+
+# --- CAD & large assets: track with Git LFS (+ mark binary) ---
+*.step filter=lfs diff=lfs merge=lfs -text
+*.stp  filter=lfs diff=lfs merge=lfs -text
+
+# If you need other large artifacts tracked, add similar lines, e.g.:
+# *.pdf  filter=lfs diff=lfs merge=lfs -text
+# *.mp4  filter=lfs diff=lfs merge=lfs -text
+# --- Scripts: correct EOL per platform ---
+*.bat text eol=crlf
+*.sh  text eol=lf

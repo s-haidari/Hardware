@@ -1,0 +1,279 @@
+{
+  "panels": [
+    "_bench_panel",
+    "_git_panel",
+    "_lib_panel",
+    "_proj_panel",
+    "_settings_panel"
+  ],
+  "symbols": {
+    "_bench_panel": {
+      "stm32_authority": [
+        "adg714_cell_map",
+        "build",
+        "card_bom",
+        "card_materials",
+        "card_wiring",
+        "category_lists",
+        "current_budget",
+        "fabric_drc",
+        "fabric_drc_ok",
+        "raw_tsv",
+        "resolve_part",
+        "run_lint",
+        "serializable",
+        "socket_connections",
+        "to_card_bom_csv",
+        "to_csv",
+        "to_kicad_netlist",
+        "to_kicad_symbol",
+        "to_markdown",
+        "to_switchmap_c",
+        "to_switchmap_json",
+        "to_wiring_md",
+        "to_yaml",
+        "validate_socket_symbol",
+        "validate_socket_symbol_ok",
+        "write_authority"
+      ],
+      "stm32_db": [
+        "build_database",
+        "connect",
+        "default_cubemx_source",
+        "default_db_path",
+        "list_buildable_packages",
+        "package_count"
+      ],
+      "stm32_pins_tab": [
+        "expandNet",
+        "pin_map_svg"
+      ]
+    },
+    "_git_panel": {
+      "LibraryManager": [
+        "save_repo_root"
+      ],
+      "nd_git": [
+        "ahead_behind",
+        "commit",
+        "current_branch",
+        "find_corrupt_kicad_files",
+        "guard_no_corrupt_kicad",
+        "have_git",
+        "init_repo",
+        "pull_ff_only",
+        "push",
+        "recent_commits",
+        "repo_root",
+        "set_repo",
+        "show",
+        "stage",
+        "stage_all",
+        "status",
+        "unstage"
+      ]
+    },
+    "_lib_panel": {
+      "LibraryManager": [
+        "apply_complete_part",
+        "apply_library_location",
+        "auto_assign_library",
+        "autofill_plan",
+        "clean_leftovers",
+        "complete_part_plan",
+        "create_symbol_for_footprint",
+        "dedupe_footprint_library",
+        "dedupe_symbol_library",
+        "duplicate_symbol_for_footprint",
+        "empty_trash",
+        "enrich_library",
+        "ensure_footprint_model",
+        "export_catalog",
+        "extract_symbol_blocks",
+        "extract_symbol_name",
+        "footprints_referencing_model",
+        "git_commit_push",
+        "install_footprint_file",
+        "install_model_file",
+        "install_symbol_file",
+        "library_health_report",
+        "library_sourcing_report",
+        "list_trash_snapshots",
+        "load_config",
+        "make_library_portable",
+        "merge_symbols",
+        "move_files",
+        "part_display_names",
+        "part_missing",
+        "process_existing_zips",
+        "process_zip",
+        "providers_from_config",
+        "read_text",
+        "register_libraries",
+        "remove_footprint",
+        "remove_model",
+        "remove_part",
+        "rename_symbol_in_library",
+        "repair_library",
+        "restore_last_trash",
+        "save_sourcing_snapshot",
+        "scan_library_grouped",
+        "search_parts",
+        "set_library_symbol_footprint",
+        "set_library_symbol_property",
+        "snapshot_age_label",
+        "sourcing_snapshot_for",
+        "symbols_referencing_footprint",
+        "verify_handoff_readiness",
+        "write_pointer",
+        "write_text"
+      ],
+      "fp_render": [
+        "footprint_summary",
+        "render_footprint_image",
+        "render_step_image",
+        "render_symbol_image",
+        "step_summary"
+      ],
+      "nd_commit_msg": [
+        "add_footprint",
+        "add_model",
+        "add_symbol",
+        "field_set",
+        "import_parts"
+      ],
+      "nd_git": [
+        "find_corrupt_kicad_files"
+      ]
+    },
+    "_proj_panel": {
+      "LibraryManager": [
+        "bom_cost_by_source",
+        "bom_cost_summary",
+        "bom_diff",
+        "bom_diff_cost",
+        "bom_diff_csv",
+        "bom_diff_lead",
+        "bom_from_project",
+        "bom_lead_time",
+        "bom_procurement_summary",
+        "bom_rows_at_ref",
+        "bom_rows_from_csv",
+        "bom_sourcing_risks",
+        "bom_xlsx",
+        "chained_lookup",
+        "consolidated_bom",
+        "jlcpcb_bom_csv",
+        "library_lookup",
+        "priced_bom_csv_at_qty",
+        "procurement_cart_csv",
+        "procurement_xlsx",
+        "providers_from_config"
+      ],
+      "fp_render": [
+        "find_board_render_cli"
+      ],
+      "kicad_paths": [
+        "find_kicad_cli"
+      ],
+      "kicad_tools": [
+        "discover_kicad_projects",
+        "pick_root_schematic",
+        "project_pro_file"
+      ],
+      "nd_board_setup": [
+        "load_board_setup",
+        "save_board_setup"
+      ],
+      "nd_git": [
+        "recent_commits",
+        "show"
+      ],
+      "nd_kicad_checks": [
+        "run_drc",
+        "run_erc"
+      ],
+      "nd_library_fill": [
+        "apply_fill_plan",
+        "build_fill_plan",
+        "library_parts"
+      ],
+      "nd_netclass_manager": [
+        "clear_project_cache",
+        "create_vault_standard_template",
+        "load_vault_standard",
+        "netclass_profiles",
+        "save_vault_standard",
+        "validate_netclasses"
+      ],
+      "nd_object_conform": [
+        "conform_project",
+        "write_fab_to_board"
+      ],
+      "nd_pcb_profiles": [
+        "delete_profile",
+        "get_profile",
+        "has_user_profile",
+        "is_builtin",
+        "load_profiles",
+        "profile_from_project",
+        "save_profile",
+        "validate_profile"
+      ],
+      "nd_project_health": [
+        "annotate_project",
+        "audit_project",
+        "audit_report_markdown",
+        "autofixable",
+        "autofixable_kinds",
+        "schematic_components"
+      ],
+      "nd_project_settings_manager": [
+        "clear_project_cache_files",
+        "mils_to_mm",
+        "mm_to_mils"
+      ],
+      "nd_wizard": [
+        "apply_transforms_atomically",
+        "list_boards",
+        "list_schematics",
+        "pcb_preview_and_apply",
+        "schematic_preview_and_apply"
+      ]
+    },
+    "_settings_panel": {
+      "LibraryManager": [
+        "apply_library_location",
+        "find_kicad_config_dir",
+        "library_location",
+        "load_config",
+        "mouser_reset_seconds_remaining",
+        "providers_from_config",
+        "read_setting",
+        "register_libraries",
+        "resolve_digikey_creds",
+        "seed_library",
+        "write_pointer",
+        "write_setting"
+      ],
+      "kicad_paths": [
+        "find_kicad_bin",
+        "find_kicad_cli"
+      ],
+      "nd_updater": [
+        "apply_update_windows",
+        "check_for_update",
+        "download",
+        "exe_path",
+        "staged_path"
+      ],
+      "stm32_db": [
+        "build_database",
+        "default_cubemx_source",
+        "default_db_path",
+        "package_count"
+      ]
+    }
+  },
+  "_generated_from": "tools/ui/bare.py (frozen at the Phase-3 flip; bare.py deleted after)"
+}

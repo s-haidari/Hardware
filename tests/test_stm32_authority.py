@@ -1,0 +1,977 @@
+"""Tests for the Layer-B pinout authority (tools/stm32_authority.py)."""
+from __future__ import annotations
+
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+import stm32_db as db  # noqa: E402
+import stm32_authority as auth  # noqa: E402
+
+
+class AuthorityTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        src = db.default_cubemx_source()
+        if src is None:
+            raise unittest.SkipTest("CubeMX XML source not found")
+        cls.dbp = Path(tempfile.mkdtemp()) / "stm32.sqlite"
+        db.build_database(src, cls.dbp)
+        cls.conn = db.connect(cls.dbp)
+
+    def test_lqfp64_rollup_and_assignment(self):
+        data = auth.build(self.conn, "LQFP64")
+        r = data["rollup"]
+        self.assertEqual(r["must_switch_count"], 11)
+        self.assertEqual(r["cells_min"], 2)
+        self.assertEqual(data["manifest"]["part_count"], 53)
+        self.assertEqual(data["manifest"]["supported_families"],
+                         ["STM32F0", "STM32F1", "STM32F2", "STM32F3", "STM32F4", "STM32F7"])
+        self.assertEqual(r["channel_count"], 11)   # one channel per must-switch pin (Card 7B)
+        p1 = next(p for p in data["positions"] if p["position"] == 1)
+        self.assertIn("VBAT", p1["role_set"])
+        self.assertIn("VDD", p1["role_set"])
+        self.assertEqual(p1["switch_class"], db.SWITCH_MUST)
+        # one channel per pin -> its dominant rail (VBAT); IO alternate stays hardwired
+        self.assertEqual([c["destination"] for c in p1["assignment"]["channels"]], ["VBAT_TGT"])
+        self.assertEqual(p1["assignment"]["adg714"]["destination"], "VBAT_TGT")
+        p60 = next(p for p in data["positions"] if p["position"] == 60)
+        self.assertTrue(p60["tags"]["is_boot"])
+
+    def test_representative_channel_matches_destination(self):
+        # Regression: the exported representative ADG714 channel must actually deliver
+        # the labelled destination, else CSV/MD tell the operator to close a switch
+        # that ties the socket pin to the wrong rail (analog ground vs VTARGET).
+        data = auth.build(self.conn, "LQFP100")
+        checked = 0
+        for p in data["positions"]:
+            asg = p["assignment"]
+            chans = asg.get("channels") or []
+            rep = asg.get("adg714")
+            if rep and any(c["destination"] == asg["destination"] for c in chans):
+                checked += 1
+                self.assertEqual(
+                    rep["destination"], asg["destination"],
+                    f"pin {p['position']} representative delivers {rep['destination']} "
+                    f"but is labelled {asg['destination']}")
+        self.assertGreater(checked, 20)   # LQFP100 has plenty of switched pins
+
+    def test_bootloader_tags_from_an2606(self):
+        data = auth.build(self.conn, "LQFP64")
+
+        def periph_at(name):
+            for p in data["positions"]:
+                if name in p["pin_names"]:
+                    return p["tags"]["bootloader_periph"]
+            return None
+
+        self.assertIn("USART", periph_at("PA9"))      # USART1_TX, universal
+        self.assertIn("USB-DFU", periph_at("PA11"))   # USB_DM, universal
+        self.assertIn("CAN", periph_at("PB13"))       # CAN2_TX (F2/F4)
+        self.assertTrue(any(p["tags"]["bootloader_periph"] for p in data["positions"]))
+
+    def test_emit_yaml_json_tsv(self):
+        out = Path(tempfile.mkdtemp())
+        summ = auth.write_authority(self.conn, "LQFP64", out)
+        # yaml/json/tsv/csv/kicad_sym/authority.md/switchmap.json/.h/wiring.md/bom.csv/card.net/svg
+        self.assertEqual(len(summ["files"]), 12)
+        self.assertTrue((out / "bom_LQFP64.csv").exists())
+        self.assertTrue((out / "card_LQFP64.net").exists())
+        j = json.loads((out / "pinout_authority_LQFP64.json").read_text(encoding="utf-8"))
+        self.assertEqual(len(j["positions"]), 64)
+        y = (out / "pinout_authority_LQFP64.yaml").read_text(encoding="utf-8")
+        self.assertIn("must_switch_count: 11", y)
+        tsv = (out / "pins_LQFP64.tsv").read_text(encoding="utf-8")
+        self.assertGreater(len(tsv.splitlines()), 53)  # header + 53 parts x pins
+        self.assertTrue((out / "LQFP64_socket.kicad_sym").exists())
+        csv_lines = (out / "pins_LQFP64.csv").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(csv_lines) - 1, 64)       # one self-contained row per pin
+        self.assertIn("ADG714BRUZ-REEL", (out / "authority_LQFP64.md").read_text(encoding="utf-8"))
+
+    def test_kicad_symbol(self):
+        """Phase D: the generated KiCad socket symbol is well-formed (structural —
+        kicad-cli can't load-validate headlessly here, but the format is spec v6)."""
+        sym = auth.to_kicad_symbol(auth.build(self.conn, "LQFP64"))
+        self.assertTrue(sym.startswith("(kicad_symbol_lib"))
+        self.assertEqual(sym.count("("), sym.count(")"))       # balanced S-expr
+        self.assertEqual(sym.count("(pin "), 64)               # one pin per socket
+        self.assertIn("LQFP-64_10x10mm", sym)                  # stock footprint referenced
+        self.assertIn('name "VBAT_TGT"', sym)                  # pin 1 destination net
+        self.assertNotIn("00000000", sym)                      # coordinates rounded clean
+        self.assertEqual(auth.to_kicad_symbol(auth.build(self.conn, "LQFP100")).count("(pin "), 100)
+
+    # ── extraction-access breakout (Layer B, orthogonal to switching) ──────
+    @staticmethod
+    def _pos(data, n):
+        return next(p for p in data["positions"] if p["position"] == n)
+
+    def test_switch_counts_unchanged_by_breakout(self):
+        """The breakout layer derives from raw signals only; it must NOT move
+        the verified switch decision (Build Card 7B/7C ground truth)."""
+        self.assertEqual(auth.build(self.conn, "LQFP64")["rollup"]["must_switch_count"], 11)
+        self.assertEqual(auth.build(self.conn, "LQFP100")["rollup"]["must_switch_count"], 43)
+
+    def test_lqfp64_debug_breakout_positions(self):
+        """SWD/JTAG break out on the vault ground-truth sockets (Card 7B + 5E)."""
+        d = auth.build(self.conn, "LQFP64")
+        for pos, net in {46: "SWDIO_PARENT", 49: "SWCLK_PARENT", 55: "SWO_PARENT",
+                         50: "TDI_PARENT", 56: "NTRST_PARENT"}.items():
+            self.assertIn(net, self._pos(d, pos)["breakout"]["service_nets"],
+                          f"LQFP64 pin {pos} should break out {net}")
+
+    def test_lqfp100_jtag_positions(self):
+        """Card 5E: target PA15/PB4 = LQFP100 socket 77/90."""
+        d = auth.build(self.conn, "LQFP100")
+        self.assertIn("TDI_PARENT", self._pos(d, 77)["breakout"]["service_nets"])
+        self.assertIn("NTRST_PARENT", self._pos(d, 90)["breakout"]["service_nets"])
+
+    def test_coresight20_map_lqfp64(self):
+        """CoreSight-20 header pins resolve to the target sockets (Card 5E)."""
+        ea = auth.build(self.conn, "LQFP64")["extraction_access"]
+        cs = {c["hdr_pin"]: c for c in ea["coresight20"]}
+        self.assertEqual((cs[2]["net"], cs[2]["target_pos"]), ("SWDIO_PARENT", 46))
+        self.assertEqual((cs[4]["net"], cs[4]["target_pos"]), ("SWCLK_PARENT", 49))
+        self.assertEqual((cs[6]["net"], cs[6]["target_pos"]), ("SWO_PARENT", 55))
+        self.assertEqual((cs[8]["net"], cs[8]["target_pos"]), ("TDI_PARENT", 50))
+        self.assertEqual((cs[10]["net"], cs[10]["target_pos"]), ("SERVICE_NRST", 7))
+        self.assertEqual((cs[14]["net"], cs[14]["target_pos"]), ("NTRST_PARENT", 56))
+        self.assertIsNone(cs[7]["target_pos"])   # pin 7 = KEY, no net
+
+    def test_boot_uart_and_usb_dfu(self):
+        """AN2606 universal boot buses: USART1 (PA9/PA10, TX<->RX crossover) and
+        USB-DFU (PA11/PA12)."""
+        d = auth.build(self.conn, "LQFP64")
+        pa9 = next(p for p in d["positions"] if "PA9" in p["pin_names"])
+        pa10 = next(p for p in d["positions"] if "PA10" in p["pin_names"])
+        self.assertIn("UART_BOOT_RX", pa9["breakout"]["service_nets"])   # target TX
+        self.assertIn("UART_BOOT_TX", pa10["breakout"]["service_nets"])  # target RX
+        ea = d["extraction_access"]
+        self.assertIsNotNone(ea["bootloader_uart"]["tx_pos"])
+        self.assertIsNotNone(ea["usb_dfu"]["dp_pos"])
+        self.assertIsNotNone(ea["usb_dfu"]["dn_pos"])
+
+    def test_electrical_from_datasheets(self):
+        """Per-family I/O limits from the fetched ST datasheets (open Q#1 closed)."""
+        e = auth.build(self.conn, "LQFP64")["electrical"]
+        self.assertEqual(e["max_io_current_ma"], 25)        # ±25 mA uniform F0–F7
+        self.assertEqual(e["injection_current_ma"], 5)      # ±5 mA per pin
+        self.assertTrue(e["ft_5v_tolerant"])
+        self.assertIsNotNone(e["vdda_range_v"])
+        # total-I/O = ΣI_IO where explicit (F0/F3/F4/F7) else supply (F1/F2)
+        tot = e["total_io_current_ma"]
+        self.assertEqual(tot["STM32F0"], 80)
+        self.assertEqual(tot["STM32F1"], 150)
+        self.assertEqual(tot["STM32F4"], 120)   # ΣI_IO (the 240 was the *supply* total)
+        self.assertEqual(e["by_family"]["STM32F4"]["metric"], "sigma_io")
+        self.assertEqual(e["supply_total_ma"]["STM32F4"], 240)
+        self.assertIn("DS", e["by_family"]["STM32F7"]["ds"])   # carries a datasheet cite
+        self.assertEqual(auth.FAMILY_ELECTRICAL["STM32F7"]["vdd_v"], [1.7, 3.6])
+
+    def test_power_bootloader_and_f4_sublines(self):
+        """Phase A: FAMILY_POWER (VCAP/VBAT/VREF), exhaustive AN2606 bootloader,
+        and the verified F4 sub-line supply totals."""
+        e = auth.build(self.conn, "LQFP64")["electrical"]
+        # VCAP: F2/F4/F7 need it, F0/F1/F3 don't
+        self.assertTrue(e["vcap_required"])                      # F2/F4/F7 present
+        self.assertTrue(e["power"]["STM32F4"]["vcap"])
+        self.assertIn("2.2", e["power"]["STM32F4"]["vcap_value"])
+        self.assertFalse(e["power"]["STM32F0"]["vcap"])
+        self.assertEqual(e["vbat_range_v"], [1.65, 3.6])
+        self.assertIsNotNone(e["vref_range_v"])
+        # F4 sub-line supply totals, filtered to sub-lines PRESENT in the package
+        # (audit A1 review): LQFP64 carries F401 but not the F469 it never contains.
+        self.assertEqual(e["f4_subline_supply_ma"]["STM32F401"], 160)
+        self.assertNotIn("STM32F469", e["f4_subline_supply_ma"])   # no F469 in LQFP64
+        e100 = auth.build(self.conn, "LQFP100")["electrical"]
+        self.assertEqual(e100["f4_subline_supply_ma"]["STM32F469"], 290)   # F469 is in LQFP100
+        # exhaustive AN2606 bootloader: F7 has both CAN buses; F3 I2C3; F4 SPI
+        self.assertEqual(auth.BOOTLOADER_PINS["STM32F7"]["CAN"], {"PB5", "PB13", "PD0", "PD1"})
+        self.assertIn("PB5", auth.BOOTLOADER_PINS["STM32F3"]["I2C"])   # I2C3 PA8/PB5
+        self.assertIn("PA15", auth.BOOTLOADER_PINS["STM32F4"]["SPI"])  # SPI3 NSS
+
+    def test_card_materials_and_drift_gate(self):
+        """Phase B: the card passive BOM + the card-vs-authority drift-gate linter."""
+        a = auth.build(self.conn, "LQFP64")
+        cm = a["card_materials"]
+        self.assertEqual(cm["adg714_cells"], 2)                # 11 must-switch -> 2 cells
+        self.assertEqual(cm["vcap_required_families"], ["STM32F2", "STM32F4", "STM32F7"])
+        self.assertTrue(any("SPST" in i["part"] for i in cm["items"]))   # app does not name the part
+        self.assertTrue(any("2.2uF" in i["part"] for i in cm["items"]))    # VCAP caps
+        # drift gate: a correct card passes; the classic SWCLK/cell drift fails
+        good = auth.lint_card(a, {"must_switch_count": 11, "adg714_cells": 2, "swclk_pos": 49})
+        self.assertTrue(all(f["ok"] for f in good))
+        bad = auth.lint_card(a, {"swclk_pos": 76, "adg714_cells": 8})
+        self.assertFalse(any(f["ok"] for f in bad))
+        self.assertEqual({f["field"]: f["actual"] for f in bad}, {"swclk_pos": 49, "adg714_cells": 2})
+
+    def test_tab_detail_helpers(self):
+        """Phase C: the tab's pure detail-row + geometry helpers (skip if PyQt5
+        unavailable). The old HTML-export helpers (_summary_html/_pin_detail_html)
+        were deleted as dead code — the live All-Pins panel consumes _pin_detail_rows
+        directly, so that is what is exercised here."""
+        try:
+            import stm32_pins_tab as tab
+        except Exception as e:  # pragma: no cover
+            raise unittest.SkipTest(f"stm32_pins_tab (PyQt5) unavailable: {e}")
+        a = auth.build(self.conn, "LQFP64")
+        p46 = next(p for p in a["positions"] if p["position"] == 46)
+        rows46 = tab._pin_detail_rows(p46)
+        labels46 = [k for k, _ in rows46]
+        self.assertIn("Pin Names", labels46)         # Title-Case labels
+        self.assertIn("Category", labels46)
+        # redundant rows dropped (shown in the signal-path diagram, not the detail)
+        self.assertNotIn("adg714_source", labels46)
+        self.assertNotIn("Destination", labels46)
+        pa0 = next(p for p in a["positions"] if "PA0" in p["pin_names"])
+        fv_pa0 = dict(tab._pin_detail_rows(pa0)).get("5 V Tolerant", "")
+        self.assertEqual(fv_pa0, "Part-Dependent")   # Title-Case value
+        # pin-map geometry (shared by the Qt widget AND the SVG export)
+        g = tab.pin_map_geometry(a["positions"], 460, 460)
+        self.assertEqual(len(g["pins"]), 64)
+        self.assertEqual(len({p["side"] for p in g["pins"]}), 4)   # all 4 QFP sides used
+        self.assertTrue(all(len(p["rect"]) == 4 for p in g["pins"]))
+        self.assertEqual(tab.pin_map_svg(a, 400, 400).count("<rect") >= 64, True)
+
+    def test_five_v_tolerance_per_family(self):
+        """Per-pin 5V-tolerance from the datasheet I/O-structure column, incl. the
+        part-dependent analog pins (PA0 FT on F2/F4/F7, not on F0/F1/F3)."""
+        self.assertEqual(auth.FAMILY_NOT_5V["STM32F2"], {"PA4", "PA5"})
+        self.assertIn("PB10", auth.FAMILY_NOT_5V["STM32F3"])   # F3's larger TTa set
+        d = auth.build(self.conn, "LQFP64")
+
+        def fv(name):
+            p = next(x for x in d["positions"] if name in x["pin_names"])
+            return p["five_v"]
+
+        self.assertTrue(fv("PA13")["tolerant"])                # SWDIO, FT on all parts
+        self.assertTrue(all(fv("PA13")["by_family"].values()))
+        self.assertFalse(fv("PA4")["tolerant"])                # DAC/TTa, never 5V-tol
+        self.assertFalse(any(fv("PA4")["by_family"].values()))
+        pa0 = fv("PA0")                                        # family-dependent
+        self.assertFalse(pa0["tolerant"])                      # conservative
+        self.assertFalse(pa0["by_family"]["STM32F1"])
+        self.assertTrue(pa0["by_family"]["STM32F4"])
+        vbat = next(x for x in d["positions"] if x["position"] == 1)
+        self.assertIsNone(vbat["five_v"])                      # non-GPIO
+        summ = d["electrical"]["five_v_positions"]
+        self.assertEqual(summ["not_tolerant_any_part"], 2)     # PA4, PA5
+        self.assertGreater(summ["family_dependent"], 0)
+
+    def test_trace_captured_and_vssa_relabelled(self):
+        d = auth.build(self.conn, "LQFP64")
+        trace = d["extraction_access"]["trace_positions"]
+        self.assertTrue(trace, "LQFP64 should detect parallel-trace positions")
+        self.assertTrue(self._pos(d, trace[0])["tags"]["is_trace"])
+        # Analog ground routes to its own rail net, not GND (Card 7B: VSSA = 12).
+        a12 = self._pos(d, 12)["assignment"]
+        self.assertEqual(a12.get("net", a12.get("destination")), "VSSA_TGT")
+
+    # ── self-contained reporting layer (legible without the vault) ─────────
+    def test_category_lists_match_rollup(self):
+        a = auth.build(self.conn, "LQFP64")
+        cats = auth.category_lists(a)
+        r = a["rollup"]
+        self.assertEqual(len(cats["must_switch"]), r["must_switch_count"])
+        self.assertEqual(len(cats["osc_optional"]), r["osc_optional_count"])
+        self.assertEqual(len(cats["fixed"]), r["fixed_count"])
+        # power/analog/boot rails switch; the SWD sockets break out (not switched)
+        self.assertIn(1, cats["must_switch"])          # VBAT/VDD
+        self.assertIn(60, cats["must_switch"])         # BOOT0
+        self.assertNotIn(46, cats["must_switch"])      # SWDIO -> breakout, not switched
+        self.assertIn(46, cats["breakout"])
+        self.assertEqual(cats["five_v_never"], [20, 21])   # PA4, PA5
+
+    def test_switch_rationale(self):
+        a = auth.build(self.conn, "LQFP64")
+        self.assertIn("VBAT_TGT", auth.switch_rationale(self._pos(a, 1)))
+        self.assertIn("SERVICE_BOOT0", auth.switch_rationale(self._pos(a, 60)))
+        self.assertIn("crystal", auth.switch_rationale(self._pos(a, 5)))   # osc-optional
+        fixed = next(p for p in a["positions"] if p["switch_class"] == db.SWITCH_NONE)
+        self.assertEqual(auth.switch_rationale(fixed), "")                  # fixed = no why
+
+    def test_adg714_cell_map_symbol_names(self):
+        a = auth.build(self.conn, "LQFP64")
+        cm = auth.adg714_cell_map(a)
+        self.assertEqual(len(cm), a["rollup"]["cells_min"])   # 11 must-switch -> 2 cells
+        self.assertEqual((cm[0]["symbol"], cm[0]["footprint"]), ("ADG714BRUZ-REEL", "RU_24_ADI"))
+        for cell in cm:                                       # exact Sn/Dn terminal names
+            self.assertEqual(len(cell["switches"]), 8)
+            for i, sw in enumerate(cell["switches"], start=1):
+                self.assertEqual((sw["s_pin"], sw["d_pin"]), (f"S{i}", f"D{i}"))
+        sw1 = cm[0]["switches"][0]                            # cell1/ch1 = VBAT (pin 1)
+        self.assertEqual((sw1["position"], sw1["destination"]), (1, "VBAT_TGT"))
+        spares = [sw for cell in cm for sw in cell["switches"] if sw["spare"]]
+        self.assertEqual(len(spares), 2 * 8 - a["rollup"]["channel_count"])   # 16 - 11 = 5
+        # LQFP100 as built (Card 7C / spec locked 2026-06-30): one channel per
+        # non-IO role of every switched pin, paralleled to 59 channels / 8 cells;
+        # cells_min stays ceil(43/8) = 6.
+        lq100 = auth.build(self.conn, "LQFP100")
+        self.assertEqual(lq100["rollup"]["channel_count"], 59)
+        self.assertEqual(lq100["rollup"]["cells_min"], 6)
+        self.assertEqual(lq100["rollup"]["cells_as_built"], 8)
+        self.assertEqual(len(auth.adg714_cell_map(lq100)), 8)
+
+    def test_as_built_rail_multiset_matches_card_7c(self):
+        """The DB-derived LQFP100 channel map reproduces Card 7C's as-built rail
+        multiset count-for-count — the 'derived, never hand-authored' goal. Spec
+        updates: rev 2 (2026-07-05) VREF-/VREFSD- ground to GND (VREF_TGT 6->5,
+        GND 12->13); rev 3 VCAP_DSI splits onto its own node (pin 56, VCAP_NODE 6->5);
+        rev 4 VDD12DSI (pin 62, a 1.2V DSI supply) routes to VCAP_DSI_NODE not the 3.3V
+        VTARGET rail (VTARGET 15->14, VCAP_DSI_NODE 1->2)."""
+        from collections import Counter
+        a = auth.build(self.conn, "LQFP100")
+        rails = Counter()
+        for p in a["positions"]:
+            for ch in p["assignment"].get("channels", []):
+                rails[ch["destination"]] += 1
+        self.assertEqual(dict(rails), {
+            "VTARGET": 14, "GND": 13, "VREF_TGT": 5, "VCAP_NODE": 5, "VCAP_DSI_NODE": 2,
+            "SERVICE_OSC_IN": 4, "SERVICE_OSC_OUT": 4, "VSSA_TGT": 3,
+            "VDDA_TGT": 3, "VBAT_TGT": 2, "SERVICE_NRST": 2, "SERVICE_BOOT0": 2})
+        # LQFP64 stays the Card 7B single-branch map, byte-stable: 30/31/47 on the
+        # VCAP node (an open channel already serves their VSS variant via the lane).
+        a64 = auth.build(self.conn, "LQFP64")
+        w64 = auth.card_wiring(a64)
+        self.assertEqual([(c["socket_pin"], c["rail"]) for c in w64["channels"]], [
+            (1, "VBAT_TGT"), (13, "VDDA_TGT"), (17, "VREF_TGT"), (18, "GND"),
+            (19, "VTARGET"), (30, "VCAP_NODE"), (31, "VCAP_NODE"), (33, "VREF_TGT"),
+            (47, "VCAP_NODE"), (48, "VTARGET"), (60, "SERVICE_BOOT0")])
+
+    def test_osc_sides_and_pin100_invariant(self):
+        """Oscillator destinations follow the pin's HSE side (split service nets),
+        and LQFP100 pin 100 is hardwired VTARGET — never a switch channel (LOCKED)."""
+        a64 = auth.build(self.conn, "LQFP64")
+        self.assertEqual(self._pos(a64, 5)["assignment"]["destination"], "SERVICE_OSC_IN")
+        self.assertEqual(self._pos(a64, 6)["assignment"]["destination"], "SERVICE_OSC_OUT")
+        self.assertFalse(self._pos(a64, 5)["assignment"].get("channels"))  # 7B: osc unwired
+        a100 = auth.build(self.conn, "LQFP100")
+        p100 = self._pos(a100, 100)
+        self.assertEqual(p100["switch_class"], db.SWITCH_NONE)
+        self.assertFalse(p100["assignment"].get("channels"))
+        self.assertEqual(p100["assignment"].get("net"), "VTARGET")
+        # osc pins carry BOTH service nets as-built (7C: 4x IN + 4x OUT), one-hot
+        osc = self._pos(a100, 12)
+        dests = {c["destination"] for c in osc["assignment"]["channels"]}
+        self.assertEqual(dests, {"SERVICE_OSC_IN", "SERVICE_OSC_OUT"})
+        self.assertTrue(all(c["exclusive_group"] == 12 for c in osc["assignment"]["channels"]))
+
+    def test_switchmap_carries_vssa_spares_and_lanes(self):
+        """The firmware exports carry the VSSA_TGT rail (Connector Contract contact 24),
+        the spare channels, and per-PIN lane numbering (001..043 must, 044..046 osc)."""
+        a = auth.build(self.conn, "LQFP100")
+        hdr = auth.to_switchmap_c(a)
+        self.assertIn("RAIL_VSSA_TGT", hdr)
+        self.assertIn("RAIL_SERVICE_OSC_OUT", hdr)
+        self.assertIn("#define NETDECK_LQFP100_CELLS 8", hdr)
+        self.assertIn("#define NETDECK_LQFP100_CHANNELS_USED 59", hdr)
+        self.assertIn("#define NETDECK_LQFP100_CHANNELS_SPARE 5", hdr)
+        w = auth.card_wiring(a)
+        self.assertEqual(len(w["spare_channels"]), 5)
+        self.assertTrue(w["exclusive_groups"])                    # one-hot groups present
+        # 7C lane policy: every pin owns its pin-numbered lane on the frozen
+        # Connector Contract rows (001..060 -> LA even 2N; 061..120 -> RA odd)
+        self.assertEqual(w["lane_policy"], "by_pin")
+        osc12 = next(c for c in w["channels"] if c["socket_pin"] == 12)
+        self.assertEqual(osc12["card_lane"], "CARD_LANE_012")
+        self.assertEqual(osc12["lane_contact"], "LA-24")          # even row, 2 x 12
+        self.assertEqual(osc12["cell_refdes"], "U_SW_L100_2")     # ascending-pin packing
+        self.assertEqual(w["socket_refdes"], "XU_TGT100_1")
+        self.assertEqual(w["edge_refdes"], "J_EDGE_L100_1")
+        # a pin's branches share ONE lane
+        p19 = {c["card_lane"] for c in w["channels"] if c["socket_pin"] == 19}
+        self.assertEqual(p19, {"CARD_LANE_019"})
+        # plain GPIO on 7C rides its numbered lane through the 33 R series R
+        sc = {c["pin"]: c for c in auth.socket_connections(a)}
+        gpio = sc[15]                                             # PC0 — plain IO
+        self.assertEqual((gpio["kind"], gpio["dest"], gpio["contact"]),
+                         ("resistor", "CARD_LANE_015", "LA-30"))
+        # 7B keeps its own card policy: sequential switch-only lanes (pin 13 ->
+        # CARD_LANE_002 per the build card) and DIRECT non-switched routes
+        a64 = auth.build(self.conn, "LQFP64")
+        w64 = auth.card_wiring(a64)
+        self.assertEqual(w64["lane_policy"], "sequential")
+        c13 = next(c for c in w64["channels"] if c["socket_pin"] == 13)
+        self.assertEqual(c13["card_lane"], "CARD_LANE_002")
+        self.assertEqual(c13["cell_refdes"], "U_SW_64_1")
+        sc64 = {c["pin"]: c for c in auth.socket_connections(a64)}
+        self.assertEqual(sc64[2]["kind"], "direct")               # no series R on 7B
+        self.assertEqual(sc64[2]["dest"], "CARD_LANE")
+
+    def test_claims_files_and_drift_gate(self):
+        """The checked-in claims files pass the drift gate, and a wrong claim FAILS
+        it — the enforcement half of the pinout-authority spec."""
+        claims_dir = Path(__file__).resolve().parent.parent / "tools" / "claims"
+        files = sorted(claims_dir.glob("claims_*.yaml"))
+        self.assertEqual(len(files), 2)
+        ok, lines, drifted = auth.run_lint(self.conn, files)
+        self.assertTrue(ok, "\n".join(lines))
+        self.assertEqual(drifted, set())                           # nothing drifts on the good set
+        self.assertTrue(any("adg714_cells: claimed 8, actual 8" in ln for ln in lines))
+        # a deliberately wrong claim must be caught
+        bad = Path(tempfile.mkdtemp()) / "claims_bad.yaml"
+        bad.write_text("package: LQFP100\nclaims:\n  adg714_cells: 6\n", encoding="utf-8")
+        ok2, lines2, drifted2 = auth.run_lint(self.conn, [bad])
+        self.assertFalse(ok2)
+        self.assertTrue(any("DRIFT" in ln for ln in lines2))
+        # the drifted package is surfaced structurally, not by re-parsing the log
+        self.assertEqual(drifted2, {"LQFP100"})
+
+    def test_run_lint_drifted_set_matches_no_re_parse(self):
+        """run_lint returns the drifted-package set from the structured findings, so
+        main() no longer text-parses the printed line to learn what drifted. An unknown
+        claim field (ok=False, but the line reads OK/DRIFT via a different field) must
+        still land the package in the drifted set."""
+        d = Path(tempfile.mkdtemp())
+        typo = d / "claims_typo.yaml"
+        # an unrecognized key is a FAILURE (A7); it must mark LQFP64 as drifted
+        typo.write_text("package: LQFP64\nclaims:\n  adg714_celz: 8\n", encoding="utf-8")
+        ok, lines, drifted = auth.run_lint(self.conn, [typo])
+        self.assertFalse(ok)
+        self.assertEqual(drifted, {"LQFP64"})
+        # the returned set and the DRIFT log lines agree for every package
+        drift_lines = {ln.split()[0] for ln in lines if len(ln.split()) > 1 and ln.split()[1] == "DRIFT"}
+        self.assertEqual(drift_lines, drifted)
+
+    def test_lane_contact_out_of_range_raises(self):
+        """The Connector Contract Rev B has exactly 120 lane rows. A lane number
+        outside 1..120 has no receptacle contact — lane_contact must fail loudly
+        rather than silently return '' (a future >120-pin by_pin package footgun)."""
+        self.assertEqual(auth.lane_contact(1), "LA-2")
+        self.assertEqual(auth.lane_contact(60), "LA-120")
+        self.assertEqual(auth.lane_contact(61), "RA-1")
+        self.assertEqual(auth.lane_contact(120), "RA-119")
+        for bad in (0, -1, 121, 200):
+            with self.assertRaises(ValueError):
+                auth.lane_contact(bad)
+
+    def test_locked_constants_and_provenance(self):
+        """Pin the vault-locked wiring constants and the manifest's DB provenance."""
+        self.assertEqual(auth.ADG714_TERMINAL_PIN["S1"], 5)
+        self.assertEqual(auth.ADG714_TERMINAL_PIN["D1"], 6)
+        self.assertEqual(auth.ADG714_TERMINAL_PIN["D5"], 13)      # non-sequential half
+        self.assertEqual(auth.ADG714_TERMINAL_PIN["S5"], 14)
+        self.assertEqual(auth.ADG714_TERMINAL_PIN["S8"], 20)
+        self.assertEqual(auth.RAIL_CONTACT["VBAT_TGT"], ["LA-33"])
+        self.assertEqual(auth.RAIL_CONTACT["VDDA_TGT"], ["RA-20"])
+        self.assertEqual(auth.RAIL_CONTACT["VREF_TGT"], ["RA-22"])
+        self.assertEqual(auth.RAIL_CONTACT["VSSA_TGT"], ["RA-24"])
+        self.assertEqual(auth.RAIL_CONTACT["VTARGET"], ["RA-16", "RA-18"])
+        self.assertEqual(auth.RAIL_CONTACT["SERVICE_OSC_IN"], ["RA-10"])
+        self.assertEqual(auth.RAIL_CONTACT["SERVICE_OSC_OUT"], ["RA-12"])
+        bus = {s: (p, c) for s, p, c, _ in auth.ADG714_BUS}
+        self.assertEqual(bus["SCLK"], (1, "LA-9"))
+        self.assertEqual(bus["DIN"], (3, "LA-11"))
+        self.assertEqual(bus["DOUT"], (22, "LA-13"))
+        a = auth.build(self.conn, "LQFP64")
+        m = a["manifest"]
+        self.assertTrue(m["db_imported_at"])                      # DB origin + rev (spec)
+        self.assertTrue(m["db_source_path"])
+        self.assertEqual(m["channel_policy"], "dominant")
+        self.assertEqual(a["schema_version"], 4)
+        # files carry electrical once, top-level only (no 100x duplication)
+        slim = auth.serializable(a)
+        self.assertNotIn("electrical", slim["positions"][0])
+        self.assertIn("electrical", slim)
+
+    def test_csv_and_markdown_export(self):
+        a = auth.build(self.conn, "LQFP64")
+        lines = auth.to_csv(a).splitlines()
+        self.assertEqual(lines[0].split(",")[0], "position")
+        self.assertIn("why", lines[0])
+        self.assertEqual(len(lines) - 1, len(a["positions"]))     # one row per pin
+        self.assertTrue(any(",S1,D1," in ln for ln in lines))     # real ADG714 terminals
+        md = auth.to_markdown(a)
+        self.assertIn("ADG714BRUZ-REEL", md)
+        self.assertIn(f"Must-switch ({a['rollup']['must_switch_count']})", md)
+        self.assertIn("| SW1 | S1/D1 |", md)                      # cell-map table
+        self.assertIn("VBAT_TGT", md)
+
+    def test_card_wiring_switchmap(self):
+        """Ultra-specific terminal wiring + firmware switch-map, mapped onto the vault's
+        Connector Contract (IC51 ZIF socket, QSH/QTH contacts, ADG714 S/D pins)."""
+        a = auth.build(self.conn, "LQFP64")
+        w = auth.card_wiring(a)
+        self.assertEqual(len(w["channels"]), 11)                 # matches the vault card
+        self.assertEqual(w["zif_socket"], "Yamaichi IC51-0644-807")
+        c1 = w["channels"][0]                                    # cell 1 ch 1 = VBAT
+        self.assertEqual((c1["cell"], c1["channel"], c1["socket_pin"], c1["rail"]),
+                         (1, 1, 1, "VBAT_TGT"))
+        self.assertEqual((c1["s_pin"], c1["s_pin_num"], c1["d_pin"], c1["d_pin_num"]),
+                         ("S1", 5, "D1", 6))
+        self.assertEqual(c1["connector_contacts"], ["LA-33"])     # left connector, contact 33
+        self.assertEqual(c1["card_lane"], "CARD_LANE_001")
+        self.assertEqual((w["daisy_chain"]["head_din_contact"],
+                          w["daisy_chain"]["tail_dout_contact"]), ("LA-11", "LA-13"))
+        json.loads(auth.to_switchmap_json(a))                    # valid JSON
+        self.assertIn("NETDECK_LQFP64_CHANNELS", auth.to_switchmap_c(a))
+        self.assertIn("via Samtec QTH", auth.to_wiring_md(a))
+
+
+    def test_pin_chain_source_drain(self):
+        """The rebuilt Connections view's structured signal chain (Source/Drain ledger):
+        exact ADG714 terminals + the net on each side, the ZIF/connector/series
+        components spelled out, the GND ground-plane special-case, and the per-card
+        gating of the 33 Ohm lane series resistor (present on 7C, absent on 7B)."""
+        try:
+            import stm32_pins_tab as tab
+        except Exception as e:  # pragma: no cover
+            raise unittest.SkipTest(f"stm32_pins_tab (PyQt5) unavailable: {e}")
+
+        # LQFP64 (card 7B): switched pin has a switch branch (S/D terminals, rail via
+        # the receptacle) PLUS a DIRECT default-lane branch with NO series resistor.
+        a64 = auth.build(self.conn, "LQFP64")
+        cw64 = auth.card_wiring(a64)
+        ch = tab._pin_chain(a64, 1, cw64)                         # VBAT, must-switch
+        self.assertEqual(ch["kind"], "switch")
+        sw = next(r for r in ch["rows"] if r["kind"] == "switch")
+        self.assertTrue(sw["s_term"].startswith("S") and "Pin" in sw["s_term"])
+        self.assertTrue(sw["d_term"].startswith("D") and "Pin" in sw["d_term"])
+        self.assertIn("J_SOCKET64_1 Pin 1", sw["source_net"])     # socket pin on the source side
+        self.assertIn("VBAT", sw["source_net"])
+        self.assertEqual(sw["source_via"], cw64["zif_socket"])    # Yamaichi ZIF (source component)
+        self.assertIn("VBAT_TARGET", sw["drain_net"])             # display-expanded rail
+        self.assertIn("Samtec", sw["drain_via"])                  # connector (drain component)
+        lane = next(r for r in ch["rows"] if r["kind"] == "lane")
+        self.assertIsNone(lane["series"])                         # 7B: no lane series resistor
+        self.assertIn("CARD_LANE_001", lane["drain_net"])
+
+        # LQFP100 (card 7C): the default lane rides a 33 Ohm R_IO_LANE series resistor,
+        # and a GND-routed channel delivers to the ground plane, not a fake contact.
+        a100 = auth.build(self.conn, "LQFP100")
+        cw100 = auth.card_wiring(a100)
+        lane100 = next(r for r in tab._pin_chain(a100, 2, cw100)["rows"]
+                       if r["kind"] == "lane")
+        self.assertIsNotNone(lane100["series"])
+        self.assertIn("R_IO_LANE", lane100["series"])
+        self.assertIn("33", lane100["series"])
+        gnd_chan = next((c for c in cw100["channels"] if c["rail"] == "GND"), None)
+        self.assertIsNotNone(gnd_chan)                            # 7C grounds some pins
+        gr = next(r for r in tab._pin_chain(a100, gnd_chan["socket_pin"], cw100)["rows"]
+                  if r["kind"] == "switch" and r["drain_net"] == "GND")
+        self.assertIn("Ground Plane", gr["drain_via"])           # ground plane, not a contact
+        self.assertEqual(gr["source_via"], cw100["zif_socket"])  # LQFP100 Yamaichi ZIF
+
+
+class FabricLogicTests(unittest.TestCase):
+    """The pre-handoff logic additions: fabric DRC, the semantic authority diff,
+    the current-budget capacities, and the multi-package unlock sweep."""
+
+    @classmethod
+    def setUpClass(cls):
+        src = db.default_cubemx_source()
+        if not src:
+            raise unittest.SkipTest("CubeMX XML source not found")
+        import tempfile
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.dbp = Path(cls._tmp.name) / "t.sqlite"
+        db.build_database(Path(src), cls.dbp)
+        cls.conn = db.connect(cls.dbp)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.conn.close()
+        cls._tmp.cleanup()
+
+    def test_fabric_drc_green_on_shipped_packages(self):
+        for pkg in ("LQFP64", "LQFP100"):
+            a = auth.build(self.conn, pkg)
+            findings = auth.fabric_drc(a)
+            bad = [f for f in findings if not f["ok"]]
+            self.assertEqual(bad, [], f"{pkg} DRC: {bad}")
+            self.assertTrue(auth.fabric_drc_ok(findings))
+
+    def test_fabric_drc_detects_corruption(self):
+        import copy
+        a = copy.deepcopy(auth.build(self.conn, "LQFP64"))
+        sw = next(p for p in a["positions"] if p["assignment"].get("channels"))
+        # duplicate rail inside one pin's exclusive group + an unknown destination
+        ch = dict(sw["assignment"]["channels"][0])
+        ch["destination"] = "NOT_A_NET"
+        sw["assignment"]["channels"].append(ch)
+        findings = {f["rule"]: f for f in auth.fabric_drc(a)}
+        self.assertFalse(findings["destinations_known"]["ok"])
+        self.assertFalse(findings["channel_count_matches_rollup"]["ok"])
+        self.assertFalse(auth.fabric_drc_ok(findings.values()))
+
+    def test_authority_diff_reports_route_moves(self):
+        import copy
+        a = auth.build(self.conn, "LQFP64")
+        self.assertEqual(auth.authority_diff(a, a), [])       # identical -> empty
+        b = copy.deepcopy(a)
+        sw = next(p for p in b["positions"] if p["assignment"].get("channels"))
+        sw["assignment"]["channels"][0]["destination"] = "GND"
+        lines = auth.authority_diff(a, b)
+        self.assertTrue(any(f"pin {sw['position']} route:" in ln for ln in lines), lines)
+
+    def test_current_budget_counts_both_paths(self):
+        """current_budget accounts for BOTH direct socket pins and switch channels,
+        references the real per-family device supply draw (not a flat guess), and does
+        NOT false-flag VTARGET/GND when a direct pin feeds them. (Audit A1.)"""
+        a = auth.build(self.conn, "LQFP100")
+        cb = a["card_materials"]["current_budget"]
+        self.assertEqual(cb["per_channel_ma"], auth.ADG714_CHANNEL_MA)
+        # switch-channel counts match the actual fabric, capacity = channels x rating
+        chans = {}
+        direct = {}
+        for p in a["positions"]:
+            cs = p["assignment"].get("channels") or []
+            if cs:
+                for c in cs:
+                    chans[c["destination"]] = chans.get(c["destination"], 0) + 1
+            else:
+                net = p["assignment"].get("destination") or p["assignment"].get("net")
+                if net and net != db.TARGET_NET[db.ID_IO]:
+                    direct[net] = direct.get(net, 0) + 1
+        for rail, r in cb["rails"].items():
+            self.assertEqual(r["switch_channels"], chans.get(rail, 0))
+            self.assertEqual(r["direct_pins"], direct.get(rail, 0))
+            self.assertEqual(r["switched_capacity_ma"], r["switch_channels"] * auth.ADG714_CHANNEL_MA)
+        # real datasheet draw, not the flat fallback
+        self.assertEqual(cb["draw_reference_source"], "datasheet worst-family supply total")
+        self.assertEqual(cb["draw_reference_ma"], max(cb["per_family_supply_ma"].values()))
+        # VTARGET has a direct pin here, so it must NOT be flagged as a brownout
+        self.assertGreaterEqual(cb["rails"]["VTARGET"]["direct_pins"], 1)
+        self.assertFalse([f for f in cb["findings"] if f.startswith("VTARGET")])
+
+    def test_current_budget_flags_per_part_ground_overcurrent(self):
+        """The real per-part hazard the union count missed (audit A1 review): LQFP100
+        GND has NO direct pin, so a socketed part grounds only its own 3-6 VSS pins
+        through ~30 mA channels — under its own return draw. Must be flagged; LQFP64
+        (GND has a direct pin) must NOT be."""
+        cb100 = auth.build(self.conn, "LQFP100")["card_materials"]["current_budget"]
+        gnd = [f for f in cb100["findings"] if f.startswith("GND")]
+        self.assertTrue(gnd, cb100["findings"])
+        pp = cb100["per_part_supply_delivery"]["GND"]
+        self.assertLess(pp["worst_capacity_ma"], pp["worst_part_draw_ma"])
+        self.assertGreater(pp["failing_parts"], 0)
+        # LQFP64 GND is copper-fed (has a direct pin) -> no false brownout
+        cb64 = auth.build(self.conn, "LQFP64")["card_materials"]["current_budget"]
+        self.assertEqual(cb64["findings"], [])
+        # and it no longer cites an F469 draw it does not contain
+        self.assertNotEqual(cb64["draw_reference_ma"], 290)
+
+    def test_leaded_packages_build_and_pass_drc(self):
+        """The unlock sweep: every leaded/QFN package in the DB builds a fabric
+        that passes the structural DRC (the 2-package limit was only hardcoding)."""
+        pkgs = [p for p in db.list_packages(self.conn)
+                if p.startswith(("LQFP", "UFQFPN", "VFQFPN", "TSSOP"))]
+        self.assertGreaterEqual(len(pkgs), 8, pkgs)
+        for pkg in pkgs:
+            a = auth.build(self.conn, pkg)
+            bad = [f for f in auth.fabric_drc(a) if not f["ok"]]
+            self.assertEqual(bad, [], f"{pkg}: {bad}")
+
+    def test_stale_database_refused(self):
+        """A DB stamped by an older classifier must be refused by build()."""
+        self.conn.execute("UPDATE meta SET value='1' WHERE key='classifier_rev'")
+        try:
+            with self.assertRaises(ValueError):
+                auth.build(self.conn, "LQFP64")
+        finally:
+            self.conn.execute("UPDATE meta SET value=? WHERE key='classifier_rev'",
+                              (str(db.CLASSIFIER_REV),))
+
+    def test_vcap_dsi_split_from_core(self):
+        """A4: VCAP_DSI routes to its own node, never shared with core VCAP, and no
+        single pin ties both regulator outputs together."""
+        a = auth.build(self.conn, "LQFP100")
+        dsi_pins, core_pins = [], []
+        for p in a["positions"]:
+            dests = {c["destination"] for c in (p["assignment"].get("channels") or [])}
+            dests |= {p["assignment"].get("net"), p["assignment"].get("destination")}
+            if "VCAP_DSI_NODE" in dests:
+                dsi_pins.append(p["position"])
+            if "VCAP_NODE" in dests:
+                core_pins.append(p["position"])
+            self.assertFalse("VCAP_NODE" in dests and "VCAP_DSI_NODE" in dests,
+                             f"pin {p['position']} ties both VCAP regulators")
+        self.assertTrue(dsi_pins, "expected a VCAP_DSI position on LQFP100 (F469/F479)")
+        self.assertFalse(set(dsi_pins) & set(core_pins))
+
+    def test_minority_rail_conflicts_surfaced(self):
+        """A3: dominant-policy dropped rails are no longer silent — they appear in
+        fabric_warnings and a lint claim can pin the acknowledged set."""
+        a = auth.build(self.conn, "LQFP64")
+        mc = a["fabric_warnings"]["minority_rail_conflicts"]
+        by_pos = {c["position"]: c for c in mc}
+        self.assertIn(1, by_pos)                       # pin 1: VBAT on many, VDD on 3
+        self.assertEqual(by_pos[1]["routed_to"], "VBAT_TGT")
+        self.assertTrue(any(d["net"] == "VTARGET" for d in by_pos[1]["dropped"]))
+        # a claim acknowledging the exact set passes; a wrong set drifts
+        good = auth.lint_card(a, {"minority_conflicts": sorted(by_pos)})
+        self.assertTrue(all(f["ok"] for f in good), good)
+        bad = auth.lint_card(a, {"minority_conflicts": [999]})
+        self.assertFalse(all(f["ok"] for f in bad))
+
+    def test_boot1_strap_modeled(self):
+        """A5: BOOT1 (PB2) is surfaced as a strap for F1/F2/F4 so the operator can
+        actually reach the ROM bootloader."""
+        bs = auth.build(self.conn, "LQFP64")["extraction_access"]["boot_straps"]
+        self.assertEqual(bs["boot0"]["level_for_bootloader"], "high")
+        self.assertEqual(bs["boot1"]["pin"], "PB2")
+        self.assertEqual(bs["boot1"]["level_for_bootloader"], "low")
+        self.assertTrue(bs["boot1"]["positions"], "expected a PB2 boot-strap position")
+
+    def test_socket_symbol_validates(self):
+        """A6: unlocked packages now carry a real footprint and validate; a package
+        with no mapped footprint is caught, not silently shipped empty."""
+        for pkg in ("LQFP64", "LQFP100", "LQFP144", "TSSOP20"):
+            if pkg not in db.list_packages(self.conn):
+                continue
+            a = auth.build(self.conn, pkg)
+            bad = [f for f in auth.validate_socket_symbol(a) if not f["ok"]]
+            self.assertEqual(bad, [], f"{pkg}: {bad}")
+        # a package with no footprint mapping fails the footprint rule
+        a = auth.build(self.conn, "LQFP64")
+        saved = dict(auth._KICAD_FOOTPRINT)
+        try:
+            auth._KICAD_FOOTPRINT.pop("LQFP64", None)
+            findings = {f["rule"]: f for f in auth.validate_socket_symbol(a)}
+            self.assertFalse(findings["footprint_mapped"]["ok"])
+        finally:
+            auth._KICAD_FOOTPRINT.clear()
+            auth._KICAD_FOOTPRINT.update(saved)
+
+    def test_unknown_claim_field_fails(self):
+        """A7: an unrecognized claim key fails the gate instead of silently passing."""
+        a = auth.build(self.conn, "LQFP64")
+        findings = auth.lint_card(a, {"cells_as_built_typo": 2})
+        self.assertEqual(len(findings), 1)
+        self.assertIs(findings[0]["ok"], False)
+
+    def test_source_digest_present(self):
+        """A8: the DB carries a CubeMX content hash so snapshots are distinguishable."""
+        sd = db.source_digest(self.conn)
+        self.assertTrue(sd["sha256"] and len(sd["sha256"]) == 64)
+        self.assertGreater(sd["file_count"], 0)
+        self.assertEqual(
+            auth.build(self.conn, "LQFP64")["manifest"]["db_source_sha256"], sd["sha256"])
+
+    def test_cli_gates_before_write(self):
+        """A2: the headless CLI writes NOTHING when the drift gate fails."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            claims = Path(td) / "bad.yaml"
+            claims.write_text("package: LQFP64\nclaims:\n  positions_total: 999\n",
+                              encoding="utf-8")
+            out = Path(td) / "out"
+            out.mkdir()
+            rc = auth.main(["--db", str(self.dbp), "--out", str(out),
+                            "--packages", "LQFP64", "--lint", str(claims)])
+            self.assertEqual(rc, 1)
+            self.assertEqual(list(out.iterdir()), [], "files were written despite drift")
+
+    def test_no_spurious_dsi_cap_on_non_dsi_package(self):
+        """A4 review: a package with no DSI regulator must NOT list a C_VCAP_DSI cap
+        (the bare-generator bug listed it on every card)."""
+        refs64 = [it["ref"] for it in auth.build(self.conn, "LQFP64")["card_materials"]["items"]]
+        self.assertNotIn("C_VCAP_DSI", refs64)
+        refs100 = [it["ref"] for it in auth.build(self.conn, "LQFP100")["card_materials"]["items"]]
+        self.assertIn("C_VCAP_DSI", refs100)               # LQFP100 genuinely has VCAP_DSI
+
+    def test_vdd12dsi_off_vtarget(self):
+        """A4 review: VDD12DSI (1.2V DSI supply) must never route to the 3.3V VTARGET
+        rail. LQFP100 pin 62 is the canonical case."""
+        for pkg in ("LQFP100", "LQFP176", "LQFP208"):
+            if pkg not in db.list_packages(self.conn):
+                continue
+            for p in auth.build(self.conn, pkg)["positions"]:
+                if any("VDD12DSI" in n for n in p["pin_names"]):
+                    dests = {c["destination"] for c in (p["assignment"].get("channels") or [])}
+                    dests |= {p["assignment"].get("net"), p["assignment"].get("destination")}
+                    self.assertNotIn("VTARGET", dests, f"{pkg} pin {p['position']} VDD12DSI on VTARGET")
+                    self.assertIn("VCAP_DSI_NODE", dests)
+
+    def test_cli_per_package_gate(self):
+        """A2/A6 review: an unmapped package (no footprint) must NOT block the
+        canonical package's exports — the good one writes, the bad one is skipped,
+        exit code is nonzero."""
+        import tempfile
+        qfn = next((p for p in db.list_packages(self.conn)
+                    if p.startswith(("UFQFPN", "VFQFPN", "VQFPN"))), None)
+        if qfn is None:
+            raise unittest.SkipTest("no QFN package in DB")
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            rc = auth.main(["--db", str(self.dbp), "--out", str(out),
+                            "--packages", f"LQFP64,{qfn}"])
+            self.assertEqual(rc, 1)                          # a package failed
+            written = {f.name for f in out.iterdir()}
+            self.assertTrue(any("LQFP64" in n for n in written), "canonical package was blocked")
+            self.assertFalse(any(qfn in n for n in written), "unmapped package was written")
+
+    def test_resolve_part_single_view(self):
+        """F2: a real ordering part number resolves to its exact per-pin story."""
+        r = auth.resolve_part(self.conn, "STM32F407VGT6")
+        self.assertIsNotNone(r)
+        self.assertEqual(r["package"], "LQFP100")
+        self.assertEqual(r["line"], "STM32F407/417")
+        self.assertEqual(len(r["pins"]), 100)
+        self.assertTrue(r["close_switches"])
+        for c in r["close_switches"]:                       # each is a real channel to a rail
+            self.assertIn("cell", c)
+            self.assertIn("rail", c)
+        vdd = [p for p in r["pins"] if p["name"] == "VDD"]  # VDD -> VTARGET, VSS -> GND
+        self.assertTrue(vdd and all(p["dest"] == "VTARGET" for p in vdd))
+        self.assertTrue(all(p["dest"] == "GND" for p in r["pins"] if p["name"] == "VSS"))
+        self.assertIsNotNone(auth.resolve_part(self.conn, "stm32f103c8t6"))   # lowercase ok
+        self.assertIsNone(auth.resolve_part(self.conn, "NOTAPART"))
+
+    def test_card_bom_is_orderable(self):
+        """F6: the card BOM lists the real active/connector parts with MPNs plus the
+        passives — not just the passive guide."""
+        bom = auth.build(self.conn, "LQFP100")["card_bom"]
+        by_mpn = {r["mpn"] for r in bom["rows"]}
+        self.assertIn("ADG714BRUZ-REEL", by_mpn)                 # switch MPN present
+        self.assertTrue(any("Yamaichi" in r["mpn"] for r in bom["rows"]))   # socket
+        self.assertTrue(any("Samtec" in r["mpn"] for r in bom["rows"]))     # connector
+        # ADG714 qty == cells as built; series resistors present on 7C
+        adg = next(r for r in bom["rows"] if r["mpn"] == "ADG714BRUZ-REEL")
+        self.assertEqual(adg["qty"], auth.build(self.conn, "LQFP100")["rollup"]["cells_as_built"])
+        self.assertTrue(any("series" in r["role"].lower() for r in bom["rows"]))
+        self.assertIn("Refdes,Part,MPN,Qty", auth.to_card_bom_csv(auth.build(self.conn, "LQFP100")))
+
+    def test_kicad_netlist_wellformed(self):
+        """KiCad: the card netlist is a balanced s-expression with the socket, every
+        ADG714 cell, the edge connector, and the rail + control-bus nets."""
+        import re as _re
+        for pkg in ("LQFP64", "LQFP100"):
+            net = auth.to_kicad_netlist(auth.build(self.conn, pkg))
+            self.assertEqual(net.count("("), net.count(")"))     # balanced
+            refs = _re.findall(r'\(comp \(ref "([^"]+)"', net)
+            names = _re.findall(r'\(net \(code "\d+"\) \(name "([^"]+)"', net)
+            self.assertTrue(any("SOCKET" in v for v in
+                                _re.findall(r'\(comp \(ref "[^"]+"\) \(value "([^"]+)"', net)))
+            self.assertTrue(any("ADG714" in v for v in
+                                _re.findall(r'\(value "([^"]+)"', net)))
+            for rail in ("VTARGET", "GND", "SPI_SCLK", "SPI_DIN", "SPI_DOUT"):
+                self.assertIn(rail, names, f"{pkg} missing net {rail}")
+            # daisy chain: N cells -> N-1 chain links
+            n_cells = len([r for r in refs if r.startswith("U_SW")])
+            n_chain = len([n for n in names if n.startswith("SPI_CHAIN")])
+            self.assertEqual(n_chain, max(0, n_cells - 1))
+
+    def test_netlist_service_nets_tied_to_edge_connector(self):
+        """Regression (audit: KiCad netlist leaves debug/boot/USB as floating
+        single-node nets). Every service net that reaches a socket pin must ALSO
+        carry its frozen edge-connector contact, so the .net imports as a real
+        two-ended net that can be diffed against a schematic — not a floating
+        single-node net. Nets shared with RAIL_CONTACT must not be double-noded."""
+        import re as _re
+
+        def net_nodes(text):
+            out = {}
+            for block in _re.split(r"(?=\(net \(code)", text):
+                mn = _re.search(r'\(name "([^"]+)"\)', block)
+                if mn:
+                    out[mn.group(1)] = _re.findall(
+                        r'\(node \(ref "([^"]+)"\) \(pin "([^"]+)"\)', block)
+            return out
+
+        edge_only = {n for n in auth.SERVICE_CONTACT if n not in auth.RAIL_CONTACT}
+        self.assertTrue(edge_only)   # SWD/JTAG/UART/USB are edge-only service nets
+        for pkg in ("LQFP64", "LQFP100"):
+            data = auth.build(self.conn, pkg)
+            net = auth.to_kicad_netlist(data)
+            nodes = net_nodes(net)
+            # every service net that a socket pin breaks out to must be present and
+            # have BOTH a socket node and its edge-connector node (>= 2 nodes)
+            socket_svc = {c["dest"] for c in auth.socket_connections(data)
+                          if c["dest"] in edge_only and c["kind"] in ("direct", "switch")}
+            self.assertTrue(socket_svc, f"{pkg}: no socketed service nets")
+            for svc in socket_svc:
+                self.assertIn(svc, nodes, f"{pkg}: {svc} missing from netlist")
+                ns = nodes[svc]
+                self.assertGreaterEqual(len(ns), 2, f"{pkg}: {svc} is floating {ns}")
+                # exactly one edge-connector node carrying the frozen contact
+                edge_nodes = [(r, p) for r, p in ns if p == auth.SERVICE_CONTACT[svc]]
+                self.assertEqual(len(edge_nodes), 1,
+                                 f"{pkg}: {svc} edge node count {edge_nodes}")
+
+    def test_supply_delivery_counts_vssa_return(self):
+        """Regression (audit: ground-capacity check ignores VSS routed through
+        VSSA_TGT). On LQFP100 some VSS returns are relabelled to VSSA_TGT at
+        analog-ground positions; those switch channels still close the part's
+        return, so they MUST count toward the GND(=VSS) per-part capacity. Prove
+        the delivery uses the enlarged (GND + VSSA_TGT) channel set."""
+        data = auth.build(self.conn, "LQFP100")
+        # there really are VSSA_TGT switch channels in this package
+        vssa_ch = sum(1 for p in data["positions"]
+                      for c in (p["assignment"].get("channels") or [])
+                      if c["destination"] == "VSSA_TGT")
+        self.assertGreater(vssa_ch, 0, "no VSSA_TGT channels to exercise")
+        pp = data["card_materials"]["current_budget"]["per_part_supply_delivery"]["GND"]
+        # Recompute the worst part's VSS channel count counting BOTH GND and
+        # VSSA_TGT destinations; it must match worst_pins (i.e. VSSA is counted).
+        gnd_pos, vssa_pos = set(), set()
+        for p in data["positions"]:
+            for c in (p["assignment"].get("channels") or []):
+                if c["destination"] == "GND":
+                    gnd_pos.add(p["position"])
+                elif c["destination"] == "VSSA_TGT":
+                    vssa_pos.add(p["position"])
+        combined = gnd_pos | vssa_pos
+        # some VSSA position is genuinely in the combined return set (would be
+        # excluded if only literal 'GND' were counted)
+        self.assertTrue(vssa_pos & combined)
+        # worst_pins never exceeds the combined set (and VSSA is not silently dropped)
+        self.assertLessEqual(pp["worst_pins"], len(combined))
+        self.assertGreater(pp["worst_pins"], 0)
+
+    def test_current_budget_pure_f0_uses_datasheet_draw(self):
+        """Regression (audit: current_budget reports 240 mA fallback for pure-F0/F7
+        packages though _part_draw_ma knows the real ΣI_IO). A pure-F0 package must
+        reference F0's 80 mA ΣI_IO ceiling, NOT the flat 240 mA 'no per-family data'
+        fallback — the per-part check and the budget reference must agree."""
+        pure_f0 = None
+        for pkg in db.list_packages(self.conn):
+            try:
+                a = auth.build(self.conn, pkg)
+            except Exception:
+                continue
+            if a["manifest"]["supported_families"] == ["STM32F0"]:
+                pure_f0 = a
+                break
+        self.assertIsNotNone(pure_f0, "no pure-F0 package in the DB")
+        cb = pure_f0["card_materials"]["current_budget"]
+        self.assertNotEqual(cb["draw_reference_ma"], 240)
+        self.assertEqual(cb["draw_reference_ma"], 80)   # F0 ΣI_IO ceiling
+        self.assertNotEqual(cb["draw_reference_source"], "fallback assumption (no per-family data)")
+        # agrees with the per-part fallback for the same family
+        self.assertEqual(cb["draw_reference_ma"],
+                         auth._part_draw_ma("STM32F0", "STM32F030F4Px"))
+
+    def test_channel_policy_default_is_flagged_explicit(self):
+        """Regression (audit: large switched packages silently default to dominant).
+        A blessed package (LQFP64/LQFP100) carries channel_policy_explicit=True; a
+        package with no CHANNEL_POLICY entry gets the implicit dominant default with
+        channel_policy_explicit=False and a manifest note that says so, so an
+        operator knows it is the lossier build a blessed package does not get."""
+        for pkg in ("LQFP64", "LQFP100"):
+            m = auth.build(self.conn, pkg)["manifest"]
+            self.assertTrue(m["channel_policy_explicit"], pkg)
+            self.assertIn("blessed", m["channel_policy_note"])
+        # find a package that falls through to the implicit default
+        implicit = None
+        for pkg in db.list_packages(self.conn):
+            if pkg in auth.CHANNEL_POLICY:
+                continue
+            try:
+                m = auth.build(self.conn, pkg)["manifest"]
+            except Exception:
+                continue
+            if m["channel_policy"] == auth.CHANNEL_POLICY_DEFAULT:
+                implicit = (pkg, m)
+                break
+        self.assertIsNotNone(implicit, "no package falls through to the default")
+        pkg, m = implicit
+        self.assertFalse(m["channel_policy_explicit"], pkg)
+        self.assertIn("implicit default", m["channel_policy_note"])
+        self.assertIn(pkg, m["channel_policy_note"])
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

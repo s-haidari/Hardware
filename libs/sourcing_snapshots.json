@@ -1,0 +1,128 @@
+{
+  "1043": {
+    "unit_price": 0.1,
+    "stock": 11058191,
+    "lifecycle": "Active",
+    "lead_time": "31",
+    "as_of": "2026-07-09T01:08:02.647005+00:00"
+  },
+  "2N7002": {
+    "unit_price": 0.16,
+    "stock": 71901,
+    "lifecycle": "Active",
+    "lead_time": "10",
+    "as_of": "2026-07-09T01:08:02.655348+00:00"
+  },
+  "358": {
+    "unit_price": 0.1,
+    "stock": 504961,
+    "lifecycle": "Active",
+    "lead_time": "16",
+    "as_of": "2026-07-09T01:08:02.661618+00:00"
+  },
+  "BQ24074RGTR": {
+    "unit_price": 2.43,
+    "stock": 12449,
+    "lifecycle": "Active",
+    "lead_time": "16",
+    "as_of": "2026-07-09T01:08:02.667172+00:00"
+  },
+  "FA-238_25.0000MD-AJ": {
+    "unit_price": 1.05,
+    "stock": 100,
+    "lifecycle": "Active",
+    "lead_time": "20",
+    "as_of": "2026-07-09T01:08:02.672818+00:00"
+  },
+  "IC51-0644-807": {
+    "unit_price": 124.04,
+    "stock": 10,
+    "lifecycle": "Active",
+    "lead_time": "1",
+    "as_of": "2026-07-09T01:08:02.678760+00:00"
+  },
+  "IC51-1004-809": {
+    "unit_price": 164.04,
+    "stock": 10,
+    "lifecycle": "Active",
+    "lead_time": "1",
+    "as_of": "2026-07-09T01:08:02.684075+00:00"
+  },
+  "INA226AIDGSR": {
+    "unit_price": 2.66,
+    "stock": 29900,
+    "lifecycle": "Active",
+    "lead_time": "16",
+    "as_of": "2026-07-09T01:08:02.690577+00:00"
+  },
+  "JS102011SAQN": {
+    "unit_price": 0.85,
+    "stock": 61583,
+    "lifecycle": "Active",
+    "lead_time": "14",
+    "as_of": "2026-07-09T01:08:02.695865+00:00"
+  },
+  "SN74LVC1G04DBVR": {
+    "unit_price": 0.14,
+    "stock": 0,
+    "lifecycle": "Active",
+    "lead_time": "16",
+    "as_of": "2026-07-09T01:08:02.702647+00:00"
+  },
+  "SN74LVC1G08DBVT": {
+    "unit_price": 0.9,
+    "stock": 12546,
+    "lifecycle": "Active",
+    "lead_time": "9",
+    "as_of": "2026-07-09T01:08:02.708088+00:00"
+  },
+  "STUSB4500QTR": {
+    "unit_price": 2.22,
+    "stock": 34863,
+    "lifecycle": "Active",
+    "lead_time": "30",
+    "as_of": "2026-07-09T01:08:02.718220+00:00"
+  },
+  "TPD4E05U06QDQARQ1": {
+    "unit_price": 1.26,
+    "stock": 145647,
+    "lifecycle": "Active",
+    "lead_time": "9",
+    "as_of": "2026-07-09T01:08:02.723763+00:00"
+  },
+  "TPS2121RUXR": {
+    "unit_price": 2.44,
+    "stock": 0,
+    "lifecycle": "Active",
+    "lead_time": "16",
+    "as_of": "2026-07-09T01:08:02.730513+00:00"
+  },
+  "TPS3700DDCR": {
+    "unit_price": 2.52,
+    "stock": 0,
+    "lifecycle": "Active",
+    "lead_time": "9",
+    "as_of": "2026-07-09T01:08:02.736032+00:00"
+  },
+  "TPS61023DRLT": {
+    "unit_price": 1.43,
+    "stock": 4887,
+    "lifecycle": "Active",
+    "lead_time": "9",
+    "as_of": "2026-07-09T01:08:02.748280+00:00"
+  },
+  "TPS7A2018PDBVR": {
+    "unit_price": 0.35,
+    "stock": 119735,
+    "lifecycle": "Active",
+    "lead_time": "26",
+    "as_of": "2026-07-09T01:08:02.754195+00:00"
+  },
+  "USB4105-GF-A": {
+    "unit_price": 0.8,
+    "stock": 137423,
+    "lifecycle": "Active",
+    "lead_time": "7",
+    "as_of": "2026-07-09T01:08:02.766395+00:00"
+  }
+}

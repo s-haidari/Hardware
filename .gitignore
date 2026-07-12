@@ -1,0 +1,107 @@
+# --- Python basics ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- Virtual environments ---
+.venv/
+venv/
+ENV/
+.env
+.env.*
+
+# --- Packaging / wheels / eggs ---
+.eggs/
+*.egg-info/
+*.egg
+pip-wheel-metadata/
+share/python-wheels/
+
+# --- PyInstaller (build outputs) ---
+build/
+dist/
+*.spec
+*.manifest
+*.pyz
+*.exe
+
+# --- Generated library catalog (regenerate from the app) ---
+/library_catalog.md
+/catalog_assets/
+
+# --- Logs & caches ---
+*.log
+.kicadmgr_write_test.tmp
+.nox/
+.tox/
+.pytest_cache/
+.hypothesis/
+.cache/
+htmlcov/
+
+# --- Docs / Sphinx ---
+docs/_build/
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+
+# --- OS / Editor noise ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# --- Binaries produced locally (do not version) ---
+*.dll
+*.dylib
+*.so
+*.pyd
+
+# --- Archives produced locally ---
+*.zip
+*.tgz
+*.gz
+
+# NOTE: CAD assets (*.step, *.stp) are intentionally NOT ignored.
+# We'll track them via Git LFS (below), not ignore them.
+# Rust / Tauri build output
+target/
+app/frontend/src-tauri/gen/
+
+# PyInstaller + Tauri sidecar (rebuild via app/backend/build_sidecar.py)
+app/backend/dist/
+app/backend/build/
+app/backend/*.spec
+app/frontend/src-tauri/binaries/
+
+# The app owns its pin data: the CubeMX XML source IS committed (compresses to
+# ~1MB) so the SQLite database can be rebuilt from our own scripts on any clone.
+# The built database is derived, so it is ignored and auto-built on first run.
+app/backend/data/
+*.sqlite
+
+# --- Generated STM32 pin database (rebuild from the app) ---
+tools/data/
+*.sqlite
+
+# --- Machine-local config + secrets (Mouser API key etc.) — never commit ---
+tools/config.json
+
+# --- Claude Code session / chat exports dropped in the tree — never commit ---
+*local-command*.txt
+
+# --- SP3-A render-gate output (regenerate with tools/ui/render_gate.py) ---
+build/
+
+# PCB Setup profile engine — user profiles (PCB-09), like vault_standard.json
+tools/pcb_profiles.json
+pcb_profiles.json
+
+# Library undo-snapshot safety net — a local per-clone throwaway, MUST NOT enter
+# git history (the app's own Commit & Push would otherwise bake + share a full
+# library copy on every mutation).
+libs/.trash/
+.superpowers/
+
+# Local Claude Code session tooling (workflow scripts, not part of the app)
+.claude/
