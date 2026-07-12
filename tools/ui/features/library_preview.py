@@ -499,7 +499,7 @@ class PreviewCard(QFrame):
         head.addWidget(title); head.addStretch(1)
         head.addWidget(W.btn("Close", "ghost", "Close this preview", dlg.accept))
         v.addLayout(head)
-        art = QFrame(); art.setObjectName("lbart"); art.setFixedSize(560, 400)
+        art = QFrame(); art.setObjectName("lbart"); art.setFixedSize(720, 500)
         W.register_restyle(lambda: art.setStyleSheet(
             f"QFrame#lbart{{background:{T.t('field')};border:none;border-radius:8px;}}"), art)
         al = QVBoxLayout(art); al.setContentsMargins(16, 16, 16, 16)
@@ -1268,14 +1268,14 @@ class PartDetail(QWidget):
         self._mdl.enable_dropin(self._dropin_model, (".step", ".stp", ".wrl"), "Add 3D Model")
         self._sym.enable_dropin(self._dropin_symbol, (".kicad_sym",), "Add Symbol")
         lay.addWidget(_subhead("Files"))
-        files_wrap = QWidget(); files_wrap.setMaximumWidth(600); files_wrap.setFixedHeight(344)
+        files_wrap = QWidget(); files_wrap.setMaximumWidth(820); files_wrap.setFixedHeight(344)
         frow = QHBoxLayout(files_wrap); frow.setContentsMargins(0, 0, 0, 0); frow.setSpacing(11)
         frow.addWidget(self._mdl, 155)                  # flex 1.55 — the big 3D card
         rcol = QWidget(); rcolv = QVBoxLayout(rcol)
         rcolv.setContentsMargins(0, 0, 0, 0); rcolv.setSpacing(11)
         rcolv.addWidget(self._sym, 1); rcolv.addWidget(self._fp, 1)
         frow.addWidget(rcol, 100)                        # flex 1 — Symbol over Footprint
-        lay.addWidget(files_wrap, 0, Qt.AlignLeft)
+        lay.addWidget(files_wrap, 0)
 
         # ── Save bar (LIB-flash fix) ────────────────────────────────────────
         # Inline field edits write to disk immediately but are NOT committed +

@@ -115,7 +115,7 @@ def _authority_panel(ctx, state: BenchState) -> QWidget:
     # left: map card
     map_card = W.Card(pad=20)
     # smaller default map (scroll-wheel zoom enlarges it) so the inspector gets more width
-    pin_map = PinMap(on_select=lambda pos: _show_pin(pos), base=380)
+    pin_map = PinMap(on_select=lambda pos: _show_pin(pos), base=440)
     # Zoom/pan are secondary controls (the map is the focal element, §5): a quiet hint
     # on the left, then a tight −/+ segmented pair plus a ghost Reset on the right. The
     # map itself is the pan/zoom viewport now — wheel zooms toward the cursor and drag
@@ -355,7 +355,7 @@ def _resolver_panel(ctx, state: BenchState) -> QWidget:
         # its own pan/zoom viewport (wheel zooms to the cursor, drag pans); a −/+ pair +
         # ghost Reset, a legend under it, and on_select highlights the matching table row.
         map_card = W.Card(pad=16)
-        pm = PinMap(on_select=lambda pos: _select_pin_row(pos), base=340)
+        pm = PinMap(on_select=lambda pos: _select_pin_row(pos), base=400)
         geo = [{"position": p["pin"], "switch_class": "fixed",
                 "pin_names": {p.get("name", ""): 1}, "breakout": {}} for p in res["pins"]]
         pm.set_positions(geo, {p["pin"]: {"cat": _resolved_cat(p), "fivev": _resolved_is_five_v(p)}
