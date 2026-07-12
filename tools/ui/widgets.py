@@ -997,6 +997,27 @@ class _FitTableWidget(QTableWidget):
         QTimer.singleShot(0, self._apply_fit)
 
 
+def browse_list(fixed_width: Optional[int] = None):
+    """A themed vertical pick list (the parts-picker idiom, routed through widgets so a
+    feature file needn't style it directly): a transparent panel with rounded rows and
+    theme hover/selected states. Returns a QListWidget; the caller adds items and wires
+    itemClicked / currentRowChanged. Re-themes on a theme flip."""
+    from PyQt5.QtWidgets import QListWidget
+    lst = QListWidget()
+    lst.setFrameShape(QFrame.NoFrame)
+    lst.setUniformItemSizes(True)                 # cheap layout for long part lists
+    lst.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    if fixed_width:
+        lst.setFixedWidth(fixed_width)
+    register_restyle(lambda: lst.setStyleSheet(
+        f"QListWidget{{background:transparent;border:none;}}"
+        f"QListWidget::item{{border-radius:{T.RADIUS_CONTROL}px;padding:6px 9px;"
+        f"color:{T.t('txt1')};}}"
+        f"QListWidget::item:hover{{background:{T.t('card_hover')};}}"
+        f"QListWidget::item:selected{{background:{T.t('inset')};color:{T.t('txt1')};}}"), lst)
+    return lst
+
+
 def data_table(columns: Sequence[str], rows: Sequence[Sequence], stretch_col=0,
                mono_cols=(), dim_cols=(), max_col: int = 300, wrap: bool = False,
                row_tints=(), row_tips=None, fit_rows: bool = False) -> QTableWidget:

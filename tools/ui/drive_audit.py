@@ -1507,12 +1507,31 @@ def audit_bench_styled():
         if abs(pm._zoom - 1.0) > 1e-6:
             _fail("Bench/Overview: reset_view did not restore zoom 1")
 
+    def _mcu(p):
+        # BENCH v2.11: the MCU viewer is a browsable LIST now (owner: "give a searchable
+        # LIST to pick from", not an exact-name search). Assert the list renders the
+        # package's parts, that the filter narrows it, and that picking a row paints the
+        # resolved pinout table.
+        from PyQt5.QtWidgets import QListWidget, QLineEdit
+        lst = p.findChild(QListWidget)
+        if lst is None or lst.count() == 0:
+            _fail("Bench/MCU Pinout Viewer: browsable part list is empty or missing"); return
+        filt = p.findChild(QLineEdit)
+        if filt is not None:
+            filt.setText(lst.item(0).text()[:6]); _pump()
+            if sum(1 for i in range(lst.count()) if not lst.item(i).isHidden()) == 0:
+                _fail("Bench/MCU Pinout Viewer: filter hid every row"); return
+            filt.setText(""); _pump()
+        lst.setCurrentRow(0); _pump()            # pick a row -> resolve its pinout
+        if p.findChild(QTableWidget) is None:
+            _fail("Bench/MCU Pinout Viewer: picking a list row did not render the pinout table")
+
     for builder, label, drive in (
         (BENCH._authority_panel, "Overview", _overview),
         (BENCH._profiles_panel, "Profiles", lambda p: None),
         (BENCH._allpins_panel, "All Pins", lambda p: None),
         (BENCH._analysis_panel, "Analysis", _analysis),
-        (BENCH._resolver_panel, "MCU Pinout Viewer", lambda p: None),
+        (BENCH._resolver_panel, "MCU Pinout Viewer", _mcu),
         (BENCH._outputs_panel, "Exports", _exports),
     ):
         try:

@@ -278,44 +278,73 @@ def _resolved_five_v_label(pn) -> str:
 def _resolver_panel(ctx, state: BenchState) -> QWidget:
     root = QWidget()
     lay = QVBoxLayout(root); lay.setContentsMargins(24, 16, 24, 24); lay.setSpacing(14)
-    bar = QHBoxLayout(); bar.setSpacing(10)
-    edit = QLineEdit()
-    edit.setFixedWidth(360); edit.setMinimumHeight(34)
-    edit.setToolTip("Search the ordering part numbers in this package, then resolve the exact silicon pin map")
-    # smart search: a substring typeahead over every part number in the selected package
+    # every ordering part number in this package — the browsable set
     try:
         part_nos = [r[0] for r in state.conn.execute(
             "SELECT DISTINCT part_number FROM mcu WHERE package_name = ? ORDER BY part_number",
             (state.package,))]
     except Exception:  # noqa: BLE001
         part_nos = []
-    if part_nos:
-        from PyQt5.QtWidgets import QCompleter
-        comp = QCompleter(part_nos, root)
-        comp.setCaseSensitivity(Qt.CaseInsensitive)
-        comp.setFilterMode(Qt.MatchContains)
-        comp.setCompletionMode(QCompleter.PopupCompletion)
-        comp.setMaxVisibleItems(12)
-        edit.setCompleter(comp)
-        comp.activated.connect(lambda _t: edit.returnPressed.emit())   # pick -> resolve
-        edit.setPlaceholderText(f"Search {len(part_nos)} {state.package} parts  (e.g. {part_nos[0]})")
-    else:
-        edit.setPlaceholderText("STM32F407VGT6")
-    bar.addWidget(edit)
-    result_holder = QVBoxLayout()
+
+    head = QHBoxLayout(); head.setSpacing(10)
+    head.addWidget(W.eyebrow(f"MCU Pinout Viewer   {state.package}" if state.package
+                             else "MCU Pinout Viewer"))
+    head.addWidget(W.body("Exact silicon, not the package union.", dim=True))
+    head.addStretch(1)
+    lay.addLayout(head)
+
+    split = QHBoxLayout(); split.setSpacing(16)
+
+    # ── left: a filterable, browsable list of every part in the package ──────────
+    # (owner v2.11: "give a searchable LIST to pick from", not an exact-name search).
+    left = QVBoxLayout(); left.setSpacing(8)
+    filt = QLineEdit(); filt.setMinimumHeight(32); filt.setFixedWidth(300)
+    filt.setClearButtonEnabled(True)
+    filt.setPlaceholderText(f"Filter {len(part_nos)} parts…" if part_nos
+                            else "No parts in this package")
+    filt.setToolTip("Type to narrow the list; click a part to paint its exact silicon pinout")
+    left.addWidget(filt)
+    plist = W.browse_list(fixed_width=300)
+    plist.setMinimumHeight(360)
+    for pn in part_nos:
+        plist.addItem(str(pn))
+    left.addWidget(plist, 1)
+    count = W.body("", dim=True)
+    left.addWidget(count)
+    left_w = QWidget(); left_w.setLayout(left)
+    split.addWidget(left_w, 0, Qt.AlignTop)
+
+    # ── right: the resolved pinout (map + per-pin table) ─────────────────────────
+    result_holder = QVBoxLayout(); result_holder.setSpacing(10)
+    right_w = QWidget(); right_w.setLayout(result_holder)
+    split.addWidget(right_w, 1)
+    lay.addLayout(split, 1)
+
+    def _update_count():
+        vis = sum(1 for i in range(plist.count()) if not plist.item(i).isHidden())
+        count.setText(f"{vis} of {plural(len(part_nos), 'part')} shown"
+                      if part_nos else "No parts in this package")
+
+    def _apply_filter(text):
+        q = text.strip().lower()
+        for i in range(plist.count()):
+            it = plist.item(i)
+            it.setHidden(bool(q) and q not in it.text().lower())
+        _update_count()
+    filt.textChanged.connect(_apply_filter)
 
     def _seed_empty():
-        # First-open guidance, matching the Overview inspector's placeholder instead of
-        # a bare blank pane — the panel reads as intentional, not unfinished. (BENCH-empty.)
+        # First-open guidance beside the list (BENCH-empty) — an intentional empty state,
+        # not a blank pane; cleared on the first resolve.
+        clear_layout(result_holder)
         result_holder.addWidget(kit.state(
             "empty", "Resolve a Part to View Its Exact Pinout", glyph="bench",
-            sub="Search an ordering part number above, then Resolve to paint this "
-                "chip's real silicon."))
+            sub="Pick an ordering part number from the list to paint this chip's real silicon."))
         result_holder.addStretch(1)
 
-    def resolve():
+    def resolve_mpn(mpn):
         clear_layout(result_holder)
-        mpn = edit.text().strip()
+        mpn = (mpn or "").strip()
         if not mpn:
             _seed_empty()
             return
@@ -328,11 +357,10 @@ def _resolver_panel(ctx, state: BenchState) -> QWidget:
             result_holder.addWidget(W.body(f"No match for {mpn}.", dim=True))
             return
         result_holder.addWidget(W.eyebrow(f"{res['part']}   {res['package']}   {len(res['pins'])} Pins"))
-        split = QHBoxLayout(); split.setSpacing(16)
-        # left: the resolved pinout, painted from the datasheet-derived pins. Built with
-        # the SAME affordances as the Overview map (BENCH-map): a −/+ zoom segmented pair
-        # + ghost Reset, a scroll area so the enlarged map pans, a legend under it to
-        # decode the colours, and on_select wired to highlight the matching table row.
+        rsplit = QHBoxLayout(); rsplit.setSpacing(16)
+        # left: the resolved pinout, painted from the datasheet-derived pins. The map is
+        # its own pan/zoom viewport (wheel zooms to the cursor, drag pans); a −/+ pair +
+        # ghost Reset, a legend under it, and on_select highlights the matching table row.
         map_card = W.Card(pad=16)
         pm = PinMap(on_select=lambda pos: _select_pin_row(pos), base=340)
         geo = [{"position": p["pin"], "switch_class": "fixed",
@@ -351,7 +379,7 @@ def _resolver_panel(ctx, state: BenchState) -> QWidget:
         map_card.body.addWidget(pm, 0, Qt.AlignHCenter)
         map_card.body.addWidget(legend())
         map_card.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Maximum)
-        split.addWidget(map_card, 0, Qt.AlignTop)
+        rsplit.addWidget(map_card, 0, Qt.AlignTop)
         # right: the clean per-pin table (the datasheet pinout, remade)
         rows = []
         row_of_pin = {}
@@ -381,20 +409,35 @@ def _resolver_panel(ctx, state: BenchState) -> QWidget:
             if item is not None:
                 tbl.scrollToItem(item, QAbstractItemView.PositionAtCenter)
 
-        split.addWidget(tbl, 1)
-        result_holder.addLayout(split, 1)
+        rsplit.addWidget(tbl, 1)
+        result_holder.addLayout(rsplit, 1)
 
-    bar.addWidget(W.btn("Resolve", "primary", "Resolve the part number", resolve))
-    bar.addWidget(W.body("Exact silicon, not the package union.", dim=True))
-    bar.addStretch(1)
-    edit.returnPressed.connect(resolve)
+    # clicking / arrowing a list row resolves it (the list IS the picker — no separate
+    # Resolve button). currentRowChanged fires for both mouse and keyboard selection.
+    plist.currentRowChanged.connect(
+        lambda i: resolve_mpn(plist.item(i).text()) if i >= 0 and plist.item(i) else None)
+
+    def _select_and_resolve(mpn):
+        # bus entry (a Profiles chip -> here): select + reveal the row, then resolve. If
+        # setCurrentItem actually changes the row, currentRowChanged already resolves it;
+        # otherwise (same row re-emitted, or the part is not in this package) resolve
+        # directly so a repeat click still repaints.
+        items = plist.findItems(str(mpn), Qt.MatchFixedString)
+        if items:
+            prev = plist.currentRow()
+            plist.setCurrentItem(items[0])
+            plist.scrollToItem(items[0], QAbstractItemView.PositionAtCenter)
+            if plist.currentRow() != prev:
+                return
+        resolve_mpn(str(mpn))
+
     # on_owned: the resolver panel is rebuilt on every package/family switch, so its
     # bus handler must auto-unsubscribe when root is destroyed — a bare on() would
     # accumulate stale closures over deleted widgets. (BENCH-leak.)
-    ctx.bus.on_owned("bench.resolve", lambda m: (edit.setText(str(m)), resolve()), owner=root)
-    lay.addLayout(bar)
-    lay.addLayout(result_holder, 1)
-    _seed_empty()   # first-open guidance until the first resolve replaces it
+    ctx.bus.on_owned("bench.resolve", lambda m: _select_and_resolve(m), owner=root)
+
+    _update_count()
+    _seed_empty()   # first-open guidance until a row is picked
     return root
 
 
