@@ -26,6 +26,7 @@ from ..util import (LogSink, run_populate, clear_layout, sentence,
                     mm_to_mils, mils_to_mm, confirm)
 from .. import feature as F
 from .. import units as U
+from ..prose import plural
 from . import projects_visuals as pv
 
 import nd_wizard
@@ -289,8 +290,7 @@ class FillPreviewDialog(QDialog):
 
     def _annotate_card(self):
         card = W.Card(pad=14)
-        cb = QCheckBox(f"Annotate {self.annotate_n} unannotated reference"
-                       f"{'s' if self.annotate_n != 1 else ''}")
+        cb = QCheckBox(f"Annotate {plural(self.annotate_n, 'unannotated reference')}")
         cb.setChecked(True)                 # deterministic + safe: pre-checked
         cb.setToolTip("Assign the next free designator to each unannotated symbol "
                       "(each edited file is backed up first).")
@@ -309,7 +309,7 @@ class FillPreviewDialog(QDialog):
         head.addWidget(W.body(str(item["ref"]), mono=True))
         # Confidence chip: exact is calm (ok), verify is amber (warn).
         chip_kind = "ok" if conf == "exact" else ("warn" if conf == "verify" else "mut")
-        chip_txt = "Exact" if conf == "exact" else ("Verify" if conf == "verify" else "No match")
+        chip_txt = "Exact" if conf == "exact" else ("Verify" if conf == "verify" else "No Match")
         head.addWidget(W.tag(chip_txt, chip_kind))
         alts = match.get("alternatives", 0)
         if conf == "verify" and alts:
@@ -334,7 +334,7 @@ class FillPreviewDialog(QDialog):
         pre = (conf == "exact" and ch.get("kind") == "fill")
         cb.setChecked(pre)
         if ch.get("kind") == "overwrite":
-            cb.setToolTip("Overwrites existing data — opt in per field.")
+            cb.setToolTip("Overwrites existing data. Opt in per field.")
         cb.stateChanged.connect(lambda _=0: self._sync_apply_enabled())
         self._boxes.append((cb, item["ref"], ch["prop"], ch.get("kind"), conf))
         row = QWidget(); rl = QHBoxLayout(row); rl.setContentsMargins(0, 0, 0, 0); rl.setSpacing(8)
@@ -383,7 +383,7 @@ class FillPreviewDialog(QDialog):
         val = str(comp.get("value") or "").strip()
         if val:
             head.addWidget(W.body(val, dim=True))
-        head.addWidget(W.tag("No match", "mut"))
+        head.addWidget(W.tag("No Match", "mut"))
         head.addStretch(1)
         head_w = QWidget(); head_w.setLayout(head); card.body.addWidget(head_w)
         props = comp.get("props") or {}
@@ -446,10 +446,10 @@ class FillPreviewDialog(QDialog):
         comps = len({r for r, _p in sel})
         need = sum(1 for cb, _r, _p, _k, conf in self._boxes
                    if conf == "verify" and cb.isChecked())
-        parts = [f"{comps} component{'s' if comps != 1 else ''}",
-                 f"{len(sel)} field{'s' if len(sel) != 1 else ''}"]
+        parts = [f"{plural(comps, 'component')}",
+                 f"{plural(len(sel), 'field')}"]
         if self.annotate_n and self.annotate_selected():
-            parts.append(f"{self.annotate_n} annotation{'s' if self.annotate_n != 1 else ''}")
+            parts.append(f"{plural(self.annotate_n, 'annotation')}")
         if need:
             parts.append(f"{need} need your check")
         self._header.setText("  ·  ".join(parts))
@@ -550,15 +550,15 @@ def _overview_panel(ctx, state) -> QWidget:
         a = r["audit"] or {}
         if a.get("errs"):
             n = a["errs"]
-            return (f"Fix {n} audit error{'s' if n != 1 else ''}",
+            return (f"Fix {plural(n, 'audit error')}",
                     "Open the Health tab → ▶ Prepare Components.", "err")
         erc, drc = r["erc"], r["drc"]
         if erc and not erc.get("error") and erc.get("errors"):
             n = erc["errors"]
-            return (f"Fix {n} ERC violation{'s' if n != 1 else ''}", "Re-run ERC after fixing.", "err")
+            return (f"Fix {plural(n, 'ERC violation')}", "Re-run ERC after fixing.", "err")
         if drc and not drc.get("error") and drc.get("errors"):
             n = drc["errors"]
-            return (f"Fix {n} DRC violation{'s' if n != 1 else ''}", "Re-run DRC after fixing.", "err")
+            return (f"Fix {plural(n, 'DRC violation')}", "Re-run DRC after fixing.", "err")
         pending = []
         if erc is None:
             pending.append("ERC")
@@ -570,16 +570,16 @@ def _overview_panel(ctx, state) -> QWidget:
         if g and not g.get("error"):
             if g["changed"]:
                 n = g["changed"]
-                return (f"Commit {n} change{'s' if n != 1 else ''}", "Open the Git tab to review and commit.", "warn")
+                return (f"Commit {plural(n, 'change')}", "Open the Git tab to review and commit.", "warn")
             if g["ahead"]:
                 n = g["ahead"]
-                return (f"Push {n} commit{'s' if n != 1 else ''}", "Your branch is ahead of the remote.", "warn")
+                return (f"Push {plural(n, 'commit')}", "Your branch is ahead of the remote.", "warn")
             if g["behind"]:
                 n = g["behind"]
-                return (f"Pull {n} commit{'s' if n != 1 else ''}", "Your branch is behind the remote.", "warn")
+                return (f"Pull {plural(n, 'commit')}", "Your branch is behind the remote.", "warn")
         if a.get("warns"):
             n = a["warns"]
-            return (f"Review {n} audit warning{'s' if n != 1 else ''}", "Open the Health tab for detail.", "warn")
+            return (f"Review {plural(n, 'audit warning')}", "Open the Health tab for detail.", "warn")
         return ("Ready to fabricate", "Audit clean, checks pass, working tree in sync.", "ok")
 
     def _readiness(snap):
@@ -637,9 +637,10 @@ def _overview_panel(ctx, state) -> QWidget:
         if summary.get("error"):
             return (label, "Could not run", "warn", str(summary.get("error"))[:80])
         if summary.get("errors"):
-            return (label, f"{summary['errors']} error(s)", "err", f"{summary.get('warnings', 0)} warning(s)")
+            return (label, plural(summary["errors"], "error"), "err",
+                    plural(summary.get("warnings", 0), "warning"))
         if summary.get("warnings"):
-            return (label, f"{summary['warnings']} warning(s)", "warn", "")
+            return (label, plural(summary["warnings"], "warning"), "warn", "")
         return (label, "Clean", "ok", "")
 
     def _readiness_rows(r, snap):
@@ -648,11 +649,11 @@ def _overview_panel(ctx, state) -> QWidget:
         if a is None:
             rows.append(("Audit", "No schematic", "mut", ""))
         elif a["errs"]:
-            rows.append(("Audit", f"{a['errs']} error(s)", "err", f"{a['healthy']}/{a['comps']} components healthy"))
+            rows.append(("Audit", plural(a["errs"], "error"), "err", f"{a['healthy']}/{a['comps']} components healthy"))
         elif a["warns"]:
-            rows.append(("Audit", f"{a['warns']} warning(s)", "warn", f"{a['healthy']}/{a['comps']} components healthy"))
+            rows.append(("Audit", plural(a["warns"], "warning"), "warn", f"{a['healthy']}/{a['comps']} components healthy"))
         elif a["notes"]:
-            rows.append(("Audit", f"{a['notes']} note(s)", "mut", f"{a['healthy']}/{a['comps']} components healthy"))
+            rows.append(("Audit", plural(a["notes"], "note"), "mut", f"{a['healthy']}/{a['comps']} components healthy"))
         else:
             rows.append(("Audit", "Clean", "ok", f"{a['comps']} components healthy"))
         rows.append(_check_row("ERC", r["erc"], "Run ERC to check the schematic."))
@@ -731,7 +732,7 @@ def _overview_panel(ctx, state) -> QWidget:
         snap = snapshot()
         cli = kicad_paths.find_kicad_cli()
         if not cli:
-            _log("kicad-cli not found on PATH — install KiCad or add it to PATH.")
+            _log("kicad-cli not found on PATH. Install KiCad or add it to PATH.")
             return
         name = _CHECK_NAME.get(kind, kind)
         target = snap["root_sch"] if kind == "erc" else (snap["boards"][0] if snap["boards"] else None)
@@ -809,7 +810,7 @@ def _overview_panel(ctx, state) -> QWidget:
             except Exception:  # noqa: BLE001
                 pass
             n = sum(v for v in counts.values() if isinstance(v, int))
-            return f"Cleared {n} KiCad cache file(s) under {rp.name}."
+            return f"Cleared {plural(n, 'KiCad cache file')} under {rp.name}."
 
         def done(line, ok):
             busy["on"] = False
@@ -982,7 +983,7 @@ def _health_panel(ctx, state) -> QWidget:
             return W.VerdictState(kind="warn", title=f"{incomplete} To Complete",
                                   subtitle=sub, chips=chips)
         kind = "err" if errs else "warn"
-        return W.VerdictState(kind=kind, title=f"{total} Finding{'s' if total != 1 else ''}",
+        return W.VerdictState(kind=kind, title=f"{plural(total, 'Finding')}",
                               subtitle=sub, chips=chips)
 
     # ── detail: the findings table, built once, repopulated on refresh ──────────────────
@@ -1038,7 +1039,7 @@ def _health_panel(ctx, state) -> QWidget:
                              W.body(sentence(f.get("detail", ""))),
                              W.tag(sev.title(), _SEV.get(sev, "mut"))])
             if not rows:
-                table_box.addWidget(W.empty_state("No issues found", glyph=icons.GLYPHS["check"],
+                table_box.addWidget(W.empty_state("No Issues Found", glyph=icons.GLYPHS["check"],
                                                   sub="Every component is healthy."))
             else:
                 table_box.addWidget(W.data_table(["Reference", "Kind", "Detail", "Severity"], rows,
@@ -1086,8 +1087,7 @@ def _health_panel(ctx, state) -> QWidget:
         ops = []
         if annotate_n:
             ops.append({"key": _ANNOTATE_KEY,
-                        "label": f"Annotate {annotate_n} unannotated reference"
-                                 f"{'s' if annotate_n != 1 else ''}",
+                        "label": f"Annotate {plural(annotate_n, 'unannotated reference')}",
                         "detail": "Assign the next free designator to each unannotated symbol.",
                         "safe": bool(auto_annotate)})
         for item in plan.get("items", []):
@@ -1109,7 +1109,7 @@ def _health_panel(ctx, state) -> QWidget:
 
     def _prepare_intro(snap, ops):
         n = len(ops)
-        return (f"{n} proposed change{'s' if n != 1 else ''} for {snap['name']}. "
+        return (f"{plural(n, 'proposed change')} for {snap['name']}. "
                 "Exact blank fills are pre-checked; overwrites and fuzzy matches need your check.")
 
     def _prepare_preview(host, label, intro, ops):
@@ -1174,11 +1174,11 @@ def _health_panel(ctx, state) -> QWidget:
         comps = res.get("components_changed", 0)
         done, errors = [], list(res.get("errors", []))
         if filled:
-            done.append(f"Filled {filled} field(s) across {comps} component(s).")
+            done.append(f"Filled {plural(filled, 'field')} across {plural(comps, 'component')}.")
         if annotated:
-            done.append(f"Annotated {annotated} reference(s).")
+            done.append(f"Annotated {plural(annotated, 'reference')}.")
         if baks:
-            done.append(f"Backups written for {len(baks)} sheet(s) — Restore Last Prepare "
+            done.append(f"Backups written for {plural(len(baks), 'sheet')}. Restore Last Prepare "
                         "rolls every changed sheet back to its pre-Prepare state.")
 
         def _fmt(b):
@@ -1194,7 +1194,7 @@ def _health_panel(ctx, state) -> QWidget:
         tip="Prepare every component: annotate references + link footprints/models + fill "
             "each component's fields (part number / manufacturer / datasheet) from the "
             "Library and Mouser, previewed field-by-field, then re-audit",
-        empty="Nothing to prepare — every component is annotated and there is nothing the "
+        empty="Nothing to prepare. Every component is annotated and there is nothing the "
               "Library or Mouser can fill.")
 
     # ── secondary + machinery op runners (busy-gated, off-thread, then refresh) ──────────
@@ -1221,7 +1221,7 @@ def _health_panel(ctx, state) -> QWidget:
         snap = snapshot()
         cli = _kicad_cli()
         if not cli:
-            _log("kicad-cli not found on PATH — install KiCad or add it to PATH.")
+            _log("kicad-cli not found on PATH. Install KiCad or add it to PATH.")
             return
         name = _CHECK_NAME.get(kind, kind)
         target = snap["root_sch"] if kind == "erc" else (snap["boards"][0] if snap["boards"] else None)
@@ -1251,7 +1251,7 @@ def _health_panel(ctx, state) -> QWidget:
     def _restore_prepare():
         originals = dict(last_prepare.get("originals") or {})
         if not originals:
-            _log("No prepare to restore — run Prepare Components first.")
+            _log("No prepare to restore. Run Prepare Components first.")
             return
 
         def work():
@@ -1267,8 +1267,8 @@ def _health_panel(ctx, state) -> QWidget:
                     errors.append(f"{p.name}: {e}")
             last_prepare["originals"] = {}                 # consumed
             memo.pop("sig", None)
-            msg = (f"Restored {len(restored)} sheet(s) to their pre-Prepare state."
-                   if restored else "Nothing to restore — the sheets are unchanged.")
+            msg = (f"Restored {plural(len(restored), 'sheet')} to their pre-Prepare state."
+                   if restored else "Nothing to restore. The sheets are unchanged.")
             if errors:
                 msg += " Errors: " + "; ".join(errors)
             return msg
@@ -1582,7 +1582,7 @@ def _bom_panel(ctx, state) -> QWidget:
         if not schs:
             return []
         n = len(schs); priced = snap["price"]
-        lbl = f"Build BOM from {n} sheet{'s' if n != 1 else ''}"
+        lbl = f"Build BOM from {plural(n, 'sheet')}"
         if priced:
             lbl += " and price on Mouser"
         det = ("Read every sheet, enrich part numbers from the Library"
@@ -1592,30 +1592,30 @@ def _bom_panel(ctx, state) -> QWidget:
     def _build_intro(snap, ops):
         n = len(snap["schs"])
         if snap["price"]:
-            return (f"Build the bill of materials from {n} sheet(s) and look up live Mouser "
-                    "price + stock for every part number — network calls, slower on a big BOM.")
-        return f"Build the bill of materials from {n} sheet(s) — offline, no pricing."
+            return (f"Build the bill of materials from {plural(n, 'sheet')} and look up live Mouser "
+                    "price + stock for every part number (network calls, slower on a big BOM).")
+        return f"Build the bill of materials from {plural(n, 'sheet')} (offline, no pricing)."
 
     def _build_report(res, snap):
         rows = res.get("rows", [])
         cost = LM.bom_cost_summary(rows)
         risks = LM.bom_sourcing_risks(rows, boards=snap["boards"])
         lead = LM.bom_lead_time(rows)
-        done = [f"{res.get('component_count', 0)} components across {cost['line_count']} line(s)."]
+        done = [f"{res.get('component_count', 0)} components across {plural(cost['line_count'], 'line')}."]
         if cost["priced_lines"]:
-            done.append(f"Priced {cost['priced_lines']} line(s): {_money(cost['total_cost'])} total"
+            done.append(f"Priced {plural(cost['priced_lines'], 'line')}: {_money(cost['total_cost'])} total"
                         + (f" · {cost['unpriced_lines']} unpriced." if cost["unpriced_lines"] else "."))
         else:
-            done.append("Not priced — turn on Price with Mouser and rebuild to cost it.")
+            done.append("Not priced. Turn on Price with Mouser and rebuild to cost it.")
         missing = []
         if risks["not_active"]:
-            missing.append({"item": f"{risks['not_active']} NRND/EOL part(s)", "why": "lifecycle is not Active",
+            missing.append({"item": f"{plural(risks['not_active'], 'NRND/EOL part')}", "why": "lifecycle is not Active",
                             "how_to_fix": "Find a drop-in replacement before ordering."})
         if risks["no_stock"]:
-            missing.append({"item": f"{risks['no_stock']} out-of-stock line(s)", "why": "no distributor stock",
+            missing.append({"item": f"{plural(risks['no_stock'], 'out-of-stock line')}", "why": "no distributor stock",
                             "how_to_fix": "Source an alternate or backorder."})
         if risks["insufficient_stock"]:
-            missing.append({"item": f"{risks['insufficient_stock']} low-stock line(s)",
+            missing.append({"item": f"{plural(risks['insufficient_stock'], 'low-stock line')}",
                             "why": f"stock below the {snap['boards']}-board build quantity",
                             "how_to_fix": "Split the order across suppliers or raise the quantity."})
         if lead["any"] and lead["max_weeks"] >= 12:
@@ -1897,7 +1897,7 @@ def _bom_panel(ctx, state) -> QWidget:
         spares = sp_spares.value()
         cart = LM.procurement_cart_csv(res.get("rows", []), boards=boards, spares_pct=spares)
         if not cart["line_count"]:
-            ctx.services.log("No part numbers to order — every line is a bare passive."); return
+            ctx.services.log("No part numbers to order: every line is a bare passive."); return
         run = f" for {boards} boards" if boards > 1 else ""
         note = f"{cart['line_count']} order lines · {cart['total_qty']} parts{run}"
         if cart["padded_lines"]:
@@ -1916,7 +1916,7 @@ def _bom_panel(ctx, state) -> QWidget:
         boards = sp_boards.value()
         sheet = LM.priced_bom_csv_at_qty(res.get("rows", []), boards=boards)
         if not sheet["priced_lines"]:
-            ctx.services.log("Price the BOM first — turn on Price with Mouser, then rebuild.")
+            ctx.services.log("Price the BOM first. Turn on Price with Mouser, then rebuild.")
             return
         run = f" for {boards} boards" if boards > 1 else ""
         note = f"Priced sheet: {_money(sheet['total_cost'])}{run}"
@@ -1932,7 +1932,7 @@ def _bom_panel(ctx, state) -> QWidget:
             ctx.services.log("Build a BOM first."); return
         bom = LM.jlcpcb_bom_csv(res.get("rows", []))
         if not bom["line_count"]:
-            ctx.services.log("Nothing to place — no BOM line has a value or part number."); return
+            ctx.services.log("Nothing to place: no BOM line has a value or part number."); return
         note = f"{bom['line_count']} assembly lines · {bom['total_qty']} parts"
         if bom["without_lcsc"]:
             note += f" · {bom['without_lcsc']} without an LCSC Part # (fill before assembly)"
@@ -1947,7 +1947,7 @@ def _bom_panel(ctx, state) -> QWidget:
             ctx.services.log("Build a BOM first."); return
         text = LM.bom_procurement_summary(res.get("rows", []), sp_boards.value())
         QApplication.clipboard().setText(text)
-        ctx.services.log(f"Copied to clipboard — {text}")
+        ctx.services.log(f"Copied to clipboard: {text}")
 
     # ── compare / diff (ported verbatim; root → host) ────────────────────────────────────
     def _diff_cost_tags(c):
@@ -1992,7 +1992,7 @@ def _bom_panel(ctx, state) -> QWidget:
                     + _diff_lead_tags(d.get("lead")))
         host._summary_owner = "diff"                      # the Boards spinner must not clobber this
         if not (n_add or n_rem or n_chg):
-            result.addWidget(W.body("No differences — the BOMs match.", dim=True)); return
+            result.addWidget(W.body("No differences. The BOMs match.", dim=True)); return
         exp = W.btn("Export Diff CSV", "ghost", "Save this comparison as a CSV",
                     on_click=lambda: _save_csv("Export BOM Diff", "bom_diff.csv", d.get("csv", "")))
         erow = QHBoxLayout(); erow.addWidget(exp); erow.addStretch(1)
@@ -2052,7 +2052,7 @@ def _bom_panel(ctx, state) -> QWidget:
             ctx.services.log(f"Couldn't read {Path(path).name}: {e}"); return
         old_rows = LM.bom_rows_from_csv(text)
         if not old_rows:
-            ctx.services.log("No BOM lines found in that CSV — is it a bill of materials export?")
+            ctx.services.log("No BOM lines found in that CSV. Is it a bill of materials export?")
             return
         rows_b = res.get("rows", [])
         d = LM.bom_diff(old_rows, rows_b)
@@ -2101,14 +2101,14 @@ def _bom_panel(ctx, state) -> QWidget:
             return g.out if g.ok else None
         old = LM.bom_rows_at_ref(rels, show)
         if not old["sheets_found"]:
-            ctx.services.log(f"No schematic existed at {ref} — nothing to compare."); return
+            ctx.services.log(f"No schematic existed at {ref}: nothing to compare."); return
         rows_b = res.get("rows", [])
         d = LM.bom_diff(old["rows"], rows_b)
         d["cost"] = LM.bom_diff_cost(old["rows"], rows_b)
         d["lead"] = LM.bom_diff_lead(old["rows"], rows_b)
         d["csv"] = LM.bom_diff_csv(d, rows_b)
         host._last_diff = d
-        miss = f" ({old['sheets_missing']} sheet(s) absent at {ref})" if old["sheets_missing"] else ""
+        miss = f" ({plural(old['sheets_missing'], 'sheet')} absent at {ref})" if old["sheets_missing"] else ""
         ctx.services.log(f"Diff vs {ref}: {len(d['added'])} added, {len(d['removed'])} "
                          f"removed, {len(d['changed'])} changed{miss}.")
         _render_diff(d)
@@ -2300,7 +2300,7 @@ def _rename_panel(ctx, state) -> QWidget:
     top.addWidget(seg); top.addStretch(1)
     b_prev = W.btn("Preview", "ghost", "Preview the refactor without writing")
     b_apply = W.btn("Apply To Project", "primary",
-                    "Write the change to every sheet and board — each file is backed up (.bak) first")
+                    "Write the change to every sheet and board. Each file is backed up (.bak) first")
     top.addWidget(b_prev); top.addWidget(b_apply)
     lay.addLayout(top)
     intro = W.body("Rename references and net labels across every sheet and board at once. "
@@ -2371,7 +2371,7 @@ def _rename_panel(ctx, state) -> QWidget:
         # An intentional empty state for the results region, so the panel doesn't
         # read as a broken void before the first Preview (design-rules §5).
         clear_layout(result)
-        ph = W.body("Matches will appear here after you run Preview — each is shown as "
+        ph = W.body("Matches will appear here after you run Preview. Each is shown as "
                     "old → new before anything is written.", dim=True)
         ph.setWordWrap(True)
         result.addWidget(ph)
@@ -2390,7 +2390,7 @@ def _rename_panel(ctx, state) -> QWidget:
         if op in ("find_replace", "add_tag") and not tag_or_find:
             clear_layout(result)
             need = "text to find" if op == "find_replace" else "a tag prefix"
-            msg = (f"Enter {need} first — an empty value would rewrite every "
+            msg = (f"Enter {need} first. An empty value would rewrite every "
                    f"reference and label.")
             result.addWidget(W.body(msg, dim=True))
             ctx.services.log(msg)
@@ -2435,7 +2435,7 @@ def _rename_panel(ctx, state) -> QWidget:
                 # Atomic apply rolled back — say so, and name the file/phase, so the
                 # user knows NO files were left modified (not a silent partial write).
                 result.addWidget(W.body(
-                    f"Refactor aborted — {res['stage']} failed on {res['path']}. "
+                    f"Refactor aborted: {res['stage']} failed on {res['path']}. "
                     f"No files were modified.", dim=True))
                 ctx.services.log(f"Refactor aborted ({res['stage']} on {res['path']}); "
                                  f"nothing was written."); return
@@ -2620,7 +2620,7 @@ def _len_spin(unit, mm_value, width=104, lo_mm=0.0, hi_mm=25.0, snap=False):
             # PCB-13: while the value differs from the last-saved one, show the
             # original in the tooltip so an edit is reversible/visible until saved.
             if abs(sp._mm - sp._saved_mm) > 1e-9:
-                sp.setToolTip(f"Edited — saved value {_to_disp(sp._saved_mm, unit['u']):.4g} "
+                sp.setToolTip(f"Edited: saved value {_to_disp(sp._saved_mm, unit['u']):.4g} "
                               f"{'mils' if unit['u'] == _MILS else 'mm'}")
             else:
                 sp.setToolTip("")
@@ -2657,18 +2657,18 @@ def _save_summary(done, stats):
     file, and board-geometry keys touched."""
     parts = []
     if "design rules" in done:
-        parts.append(f"{stats.get('dr_fields', 0)} design-rule field(s)")
+        parts.append(f"{plural(stats.get('dr_fields', 0), 'design-rule field')}")
     if "rule tables & severities" in done:
-        parts.append(f"{stats.get('dre', 0)} rule/severity/size-table setting(s)")
+        parts.append(f"{plural(stats.get('dre', 0), 'rule/severity/size-table setting')}")
     if "net classes" in done:
-        seg = f"{stats.get('nc_written', 0)} net class(es) written"
+        seg = f"{plural(stats.get('nc_written', 0), 'net class', 'net classes')} written"
         pres = stats.get("nc_preserved") or []
         if pres:
             shown = ", ".join(pres[:4]) + (f" +{len(pres) - 4} more" if len(pres) > 4 else "")
-            seg += f" ({len(pres)} user class(es) preserved: {shown})"
+            seg += f" ({plural(len(pres), 'user class', 'user classes')} preserved: {shown})"
         parts.append(seg)
     if "board geometry" in done:
-        parts.append(f"{stats.get('bg_keys', 0)} board-geometry key(s)")
+        parts.append(f"{plural(stats.get('bg_keys', 0), 'board-geometry key')}")
     if "fab floor" in done:
         fb = stats.get("fab_board") or {}
         bits = [b for b, on in (("stackup", fb.get("stackup")),
@@ -2875,7 +2875,7 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
             clear_layout(fhl); fab_labels.clear()
             preset = fabp.PRESETS.get(prof_state["fab"])
             if not preset:
-                fhl.addWidget(W.empty_state("No fabrication preset",
+                fhl.addWidget(W.empty_state("No Fabrication Preset",
                                             glyph=icons.GLYPHS["alert"],
                                             sub="This profile has no associated fab floor.")); return
             pairs = [
@@ -2996,7 +2996,7 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
             if apply:
                 n = conform_state["previewed"]
                 if not confirm(host, "Apply Text Conform",
-                               f"Rewrite text sizes on {n} object(s) across {len(files)} file(s)? "
+                               f"Rewrite text sizes on {plural(n, 'object')} across {plural(len(files), 'file')}? "
                                f"A .bak is kept per file."):
                     return
             ts = _ts()
@@ -3017,12 +3017,12 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
                 if apply:
                     conform_state["previewed"] = 0
                     b_conf_apply.setEnabled(False)
-                    _log(f"Text conform applied to {total} object(s) across {len(files)} file(s); "
+                    _log(f"Text conform applied to {plural(total, 'object')} across {plural(len(files), 'file')}; "
                          f"a .bak was kept per file.")
                 else:
                     conform_state["previewed"] = total
                     b_conf_apply.setEnabled(total > 0)
-                    _log(f"Text conform preview: {total} object(s) would change.")
+                    _log(f"Text conform preview: {plural(total, 'object')} would change.")
 
             run_populate(ctx, job, populate, busy=("Applying conform..." if apply else "Previewing conform..."))
         b_conf_prev.clicked.connect(lambda: run_conform(False))
@@ -3071,7 +3071,7 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
             clear_layout(shl); stack_labels.clear()
             preset = fabp.PRESETS.get(prof_state["fab"])
             if not preset or not preset.stackup:
-                shl.addWidget(W.empty_state("No stackup",
+                shl.addWidget(W.empty_state("No Stackup",
                                             glyph=icons.GLYPHS["alert"],
                                             sub="This profile's fab floor carries no physical layer stack.")); return
             grid = QWidget(); g = QGridLayout(grid); g.setContentsMargins(0, 0, 0, 0)
@@ -3335,7 +3335,7 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
         pbl.addLayout(_pin_row)
         n_excl = len(pm.erc_exclusions)
         if n_excl:
-            pbl.addWidget(W.body(f"{n_excl} ERC exclusion(s) preserved from the project "
+            pbl.addWidget(W.body(f"{plural(n_excl, 'ERC exclusion')} preserved from the project "
                                  f"(kept verbatim on save).", dim=True))
         lay.addWidget(W.CollapsibleSection("ERC Pin Conflict Map", pin_body))
 
@@ -3672,7 +3672,7 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
         add_section("Board Geometry")
         setup = {}
         if board is None:
-            lay.addWidget(W.empty_state("No board found", glyph=icons.GLYPHS["cube"],
+            lay.addWidget(W.empty_state("No Board Found", glyph=icons.GLYPHS["cube"],
                                         sub="This project has no .kicad_pcb to configure."))
         else:
             try:
@@ -3770,7 +3770,7 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
             prof_combo.setCurrentText(prof.name)
             prof_combo.blockSignals(False)
             rebuild_netclasses(); refresh_units(); clear_layout(nc_status)
-            _log(f"Pulled {len(prof.netclasses)} net class(es) from {Path(pro_).name}. "
+            _log(f"Pulled {plural(len(prof.netclasses), 'net class', 'net classes')} from {Path(pro_).name}. "
                  f"Use Save Profile to keep it.")
 
         def _refresh_profile_list(select=None):
@@ -3860,7 +3860,7 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
             prof_state["name"] = "Vault Standard"
             rebuild_netclasses(); refresh_units(); clear_layout(nc_status)
             _log(f"Loaded the saved vault standard "
-                 f"({len(nc_state['mgr'].list_netclasses())} class(es)).")
+                 f"({plural(len(nc_state['mgr'].list_netclasses()), 'class', 'classes')}).")
 
         def _save_vault():
             # PARITY: ncm.save_vault_standard — persist the current net classes as the canonical
@@ -4046,17 +4046,17 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
         ops = []
         if snap["pro"]:
             if snap["dr_ok"] and snap["n_dr"]:
-                ops.append({"key": "dr", "label": f"Design rules: {snap['n_dr']} field(s)",
+                ops.append({"key": "dr", "label": f"Design rules: {plural(snap['n_dr'], 'field')}",
                             "detail": "", "safe": True})
             if snap.get("dre_ok") and snap.get("dre_dirty"):
                 ops.append({"key": "dre",
                             "label": "Rule severities, size tables, pin map, Default class & meta",
                             "detail": "", "safe": True})
             if snap["n_nc"]:
-                ops.append({"key": "nc", "label": f"Net classes: {snap['n_nc']} class(es)",
+                ops.append({"key": "nc", "label": f"Net classes: {plural(snap['n_nc'], 'class', 'classes')}",
                             "detail": "", "safe": True})
         if snap["board"] is not None and snap["bvals"]:
-            ops.append({"key": "bg", "label": f"Board geometry: {len(snap['bvals'])} key(s)",
+            ops.append({"key": "bg", "label": f"Board geometry: {plural(len(snap['bvals']), 'key')}",
                         "detail": "", "safe": True})
         if snap["board"] is not None and snap["fab_preset"] is not None:
             ops.append({"key": "fab",
@@ -4134,7 +4134,7 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
             if nc_status is not None:
                 for iss in issues[:20]:
                     nc_status.addWidget(W.body(f"{iss.get('netclass', '')}: {iss.get('issue', '')}", dim=True))
-            _log(f"{len(issues)} net-class issue(s) found.")
+            _log(f"{plural(len(issues), 'net-class issue')} found.")
         _push_verdict()
 
     # ── Manage machinery: Clear KiCad Cache (parity: clear_project_cache[_files]) ──────────
@@ -4160,7 +4160,7 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
             except Exception:  # noqa: BLE001
                 pass
             n = sum(v for v in counts.values() if isinstance(v, int))
-            return f"Cleared {n} KiCad cache file(s) under {rp.name}."
+            return f"Cleared {plural(n, 'KiCad cache file')} under {rp.name}."
 
         def done(line, ok):
             _log(line if ok else "Clearing the KiCad cache failed.")

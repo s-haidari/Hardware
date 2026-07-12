@@ -1689,7 +1689,7 @@ def test_apply_conform_is_confirmed_and_reports_count(tmp_path, monkeypatch):
     panel._run_conform(True)                               # Apply -> confirmed
     after = board.read_text(encoding="utf-8")
     assert "(size 1 1)" in after                            # silk text conformed to the 1.0 target
-    assert any("Text conform applied" in m and "object(s)" in m for m in ctx.services.logs)
+    assert any("Text conform applied" in m and "object" in m for m in ctx.services.logs)
     # A fresh preview is required again before the next apply.
     assert panel._conform_apply_btn.isEnabled() is False
 
@@ -1735,11 +1735,11 @@ def test_save_summary_reports_counts_and_preserved_classes():
     stats = {"dr_fields": 11, "nc_written": 5,
              "nc_preserved": ["HV", "USER_A", "USER_B"], "bg_keys": 2}
     msg = PJ._save_summary(done, stats)
-    assert "11 design-rule field(s)" in msg
-    assert "5 net class(es) written" in msg
-    assert "3 user class(es) preserved" in msg
+    assert "11 design-rule fields" in msg
+    assert "5 net classes written" in msg
+    assert "3 user classes preserved" in msg
     assert "HV" in msg and "USER_A" in msg
-    assert "2 board-geometry key(s)" in msg
+    assert "2 board-geometry keys" in msg
 
 
 def test_save_preserves_unmanaged_class_and_reports_it(tmp_path, monkeypatch):
@@ -1781,7 +1781,7 @@ def test_save_preserves_unmanaged_class_and_reports_it(tmp_path, monkeypatch):
     names = {c.get("name") for c in data["net_settings"]["classes"]}
     assert "HV" in names
     # ...and the save log names it as a preserved user class (not a flat "Saved").
-    assert any("net class(es) written" in m and "HV" in m and "preserved" in m
+    assert any("net class" in m and "written" in m and "HV" in m and "preserved" in m
                for m in ctx.services.logs)
 
 

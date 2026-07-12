@@ -254,7 +254,7 @@ def legend(groups: Sequence[Tuple[str, Sequence[Tuple[str, str]]]]) -> QWidget:
             lab = QLabel(label); lab.setFont(T.ui_font(9))
             def style(dot=dot, key=key, lab=lab):
                 col = T.category(key) if not key.startswith("#") else key
-                dot.setStyleSheet(f"background:{col};border-radius:5px;")
+                dot.setStyleSheet(W.dot_css(col, 10))
                 lab.setStyleSheet(f"color:{T.t('txt2')};background:transparent;")
             W.register_restyle(style, dot)
             cell = W.hstack(dot, lab, spacing=8)
@@ -456,7 +456,7 @@ def button_grid(actions: Sequence[Action], cols: int = 2) -> QWidget:
     so a primary here would be a second accent (the one-primary invariant, enforced)."""
     for a in actions:
         if getattr(a, "kind", "default") == "primary":
-            raise ValueError("button_grid holds no primary action — the accent lives in the ▶ flow")
+            raise ValueError("button_grid holds no primary action: the accent lives in the ▶ flow")
     w = QWidget()
     grid = QGridLayout(w)
     grid.setContentsMargins(0, 0, 0, 0)
@@ -478,7 +478,7 @@ def menu_button(label: str, actions: Sequence[Action], *, tip: str = "", kind: s
     accent (the one-primary invariant, enforced as in button_grid)."""
     for a in actions:
         if getattr(a, "kind", "default") == "primary":
-            raise ValueError("menu_button holds no primary action — the accent lives in the ▶ flow")
+            raise ValueError("menu_button holds no primary action: the accent lives in the ▶ flow")
     return W.menu_button(label, [(a.text, a.on, a.tip) for a in actions], tip=tip, kind=kind)
 
 
@@ -595,7 +595,7 @@ def workbench(ctx, *, title: str, snapshot: Callable[[], dict],
     `secondary` is rejected. Exposes `_verdict` / `_region` / `_refresh` and, when a primary
     is present, the `_run_primary` test seam (so drive_audit can drive the flow headlessly)."""
     if any(getattr(a, "kind", "default") == "primary" for a in secondary):
-        raise ValueError("a workbench's only accent primary is the ▶ flow — none in `secondary`")
+        raise ValueError("a workbench's only accent primary is the ▶ flow: none in `secondary`")
 
     from .util import run_populate
     # Shared busy flag: the primary flow AND any secondary mutating op (a feature can pass its
@@ -707,7 +707,7 @@ def editor(ctx, *, title: str, snapshot: Callable[[], dict],
     ``_verdict`` / ``_set_verdict(state)`` / ``_controller`` / ``_busy`` and, with a primary,
     ``_run_primary``."""
     if any(getattr(a, "kind", "default") == "primary" for a in secondary):
-        raise ValueError("an editor's only accent primary is the ▶ flow — none in `secondary`")
+        raise ValueError("an editor's only accent primary is the ▶ flow: none in `secondary`")
 
     busy = busy if busy is not None else {"on": False}
     host = QWidget()

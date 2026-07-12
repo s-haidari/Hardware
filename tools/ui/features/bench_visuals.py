@@ -311,7 +311,7 @@ def _swatch(cat, kind="fill") -> QLabel:
         if kind == "fill":
             lab.setStyleSheet(f"background:{T.category(cat)};border-radius:2px;")
         elif kind == "dot":
-            lab.setStyleSheet(f"background:{T.category(cat)};border-radius:4px;")
+            lab.setStyleSheet(W.dot_css(T.category(cat), 9))
         elif kind == "notch":
             lab.setStyleSheet(f"background:transparent;border:1px solid {T.t('txt1')};border-radius:2px;")
         else:
@@ -388,7 +388,7 @@ def pin_meta(cat: str, side: str) -> QWidget:
     meta = QHBoxLayout(w); meta.setContentsMargins(0, 0, 0, 0); meta.setSpacing(16)
     lead = QWidget(); lh = QHBoxLayout(lead); lh.setContentsMargins(0, 0, 0, 0); lh.setSpacing(8)
     dot = QLabel(); dot.setFixedSize(9, 9)
-    W.register_restyle(lambda: dot.setStyleSheet(f"background:{T.category(cat)};border-radius:4px;"), dot)
+    W.register_restyle(lambda: dot.setStyleSheet(W.dot_css(T.category(cat), 9)), dot)
     catlab = QLabel(cat.title()); catlab.setFont(T.ui_font(10, semibold=True))
     W.register_restyle(lambda: catlab.setStyleSheet(f"color:{T.t('txt1')};background:transparent;"), catlab)
     lh.addWidget(dot); lh.addWidget(catlab)

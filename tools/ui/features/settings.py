@@ -193,7 +193,7 @@ def _machine_setup(ctx, root, lay) -> None:
             else:
                 missing.append({"item": "STM32 database", "why": "not built",
                                 "how_to_fix": "Rebuild STM32 Database (above)."})
-            return {"summary": f"Setup checked — {len(done)} OK, {len(missing)} to address.",
+            return {"summary": f"Setup checked: {len(done)} OK, {len(missing)} to address.",
                     "done": [d for d in done if isinstance(d, str)],
                     "missing": [m for m in missing if isinstance(m, dict)]}
 

@@ -53,6 +53,7 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdi
 
 from .. import widgets as W
 from .. import kit as K
+from ..prose import plural
 from ..util import run_populate, clear_layout, _headless
 from .. import feature as F
 
@@ -64,6 +65,10 @@ import LibraryManager as LM
 # missing the tail of a pathological tree is fine (commit/pull/tab-entry also refresh);
 # an unbounded watch set is not.
 _WATCH_DIR_CAP = 512
+
+# Repeated guard / empty-state copy — one spelling, no em dash (design-rules §2).
+_NO_REPO = "No repository. Set one up first."
+_NOTHING_TO_COMMIT = "Nothing to commit. The working tree is clean."
 
 
 def _watch_dirs(repo, cap: int = _WATCH_DIR_CAP):
@@ -236,7 +241,7 @@ def _git_workbench(ctx) -> QWidget:
         # syncs from the live broadcast so it never goes stale when toggled elsewhere.
         auto_cb = QCheckBox("Auto-Pull")
         auto_cb.setToolTip("Periodically fast-forward from the remote in the background "
-                           "(fast-forward only — never merges or rewrites local work). "
+                           "(fast-forward only, never merges or rewrites local work). "
                            "Runs app-wide and persists across launches.")
         auto_cb.setChecked(bool(LM.read_setting("AutoPull", False)))
         auto_cb.toggled.connect(lambda on: ctx.bus.emit("autopull.set_enabled", on))
@@ -321,7 +326,7 @@ def _git_workbench(ctx) -> QWidget:
         clean-tree so the report says exactly why nothing happened."""
         repo = snap.get("repo")
         if repo is None:
-            commit_flow.empty = "No repository — set one up first."
+            commit_flow.empty = _NO_REPO
             return []
         if not snap.get("msg"):
             commit_flow.empty = "Enter a commit message first, then run Commit & Sync."
@@ -338,7 +343,7 @@ def _git_workbench(ctx) -> QWidget:
                 seen.add(f)
                 files.append(f)
         if not files:
-            commit_flow.empty = "Nothing to commit — the working tree is clean."
+            commit_flow.empty = _NOTHING_TO_COMMIT
             return []
         return [{"key": f, "label": f, "detail": "", "safe": True} for f in files]
 
@@ -361,7 +366,7 @@ def _git_workbench(ctx) -> QWidget:
                 errors.append(f"stage {f}: {getattr(v, 'message', '')}")
         bad = nd_git.guard_no_corrupt_kicad(repo)
         if bad:
-            return {"summary": "Commit BLOCKED — corrupt KiCad staged.",
+            return {"summary": "Commit blocked: corrupt KiCad staged.",
                     "done": done,
                     "missing": [{"item": Path(p).name, "why": why,
                                  "how_to_fix": "Fix the merge markers / balance the parens, then retry."}
@@ -377,12 +382,12 @@ def _git_workbench(ctx) -> QWidget:
             if pushed_ok:
                 done.append("pushed")
             else:
-                errors.append(f"push FAILED: {getattr(res, 'message', '')} — commit succeeded, push manually")
+                errors.append(f"push FAILED: {getattr(res, 'message', '')}. Commit succeeded; push manually.")
         except Exception as e:  # noqa: BLE001
             pushed_ok = False
-            errors.append(f"push FAILED: {e} — commit succeeded, push manually")
+            errors.append(f"push FAILED: {e}. Commit succeeded; push manually.")
         ui["pending_clear"] = True
-        return {"summary": f"Committed {info}" + (" + pushed" if pushed_ok else " — PUSH FAILED"),
+        return {"summary": f"Committed {info}" + (" + pushed" if pushed_ok else "; push failed"),
                 "done": done, "errors": errors}
 
     # NB: no "&" in a button label — Qt reads a single "&" as a mnemonic marker (it
@@ -392,7 +397,7 @@ def _git_workbench(ctx) -> QWidget:
     commit_flow = K.PrimaryFlow(
         label="▶ Commit and Sync", audit=_cs_audit, intro=_cs_intro, apply=_cs_apply,
         tip="Preview → stage the checked files → corruption-guard → commit → push, in one action",
-        empty="Nothing to commit — the working tree is clean.")
+        empty=_NOTHING_TO_COMMIT)
 
     # ── secondary + machinery op runners (busy-gated, off-thread, then refresh) ─────────
     def _run_op(label, work, *, busy_label=None):
@@ -431,7 +436,7 @@ def _git_workbench(ctx) -> QWidget:
     def _stage_all():
         repo = snapshot()["repo"]
         if repo is None:
-            _log("No repository — set one up first."); return
+            _log(_NO_REPO); return
 
         def work():
             r = nd_git.stage_all(repo)
@@ -443,7 +448,7 @@ def _git_workbench(ctx) -> QWidget:
         snap = snapshot()
         repo, m = snap["repo"], snap["msg"]
         if repo is None:
-            _log("No repository — set one up first."); return
+            _log(_NO_REPO); return
         if not m:
             # Don't fabricate a message — the backend rejects an empty one; routing around
             # it pollutes history. Prompt and focus the field instead.
@@ -476,7 +481,7 @@ def _git_workbench(ctx) -> QWidget:
     def _push():
         repo = snapshot()["repo"]
         if repo is None:
-            _log("No repository — set one up first."); return
+            _log(_NO_REPO); return
 
         def work():
             try:
@@ -490,7 +495,7 @@ def _git_workbench(ctx) -> QWidget:
     def _pull():
         repo = snapshot()["repo"]
         if repo is None:
-            _log("No repository — set one up first."); return
+            _log(_NO_REPO); return
 
         def work():
             res = nd_git.pull_ff_only(repo)
@@ -508,7 +513,7 @@ def _git_workbench(ctx) -> QWidget:
     def _sync_remote():
         repo = snapshot()["repo"]
         if repo is None:
-            _log("No repository — set one up first."); return
+            _log(_NO_REPO); return
 
         def work():
             ab = nd_git.ahead_behind(repo)
@@ -518,17 +523,17 @@ def _git_workbench(ctx) -> QWidget:
                                      "how_to_fix": "Push once with -u, or set the upstream in git."}]}
             ahead, behind = ab
             if ahead == 0 and behind == 0:
-                return {"summary": "In sync — nothing to pull or push."}
+                return {"summary": "In sync. Nothing to pull or push."}
             done, errors = [], []
             if behind > 0:
                 res = nd_git.pull_ff_only(repo)
                 (done if getattr(res, "ok", False) else errors).append(
-                    f"pulled {behind} commit(s)" if getattr(res, "ok", False)
+                    f"pulled {plural(behind, 'commit')}" if getattr(res, "ok", False)
                     else f"pull FAILED: {getattr(res, 'message', '')}")
             if ahead > 0 and not errors:
                 res = nd_git.push(repo)
                 (done if getattr(res, "ok", False) else errors).append(
-                    f"pushed {ahead} commit(s)" if getattr(res, "ok", False)
+                    f"pushed {plural(ahead, 'commit')}" if getattr(res, "ok", False)
                     else f"push FAILED: {getattr(res, 'message', '')}")
             return {"summary": f"Sync: was {ahead} ahead / {behind} behind.",
                     "done": done, "errors": errors}
@@ -538,7 +543,7 @@ def _git_workbench(ctx) -> QWidget:
     def _status_report():
         repo = snapshot()["repo"]
         if repo is None:
-            _log("No repository — set one up first."); return
+            _log(_NO_REPO); return
 
         def work():
             s = nd_git.status(repo)
@@ -560,11 +565,11 @@ def _git_workbench(ctx) -> QWidget:
     def _recent_commits():
         repo = snapshot()["repo"]
         if repo is None:
-            _log("No repository — set one up first."); return
+            _log(_NO_REPO); return
 
         def work():
             commits = nd_git.recent_commits(repo, 25)
-            return {"summary": f"{len(commits)} recent commit(s), newest first:",
+            return {"summary": f"{plural(len(commits), 'recent commit')}, newest first:",
                     "done": [f"{c['ref']}  {c['subject']}  ({c['when']})" for c in commits]}
 
         _report_op("Recent Commits", work)
@@ -572,16 +577,16 @@ def _git_workbench(ctx) -> QWidget:
     def _integrity_scan():
         repo = snapshot()["repo"]
         if repo is None:
-            _log("No repository — set one up first."); return
+            _log(_NO_REPO); return
 
         def work():
             bad = nd_git.find_corrupt_kicad_files(repo)
             if not bad:
                 return {"summary": "Working tree is clean of corrupt KiCad files."}
-            return {"summary": f"{len(bad)} corrupt KiCad file(s) found.",
+            return {"summary": f"{plural(len(bad), 'corrupt KiCad file')} found.",
                     "missing": [{"item": Path(p).as_posix(), "why": why,
                                  "how_to_fix": "Fix the merge markers / balance the parens, or discard "
-                                               "the file — a commit is blocked until it's clean."}
+                                               "the file; a commit is blocked until it's clean."}
                                 for p, why in bad]}
 
         _report_op("Integrity Scan", work)
@@ -589,7 +594,7 @@ def _git_workbench(ctx) -> QWidget:
     def _show_file(path=None):
         repo = snapshot()["repo"]
         if repo is None:
-            _log("No repository — set one up first."); return
+            _log(_NO_REPO); return
         rel = path
         if rel is None:
             if _headless():
@@ -612,7 +617,7 @@ def _git_workbench(ctx) -> QWidget:
     def _stage_file(path=None):
         repo = snapshot()["repo"]
         if repo is None:
-            _log("No repository — set one up first."); return
+            _log(_NO_REPO); return
         p = path
         if p is None:
             if _headless():
@@ -631,7 +636,7 @@ def _git_workbench(ctx) -> QWidget:
     def _unstage_file(path=None):
         repo = snapshot()["repo"]
         if repo is None:
-            _log("No repository — set one up first."); return
+            _log(_NO_REPO); return
         p = path
         if p is None:
             if _headless():
@@ -687,8 +692,8 @@ def _git_workbench(ctx) -> QWidget:
             return
         if not v.is_repo:
             K._report(host, "Set Up Repository",
-                      {"summary": f"{Path(p).as_posix()} is not a git repository yet — "
-                                  "use Initialize Repository to create one there."}, log=log)
+                      {"summary": f"{Path(p).as_posix()} is not a git repository yet. "
+                                  "Use Initialize Repository to create one there."}, log=log)
             return
         _adopt(v.root or Path(p))
 
@@ -712,7 +717,7 @@ def _git_workbench(ctx) -> QWidget:
 
     # ── assemble the workbench ─────────────────────────────────────────────────────────
     secondary = [
-        K.action("Stage All", _stage_all, tip="git add -A — stage every change in the work tree"),
+        K.action("Stage All", _stage_all, tip="git add -A: stage every change in the work tree"),
         K.action("Stage File…", lambda: _stage_file(), tip="Stage a single file"),
         K.action("Unstage File…", lambda: _unstage_file(), tip="Remove a file from the index"),
         K.action("Commit", lambda: _commit(False), tip="Stage everything shown, then commit"),

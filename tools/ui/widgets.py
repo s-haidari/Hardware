@@ -157,6 +157,33 @@ def restyle_all() -> None:
     _RESTYLERS[:] = survivors
 
 
+# ── the one category/status data-marker dot ──────────────────────────────────
+# design-rules §1.1 blesses a small coloured DOT as the sanctioned category/status
+# marker ("a 6px leading dot"), where the number is the *diameter*. A dot is a true
+# circle, so its radius is derived (size // 2) — never a control/container token and
+# never a hand-typed 3/4/5px literal scattered per call site. These two helpers are
+# the single source: `dot_css` builds the stylesheet string (use it inside an
+# existing restyle / shared `_style` so the marker recolours with the theme without
+# stacking a second registration — the VerdictSlot pattern), and `category_dot`
+# wraps it as a standalone self-restyling QLabel for the common case.
+def dot_css(color: str, size: int) -> str:
+    """Stylesheet for a filled circular data-marker dot of `size` px, coloured
+    `color` (a resolved colour: T.category(...)/T.t(...)/user hex). Radius is
+    size // 2 so the marker is always a true circle."""
+    return f"background:{color};border-radius:{size // 2}px;"
+
+
+def category_dot(cat: str, size: int = 7) -> QLabel:
+    """A standalone category data-marker dot whose fill tracks ``T.category(cat)``
+    across theme toggles via ONE registered restyle. For a status dot or a dot that
+    lives inside a shared ``_style`` (a verdict band), build a plain ``QLabel`` and
+    set ``dot_css(colour, size)`` from that owner's restyle instead — don't stack a
+    second registration."""
+    dot = QLabel(); dot.setFixedSize(size, size)
+    register_restyle(lambda: dot.setStyleSheet(dot_css(T.category(cat), size)), dot)
+    return dot
+
+
 def _qcolor(token: str):
     """Parse a theme colour token to a QColor. Tokens are either '#rrggbb' (dark
     palette) or 'rgba(r,g,b,a)' / 'rgb(r,g,b)' (light palette). QColor's string
@@ -257,7 +284,7 @@ def net_label(text: str, cat: str) -> QWidget:
     lay.addStretch(1)
 
     def style():
-        dot.setStyleSheet(f"background:{T.category(cat)};border-radius:3px;")
+        dot.setStyleSheet(dot_css(T.category(cat), 7))
         name.setStyleSheet(f"color:{T.t('txt1')};background:transparent;")
     register_restyle(style, w)
     return w
@@ -278,7 +305,7 @@ def net_token(text: str, cat: str) -> QWidget:
 
     def style():
         col = T.category(cat)
-        dot.setStyleSheet(f"background:{col};border-radius:3px;")
+        dot.setStyleSheet(dot_css(col, 7))
         name.setStyleSheet(f"color:{col};background:transparent;")
         w.setStyleSheet(f"background:{T.t('tok')};border-radius:{T.RADIUS_CONTROL}px;")
     register_restyle(style, w)
@@ -597,7 +624,7 @@ class Verdict(QFrame):
 
         def style():
             colmap = {"ok": T.t("ok"), "warn": T.t("warn"), "err": T.t("err")}
-            dot.setStyleSheet(f"background:{colmap.get(dotkind, T.t('txt3'))};border-radius:3px;")
+            dot.setStyleSheet(dot_css(colmap.get(dotkind, T.t('txt3')), 7))
             lab.setStyleSheet(f"color:{T.t('txt2')};background:transparent;")
             # a genuine status tag, but the stadium pill + border is the retired idiom:
             # a quiet 6px token on the tok fill, borderless (design-rules §1.1/§1.2).
@@ -617,8 +644,7 @@ class Verdict(QFrame):
                            f"border-radius:{T.RADIUS_CONTAINER}px;}}")
         if self._dot is not None:
             colmap = {"ok": T.t("ok"), "warn": T.t("warn"), "err": T.t("err")}
-            self._dot.setStyleSheet(f"background:{colmap.get(self._kind, T.t('txt3'))};"
-                                    f"border-radius:4px;")
+            self._dot.setStyleSheet(dot_css(colmap.get(self._kind, T.t('txt3')), 9))
         self._title.setStyleSheet(f"color:{T.t('txt1')};background:transparent;")
         if self._sub is not None:
             self._sub.setStyleSheet(f"color:{T.t('txt2')};background:transparent;")
@@ -693,13 +719,11 @@ class VerdictSlot(QFrame):
         colmap = {"ok": T.t("ok"), "warn": T.t("warn"), "err": T.t("err"), "info": T.t("info")}
         self.setStyleSheet(f"QFrame#ndverdict{{background:{T.t('card')};border:none;"
                            f"border-radius:{T.RADIUS_CONTAINER}px;}}")
-        self._dot.setStyleSheet(f"background:{colmap.get(self._kind, T.t('txt3'))};"
-                                f"border-radius:4px;")
+        self._dot.setStyleSheet(dot_css(colmap.get(self._kind, T.t('txt3')), 9))
         self._title.setStyleSheet(f"color:{T.t('txt1')};background:transparent;")
         self._sub.setStyleSheet(f"color:{T.t('txt2')};background:transparent;")
         for c in self._chips:
-            c["dot"].setStyleSheet(f"background:{colmap.get(c['dotkind'], T.t('txt3'))};"
-                                   f"border-radius:3px;")
+            c["dot"].setStyleSheet(dot_css(colmap.get(c['dotkind'], T.t('txt3')), 7))
             c["lab"].setStyleSheet(f"color:{T.t('txt2')};background:transparent;")
             c["val"].setStyleSheet(f"color:{T.t('txt1')};background:transparent;")
             c["frame"].setStyleSheet(f"QFrame#ndchip{{background:{T.t('tok')};border:none;"

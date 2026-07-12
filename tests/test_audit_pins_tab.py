@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
 class NamesHelperTests(unittest.TestCase):
     """The live _names() column renderer, no Qt canvas needed. It backs the visible
-    Table 'Pin Name(s)' / 'Role Set' cells (bench.py:_pin_row), so it must spell the
+    Table 'Pin Names' / 'Role Set' cells (bench.py:_pin_row), so it must spell the
     distinct keys out, most-common first, and never leak the ×count integers/braces."""
 
     def setUp(self):

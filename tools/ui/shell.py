@@ -285,7 +285,7 @@ class NetdeckShell(QMainWindow):
         # so a dismissed dialog (or a silent launch auto-check) still leaves a signal
         self._update_item = NavItem("Update Available", W.svg_icon(_ICON["update"]),
                                     self._open_pending_update)
-        self._update_item.setToolTip("A newer version is available — click to update")
+        self._update_item.setToolTip("A newer version is available. Click to update")
         self._update_item.setVisible(False)
         lay.addWidget(self._update_item)
 

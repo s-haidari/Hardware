@@ -875,7 +875,7 @@ def audit_bench_styled():
         lint_btn = next((b for b in p.findChildren(QPushButton)
                          if b.text().startswith("Lint Claim File")), None)
         if lint_btn is None:
-            _fail("Bench/Analysis: no 'Lint Claim File(s)…' action")
+            _fail("Bench/Analysis: no 'Lint Claim Files…' action")
         else:
             lint_btn.click(); _pump()          # _headless() short-circuits the picker; no crash
 

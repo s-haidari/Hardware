@@ -93,7 +93,7 @@ _refresh_palette()   # stm32_db now imported — build the grayscale colour dict
 # Scannable columns that fit the viewport without horizontal scrolling. The verbose
 # per-pin detail (rationale, ADG714 wiring, tags, bootloader) lives in the focus
 # panel beside the table; the CSV/Markdown exports still carry the full column set.
-_COLS = ["Pin", "Side", "Pin Name(s)", "Role Set", "Switch",
+_COLS = ["Pin", "Side", "Pin Names", "Role Set", "Switch",
          "Destination", "Peripherals", "Breakout", "VDD (V)"]
 
 _SWITCH_LABEL = {

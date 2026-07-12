@@ -23,6 +23,7 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdi
 from .. import widgets as W
 from .. import kit
 from .. import feature as F
+from ..prose import plural
 from ..util import clear_layout, run_populate, _headless
 
 from .bench_visuals import (
@@ -858,8 +859,8 @@ def _analysis_panel(ctx, state: BenchState) -> QWidget:
         "Drift gate: check a Build Card's asserted numbers (must-switch count, ADG714 "
         "cells, debug pin positions) against the built authority.", dim=True))
     lint_bar = QHBoxLayout(); lint_bar.setSpacing(8)
-    b_lint = W.btn("Lint Claim File(s)…", "primary",
-                   "Pick claim file(s) and check them against the authority")
+    b_lint = W.btn("Lint Claim Files…", "primary",
+                   "Pick claim files and check them against the authority")
     lint_bar.addWidget(b_lint); lint_bar.addStretch(1)
     lay.addLayout(lint_bar)
     lint_holder = QVBoxLayout(); lint_holder.setSpacing(8)
@@ -870,7 +871,7 @@ def _analysis_panel(ctx, state: BenchState) -> QWidget:
             ctx.services.log("Lint Claim Files: no file (headless).")
             return
         paths, _ = QFileDialog.getOpenFileNames(
-            root, "Claim file(s) to lint", str(Path(ctx.cfg.get("RepoRoot") or ".")),
+            root, "Claim Files to Lint", str(Path(ctx.cfg.get("RepoRoot") or ".")),
             "Claims (*.json *.yaml *.yml)")
         if not paths:
             ctx.services.log("Lint Claim Files cancelled.")
@@ -897,7 +898,7 @@ def _analysis_panel(ctx, state: BenchState) -> QWidget:
             for ln in (lines or [])[:200]:
                 lint_holder.addWidget(W.body(str(ln), mono=True, wrap=True))
             ctx.services.log(f"Lint: {'no drift' if all_ok else 'DRIFT found'} "
-                             f"({len(lines or [])} line(s)).")
+                             f"({plural(len(lines or []), 'line')}).")
 
         run_populate(ctx, job, done, busy="Linting claim files...")
 

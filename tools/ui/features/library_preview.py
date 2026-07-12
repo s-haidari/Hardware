@@ -28,6 +28,7 @@ from PyQt5.QtWidgets import (QWidget, QFrame, QVBoxLayout, QHBoxLayout, QLabel,
                              QLayout, QSizePolicy, QMenu, QProgressBar, QScrollArea)
 
 from .. import theme as T
+from ..prose import plural
 from ..util import LogSink, run_populate, clear_layout, fmt_countdown
 from .. import widgets as W
 from .. import units as U
@@ -982,7 +983,7 @@ class LibraryToolsDialog(QDialog):
         dlg = DedupReviewDialog(self._ctx, groups, on_changed=self._on_changed, parent=self)
         n = sum(len(g) for g in groups)
         self._set_status("Deduplicate Footprints",
-                         f"{len(groups)} group(s), {n} footprints — opening review…")
+                         f"{plural(len(groups), 'group')}, {n} footprints. Opening review…")
         if not _headless():
             dlg.exec_()
 
@@ -992,7 +993,7 @@ class LibraryToolsDialog(QDialog):
             LM.git_commit_push(self._ctx.cfg, LogSink(self._ctx.services),
                                "chore(lib): auto-assign footprints and models")
             fp = (r or {}).get("footprint_count", 0); md = (r or {}).get("model_count", 0)
-            return f"Linked {fp} footprint(s) and {md} model(s) by name."
+            return f"Linked {plural(fp, 'footprint')} and {plural(md, 'model')} by name."
         self._run("Auto-Assign Links", job,
                   confirm="Link unlinked symbols to matching footprints and 3D models by "
                           "name, then commit?", busy="Auto-assigning links…")
@@ -1003,7 +1004,7 @@ class LibraryToolsDialog(QDialog):
             LM.git_commit_push(self._ctx.cfg, LogSink(self._ctx.services),
                                "chore(lib): repair footprint and model links")
             sf = (r or {}).get("symbols_fixed", 0); ff = (r or {}).get("footprints_fixed", 0)
-            return f"Repaired {sf} symbol link(s) and {ff} footprint link(s)."
+            return f"Repaired {plural(sf, 'symbol link')} and {plural(ff, 'footprint link')}."
         self._run("Fix Broken Links", job,
                   confirm="Rewrite library files to reconnect broken footprint and 3D-model "
                           "links, then commit?", busy="Repairing links…")
@@ -1013,7 +1014,7 @@ class LibraryToolsDialog(QDialog):
             r = LM.verify_handoff_readiness(self._ctx.cfg)
             issues = (r or {}).get("issues") or []
             return ("Integrity OK. Every reference is portable and resolvable."
-                    if not issues else f"{len(issues)} portability issue(s) found — see Maintenance.")
+                    if not issues else f"{plural(len(issues), 'portability issue')} found. See Maintenance.")
         self._run("Integrity Scan", job, busy="Scanning integrity…")
 
 
@@ -1656,7 +1657,7 @@ class PartDetail(QWidget):
         if refs:
             shown = ", ".join(str(x) for x in list(refs)[:8])
             more = f" (+{len(refs) - 8} more)" if len(refs) > 8 else ""
-            msg += (f"\n\n{len(refs)} {dangles}(s) reference it and will be left "
+            msg += (f"\n\n{plural(len(refs), dangles)} reference it and will be left "
                     f"dangling: {shown}{more}")
         msg += "\n\nThis is undo-safe. A snapshot is kept (Maintenance › Undo Last Change)."
         ans = QMessageBox.question(self, title, msg,
@@ -1813,7 +1814,7 @@ class PartDetail(QWidget):
                 return
             n = len(r.get("referenced_by") or [])
             self._ctx.services.log(f"Deleted footprint {stem}."
-                                   + (f" {n} symbol(s) now dangle." if n else ""))
+                                   + (f" {plural(n, 'symbol')} now dangle." if n else ""))
             self._mutation_refresh({"footprint": None, "has_footprint": False,
                                     "dangling": bool(n)})
         run_populate(self._ctx, job, done, busy=f"Deleting footprint {stem}...")
@@ -1846,7 +1847,7 @@ class PartDetail(QWidget):
                 return
             n = len(r.get("referenced_by") or [])
             self._ctx.services.log(f"Deleted 3D model {name}."
-                                   + (f" {n} footprint(s) now dangle." if n else ""))
+                                   + (f" {plural(n, 'footprint')} now dangle." if n else ""))
             self._mutation_refresh({"model": None, "has_model": False, "dangling": bool(n)})
         run_populate(self._ctx, job, done, busy=f"Deleting 3D model {name}...")
 
@@ -1855,7 +1856,7 @@ class PartDetail(QWidget):
         from PyQt5.QtWidgets import QDialog, QDialogButtonBox
         dlg = QDialog(self); dlg.setWindowTitle("Delete Part")
         v = QVBoxLayout(dlg)
-        v.addWidget(QLabel(f"Delete part '{row.get('name', '?')}'? Its symbol(s) are removed."))
+        v.addWidget(QLabel(f"Delete part '{row.get('name', '?')}'? Its symbols are removed."))
         fp_cb = QCheckBox("Also delete the footprint file")
         md_cb = QCheckBox("Also delete the 3D model file")
         fp_cb.setEnabled(bool(row.get("footprint")))
@@ -1899,7 +1900,7 @@ class PartDetail(QWidget):
                 self._ctx.services.log(
                     f"Delete Part: {(r or {}).get('reason') or 'nothing removed'}.")
                 return
-            bits = [f"{len(r.get('symbols_removed') or [])} symbol(s)"]
+            bits = [f"{plural(len(r.get('symbols_removed') or []), 'symbol')}"]
             if r.get("footprint_removed"):
                 bits.append("footprint")
             if r.get("model_removed"):
@@ -2247,7 +2248,7 @@ class PartDetail(QWidget):
 
         def done(wrote, ok):
             self._clear_unsaved()               # the autofill commit swept up any pending edits
-            self._ctx.services.log(f"Autofilled {wrote} field(s) on {ident} from Mouser."
+            self._ctx.services.log(f"Autofilled {plural(wrote, 'field')} on {ident} from Mouser."
                                    if wrote else "Autofill: nothing written.")
             new = dict(row); new.update(plan)
             self._remember_sourcing(new.get("mpn"), fetched)
@@ -2623,7 +2624,7 @@ class PartsList(QWidget):
         v.addSpacing(10); v.addWidget(self._pop_label("Find"))
         self._dupes_box = QCheckBox("Duplicates only"); self._dupes_box.setObjectName("finderOpt")
         self._dupes_box.setCursor(Qt.PointingHandCursor)
-        self._dupes_box.setToolTip("Show only parts that duplicate another — a shared part "
+        self._dupes_box.setToolTip("Show only parts that duplicate another: a shared part "
                                    "number, or a byte-identical footprint")
         self._dupes_box.toggled.connect(self._on_dupes_toggle)
         v.addWidget(self._dupes_box)

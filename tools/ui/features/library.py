@@ -22,6 +22,7 @@ from .. import kit as K
 from .. import icons
 from ..util import LogSink, run_populate, _headless, clear_layout
 from .. import feature as F
+from ..prose import plural
 from . import library_preview as P
 from .library_preview import PartsList, PartDetail
 
@@ -207,7 +208,7 @@ def _parts_panel(ctx, _state) -> QWidget:
             from PyQt5.QtWidgets import QMessageBox
             ans = QMessageBox.question(
                 root, "Apply Enrichment",
-                f"{n} blank field(s) can be filled from Mouser. Apply?",
+                f"{plural(n, 'blank field')} can be filled from Mouser. Apply?",
                 QMessageBox.Yes | QMessageBox.No)
             if ans != QMessageBox.Yes:
                 return
@@ -320,14 +321,10 @@ def _parts_panel(ctx, _state) -> QWidget:
     return root
 
 
-def _plural(n: int, noun: str) -> str:
-    return f"{n} {noun}" + ("" if n == 1 else "s")
-
-
 def _summarize_dedupe(removed) -> str:
     """dedupe_symbol_library returns the number of duplicate blocks removed."""
     n = int(removed or 0)
-    return (f"Dedupe Symbol Library: removed {_plural(n, 'duplicate')}."
+    return (f"Dedupe Symbol Library: removed {plural(n, 'duplicate')}."
             if n else "Dedupe Symbol Library: no duplicates.")
 
 
@@ -338,14 +335,14 @@ def _summarize_repair(result) -> str:
     fps = int(r.get("footprints_fixed", 0))
     no_model = int(r.get("footprints_no_model", 0))
     if not syms and not fps:
-        tail = f" ({_plural(no_model, 'footprint')} still without a model)" if no_model else ""
+        tail = f" ({plural(no_model, 'footprint')} still without a model)" if no_model else ""
         return f"Repair Footprint And Model Links: nothing to fix.{tail}"
     parts = []
     if syms:
-        parts.append(f"{_plural(syms, 'symbol link')}")
+        parts.append(f"{plural(syms, 'symbol link')}")
     if fps:
-        parts.append(f"{_plural(fps, 'model line')}")
-    tail = f"; {_plural(no_model, 'footprint')} still without a model" if no_model else ""
+        parts.append(f"{plural(fps, 'model line')}")
+    tail = f"; {plural(no_model, 'footprint')} still without a model" if no_model else ""
     return f"Repair Footprint And Model Links: fixed {' and '.join(parts)}{tail}."
 
 
@@ -353,7 +350,7 @@ def _summarize_dedupe_footprints(removed) -> str:
     """dedupe_footprint_library returns the number of duplicate footprint files
     removed (density variants are never counted — they aren't duplicates)."""
     n = int(removed or 0)
-    return (f"Deduplicate Footprints: removed {_plural(n, 'duplicate footprint')}."
+    return (f"Deduplicate Footprints: removed {plural(n, 'duplicate footprint')}."
             if n else "Deduplicate Footprints: no true duplicates "
                       "(density variants are kept).")
 
@@ -367,9 +364,9 @@ def _summarize_auto_assign(result) -> str:
         return "Auto-Assign Library: nothing to link."
     parts = []
     if fps:
-        parts.append(f"{_plural(fps, 'footprint')}")
+        parts.append(f"{plural(fps, 'footprint')}")
     if mdls:
-        parts.append(f"{_plural(mdls, 'model')}")
+        parts.append(f"{plural(mdls, 'model')}")
     return f"Auto-Assign Library: linked {' and '.join(parts)}."
 
 
@@ -423,7 +420,7 @@ def _maintenance_workbench(ctx) -> QWidget:
         if not n:
             return None                 # quiet-when-OK: no band at all
         dl = (snap.get("cfg") or {}).get("Downloads") or ""
-        return W.VerdictState(kind="warn", title=f"{n} ZIP{'s' if n != 1 else ''} Waiting",
+        return W.VerdictState(kind="warn", title=f"{plural(n, 'ZIP')} Waiting",
                               subtitle=Path(dl).as_posix() if dl else "")
 
     # ── detail: Imports + Undo History cards (chrome once, fill static) ────────────────
@@ -502,7 +499,7 @@ def _maintenance_workbench(ctx) -> QWidget:
                 except Exception as e:  # noqa: BLE001
                     errors.append(f"{Path(k).name}: {e}")
         ui["pending_changed"] = True
-        return {"summary": (f"Processed {len(done)} ZIP{'s' if len(done) != 1 else ''}."
+        return {"summary": (f"Processed {plural(len(done), 'ZIP')}."
                             if done else "Nothing processed."),
                 "done": done, "errors": errors}
 
@@ -634,7 +631,7 @@ def _maintenance_workbench(ctx) -> QWidget:
         def work():
             LM.merge_symbols(tgt, [Path(s) for s in srcs], lsink)
             LM.git_commit_push(cfg, lsink, "chore(lib): merge symbol files")
-            return f"Merged {len(srcs)} symbol file{'s' if len(srcs) != 1 else ''} into {tgt.name}."
+            return f"Merged {plural(len(srcs), 'symbol file')} into {tgt.name}."
 
         _run_op("Merge Symbol Files", work, changes_library=True)
 
@@ -678,7 +675,7 @@ def _maintenance_workbench(ctx) -> QWidget:
             bad = ND.find_corrupt_kicad_files(root)
             if not bad:
                 return {"summary": "No corrupt KiCad files found."}
-            return {"summary": f"{len(bad)} corrupt KiCad file(s) found.",
+            return {"summary": f"{plural(len(bad), 'corrupt KiCad file')} found.",
                     "missing": [{"item": Path(p).as_posix(), "why": why,
                                  "how_to_fix": "Fix the merge markers / balance the parens, "
                                                "or discard the file."}
@@ -723,7 +720,7 @@ def _maintenance_workbench(ctx) -> QWidget:
 
         def work():
             n = LM.empty_trash(Path(cfg["SymbolLib"]), lsink)
-            return f"Removed {n} undo snapshot{'s' if n != 1 else ''}."
+            return f"Removed {plural(n, 'undo snapshot')}."
 
         _run_op("Empty Undo History", work)
 
@@ -791,7 +788,7 @@ def _maintenance_workbench(ctx) -> QWidget:
             issues = r.get("issues") or []
             if not issues:
                 return {"summary": "Ready to hand off. Every reference is portable."}
-            return {"summary": f"{len(issues)} portability issue(s) found.",
+            return {"summary": f"{plural(len(issues), 'portability issue')} found.",
                     "missing": [{"item": str(i.get("ref", "?")),
                                  "why": f"{i.get('kind', '')}: {i.get('detail', '')}",
                                  "how_to_fix": str(i.get("how_to_fix", ""))}
@@ -815,9 +812,9 @@ def _maintenance_workbench(ctx) -> QWidget:
             after = LM.verify_handoff_readiness(cfg)
             n_b = len(before.get("issues") or [])
             n_a = len(after.get("issues") or [])
-            return {"summary": f"Portability: fixed {res.get('symbols_fixed', 0)} symbol "
-                               f"reference(s) and {res.get('models_fixed', 0)} model "
-                               f"line(s); {n_a} issue(s) remain (was {n_b}).",
+            return {"summary": f"Portability: fixed {plural(res.get('symbols_fixed', 0), 'symbol reference')} "
+                               f"and {plural(res.get('models_fixed', 0), 'model line')}; "
+                               f"{plural(n_a, 'issue')} remain (was {n_b}).",
                     "missing": [{"item": str(i.get("ref", "?")),
                                  "why": f"{i.get('kind', '')}: {i.get('detail', '')}",
                                  "how_to_fix": str(i.get("how_to_fix", ""))}
@@ -921,7 +918,7 @@ def _mk_health_verdict(rep):
                               subtitle="Import parts on the Maintenance tab to begin.")
     if complete == parts:
         return W.VerdictState(kind="ok", title="All Parts Complete",
-                              subtitle=f"{parts} part{'s' if parts != 1 else ''} · symbol, "
+                              subtitle=f"{plural(parts, 'part')} · symbol, "
                                        "footprint and 3D model all present")
     cand = [("Dangling", int(c.get("dangling", 0)), "err"),
             ("No Footprint", int(c.get("missing_footprint", 0)), "warn"),
@@ -993,7 +990,7 @@ def _health_workbench(ctx) -> QWidget:
         if r.get("obsolete"):
             return W.tag("Obsolete/NRND", "err")
         if not r.get("in_stock"):
-            return W.tag("Out of stock", "warn")
+            return W.tag("Out of Stock", "warn")
         return W.tag("OK", "ok")
 
     def _render_sweep(rep):
@@ -1169,7 +1166,7 @@ def _health_workbench(ctx) -> QWidget:
         if applied:
             LM.git_commit_push(c, lsink,
                                f"feat(lib): fix all from library "
-                               f"({len(touched)} part{'s' if len(touched) != 1 else ''})")
+                               f"({plural(len(touched), 'part')})")
             ui["pending_changed"] = True
         # Honest remainder: what each touched part STILL lacks after the fix.
         missing = []
@@ -1186,8 +1183,8 @@ def _health_workbench(ctx) -> QWidget:
                                         "how_to_fix": m.get("how_to_fix", "")})
             except Exception:  # noqa: BLE001 — the re-scan is advisory, never fatal
                 pass
-        return {"summary": f"Applied {len(applied)} fix(es) across {len(touched)} "
-                           f"part{'s' if len(touched) != 1 else ''}.",
+        return {"summary": f"Applied {plural(len(applied), 'fix', 'fixes')} across "
+                           f"{plural(len(touched), 'part')}.",
                 "done": applied, "errors": errors, "missing": missing[:40]}
 
     fix_flow = K.PrimaryFlow(
@@ -1251,7 +1248,7 @@ def _health_workbench(ctx) -> QWidget:
             from PyQt5.QtWidgets import QMessageBox
             ans = QMessageBox.question(
                 host, "Apply Enrichment",
-                f"{n} blank field(s) can be filled from the distributor. Apply?",
+                f"{plural(n, 'blank field')} can be filled from the distributor. Apply?",
                 QMessageBox.Yes | QMessageBox.No)
             if ans != QMessageBox.Yes:
                 _log("Cancelled.")
@@ -1262,7 +1259,7 @@ def _health_workbench(ctx) -> QWidget:
                 busy["on"] = False
                 if ok2:
                     ui["pending_changed"] = True
-                    _log(f"Enrich: wrote {len((r or {}).get('changes', []))} field(s).")
+                    _log(f"Enrich: wrote {plural(len((r or {}).get('changes', [])), 'field')}.")
                 else:
                     _log("Enrich failed, see status.")
                 host._region.handle.refresh()

@@ -185,8 +185,8 @@ class MouserSearchDialog(QDialog):
         if not results:
             self._status.setText(f"No Mouser parts match “{q}”.")
             return
-        self._status.setText(f"{len(results)} result{'s' if len(results) != 1 else ''} — "
-                             f"pick one to apply it to this part.")
+        self._status.setText(f"{len(results)} result{'s' if len(results) != 1 else ''}. "
+                             f"Pick one to apply it to this part.")
         for part in results:
             self._results.addWidget(self._result_row(part))
         self._results.addStretch(1)
@@ -201,9 +201,9 @@ class MouserSearchDialog(QDialog):
             secs = None
         if not secs:
             return (f"{base}. The built-in Mouser key is shared and capped at 1000 "
-                    "lookups/day — it resets at midnight (US Central). Enter the MPN "
+                    "lookups/day; it resets at midnight (US Central). Enter the MPN "
                     "manually, or use BOM sourcing where LCSC fills in as a fallback.")
-        return (f"{base}. The built-in key is shared (1000 lookups/day) — it frees up in "
+        return (f"{base}. The built-in key is shared (1000 lookups/day); it frees up in "
                 f"~{fmt_countdown(secs)}. Enter the MPN manually, or use BOM sourcing "
                 "where LCSC fills in as a fallback.")
 
