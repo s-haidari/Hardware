@@ -22,7 +22,8 @@ data-swatch colour are bespoke here.
 from __future__ import annotations
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QWidget, QHBoxLayout, QLabel, QLineEdit, QStackedWidget
+from PyQt5.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QLabel, QLineEdit,
+                            QStackedWidget, QFrame)
 
 from .. import theme as T
 from .. import widgets as W
@@ -270,3 +271,47 @@ def pinmap_cell_apply(btn, sev: int) -> None:
     btn.setObjectName(_PMC_NAME[sev])
     btn.setText(_PMC_GLYPH[sev])
     btn.style().unpolish(btn); btn.style().polish(btn)
+
+
+# ── consolidated per-board quantity chart (bespoke: width-scaled data bars) ───
+def board_qty_chart(per_board: dict, *, bar_px: int = 180) -> QWidget:
+    """A quiet horizontal bar chart of a consolidated line's {board: qty} split — each
+    board a row of [name] [bar scaled to the busiest board] [qty]. The bar length is DATA
+    (qty / max qty), so the fill colour is a fixed data role (info), not a chrome token;
+    the track and labels ride theme tokens and re-tint on theme change. Bespoke painting
+    kept here (this module is the Projects visuals allowlist), out of projects.py. Rows
+    stack vertically and never scroll sideways (design-rules §10)."""
+    w = QWidget()
+    col = QVBoxLayout(w); col.setContentsMargins(0, 0, 0, 0); col.setSpacing(6)
+    items = list((per_board or {}).items())
+    top = max((int(q) for _b, q in items), default=0) or 1
+    bars = []                                            # (track, fill) for the restyler
+    for board, qty in items:
+        q = int(qty)
+        row = QHBoxLayout(); row.setContentsMargins(0, 0, 0, 0); row.setSpacing(8)
+        name = QLabel(str(board)); name.setFont(T.scale_font("detail_key"))
+        name.setMinimumWidth(96); name.setMaximumWidth(160)
+        name.setToolTip(str(board))
+        # The bar: a fixed-width track holding a fill sized to q/top of it.
+        track = QFrame(); track.setFixedSize(bar_px, 10)
+        fill = QFrame(track)
+        fill_w = max(2, round(bar_px * q / top)) if q > 0 else 0
+        fill.setGeometry(0, 0, fill_w, 10)
+        bars.append((track, fill))
+        val = QLabel(str(q)); val.setFont(T.mono_font(9)); val.setMinimumWidth(40)
+        val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        row.addWidget(name); row.addWidget(track); row.addWidget(val); row.addStretch(1)
+        rw = QWidget(); rw.setLayout(row)
+        col.addWidget(rw)
+
+    def paint():
+        rc = T.RADIUS_CONTROL
+        for track, fill in bars:
+            try:
+                track.setStyleSheet(f"background:{T.t('tok')};border-radius:{rc}px;")
+                fill.setStyleSheet(f"background:{T.t('info')};border-radius:{rc}px;")
+            except RuntimeError:                          # bar deleted by a rebuild
+                pass
+    paint()
+    W.register_restyle(paint, w)
+    return w

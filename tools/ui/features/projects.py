@@ -1892,6 +1892,26 @@ def _bom_panel(ctx, state) -> QWidget:
                          "other exports are never padded.")
     lab_spares = W.body("Spares", dim=True)
 
+    # Source view-filter — a read-only lens over the priced project table (never touches the
+    # cache or the exports). All / one distributor / Unsourced. Shown only on a priced build.
+    _SOURCE_FILTERS = [("All Sources", None), ("Mouser Only", "Mouser"),
+                       ("LCSC Only", "LCSC"), ("Unsourced", "")]
+    cb_source = QComboBox()
+    for lbl, _key in _SOURCE_FILTERS:
+        cb_source.addItem(lbl)
+    cb_source.setToolTip("Show only the lines carried by one distributor (or the unsourced "
+                         "lines). A read-only view filter; the exports are unaffected.")
+    lab_source = W.body("Source", dim=True)
+
+    # Export line-scope — narrow what the six exports write, applied through one shared
+    # _filter_rows helper so every sheet honours the same predicates. Off = the whole BOM.
+    cb_populated = QCheckBox("Populated Only")
+    cb_populated.setToolTip("Exports drop lines with no part number and no value "
+                            "(blank or placeholder lines a purchasing sheet should never carry).")
+    cb_priced_only = QCheckBox("Priced Only")
+    cb_priced_only.setToolTip("Exports drop lines with no usable price. Turn on Price with "
+                              "Mouser and rebuild to price the lines first.")
+
     # Project multi-select — only meaningful for the consolidated build. Quiet checkboxes,
     # all checked by default; the consolidated BOM is built from only the ticked projects.
     checks = {}
@@ -1971,6 +1991,7 @@ def _bom_panel(ctx, state) -> QWidget:
         ctrls = QHBoxLayout(); ctrls.setSpacing(8)
         ctrls.addWidget(lab_boards); ctrls.addWidget(sp_boards)
         ctrls.addWidget(lab_spares); ctrls.addWidget(sp_spares)
+        ctrls.addWidget(lab_source); ctrls.addWidget(cb_source)
         ctrls.addStretch(1)
         ctrls.addWidget(cb_price)
         ctrls_w = QWidget(); ctrls_w.setLayout(ctrls)
@@ -2198,30 +2219,105 @@ def _bom_panel(ctx, state) -> QWidget:
         if st:
             _apply_summary(*st)
 
+    def _current_source_key():
+        """The (label, source-value) the Source combo is filtering to, or None for All."""
+        i = cb_source.currentIndex()
+        return _SOURCE_FILTERS[i][1] if 0 <= i < len(_SOURCE_FILTERS) else None
+
+    def _row_source(r):
+        return str(r.get("source", "") or "").strip()
+
+    def _source_badge(r):
+        """A quiet per-line source badge from the lookup chain: a named distributor (info
+        dot), an unsourced passive (neutral 'Unsourced'), or a looked-up-but-absent part
+        ('Not Found', a warn dot). Matches the summary/verdict sourcing language."""
+        src = _row_source(r)
+        if not src:
+            return W.tag("Unsourced", "mut")
+        if src.upper() == "NOT FOUND":
+            return W.tag("Not Found", "warn")
+        return W.tag(src, "info")
+
+    def _consolidated_details_dialog(r):
+        """A per-row modal for one consolidated line: its identity, the total, and a
+        board-by-board {board: qty} breakdown as a height-scaled bar chart. Built (not
+        exec'd) so a headless drive/test can inspect it. No sideways scroll (design-rules §5)."""
+        dlg = QDialog(host)
+        dlg.setWindowTitle("Per-Board Breakdown")
+        v = QVBoxLayout(dlg); v.setContentsMargins(20, 16, 20, 18); v.setSpacing(12)
+        names = LM.part_display_names(r)
+        title = str(r.get("mpn", "")) if names["orderable"] else names["flag"]
+        v.addWidget(W.subhead(title))
+        meta_bits = [b for b in (str(r.get("value", "")), str(r.get("footprint", "")),
+                                 f"{r.get('total_qty', 0)} total") if b.strip()]
+        if meta_bits:
+            m = W.body("  ·  ".join(meta_bits), dim=True); m.setWordWrap(True); v.addWidget(m)
+        per_board = r.get("per_board") or {}
+        if per_board:
+            v.addWidget(pv.board_qty_chart(per_board))
+        else:
+            v.addWidget(W.body("No per-board breakdown for this line.", dim=True))
+        close = W.btn("Close", "ghost", "Close this breakdown", on_click=dlg.accept)
+        crow = QHBoxLayout(); crow.addStretch(1); crow.addWidget(close)
+        v.addLayout(crow)
+        dlg._chart_rows = per_board                       # test / drive seam
+        return dlg
+
+    def _open_consolidated_details(r):
+        from ..util import _headless
+        dlg = _consolidated_details_dialog(r)
+        host._last_details_dialog = dlg                   # drive/test seam
+        if _headless():
+            dlg.deleteLater()                             # never block a headless drive
+            return
+        dlg.exec_()
+        dlg.deleteLater()
+
+    def _details_btn(r):
+        return W.btn("Details", "ghost", "Show this line's per-board quantity breakdown",
+                     on_click=lambda: _open_consolidated_details(r))
+
     def _draw_bom_table(res, mode):
         """Render the BOM table into the result area for the current Boards count, and arm the
         spinner to redraw it live. `mode` picks the column layout ('project' vs 'consolidated').
         When priced AND Boards>1 an Order column is inserted and Unit/Ext are re-read from each
-        line's price-break ladder at that run quantity."""
+        line's price-break ladder at that run quantity. On a priced project build a Source badge
+        column and the Source view-filter appear, and any line whose known stock can't cover the
+        run at the current Boards count is lifted with a subtle inset step + a required-vs-available
+        tooltip (sourced from the same logic as the No-Stock / Low-Stock verdict counts)."""
         clear_layout(result)
-        data = res.get("rows", [])
+        all_rows = res.get("rows", [])
         priced = res.get("cost") is not None
         n = sp_boards.value()
         at_qty = priced and n > 1
+        # Source view-filter: a read-only lens, only meaningful on a priced project build (the
+        # rows carry a `source` only when priced). Show/hide its control to match.
+        source_filterable = priced and mode != "consolidated"
+        lab_source.setVisible(source_filterable)
+        cb_source.setVisible(source_filterable)
+        if source_filterable:
+            key = _current_source_key()
+            data = all_rows if key is None else [r for r in all_rows if _row_source(r) == key]
+        else:
+            data = all_rows
         has_lead = any(LM._lead_weeks(r.get("lead_time")) is not None for r in data)
+        show_source = priced and mode != "consolidated"
         if mode == "consolidated":
             cols = ["Part Number", "Manufacturer", "Value", "Footprint", "Total"]
             if at_qty:
                 cols.append("Order")
             if priced:
                 cols += ["Unit", "Ext"]
+            cols.append("Boards")                         # per-row Details (per-board breakdown)
         else:
             cols = ["Refs", "Qty"]
             if at_qty:
                 cols.append("Order")
             cols += ["Value", "Part Number", "Manufacturer", "Type"]
+            if show_source:
+                cols.append("Source")
             if priced:
-                cols += ["Source", "Unit", "Ext"]
+                cols += ["Unit", "Ext"]
         if has_lead:
             cols.append("Lead (wks)")
         ix = {name: i for i, name in enumerate(cols)}
@@ -2231,6 +2327,8 @@ def _bom_panel(ctx, state) -> QWidget:
             return str(r.get("mpn", "")) if names["orderable"] else names["flag"]
 
         trows = []
+        row_tints = []
+        row_tips = {}
         for r in data:
             order_qty, vunit, vext = LM._row_cost_at_qty(r, n) if at_qty else (None, None, None)
             if mode == "consolidated":
@@ -2242,6 +2340,7 @@ def _bom_panel(ctx, state) -> QWidget:
                 if priced:
                     row += ([_money(vunit), _money(vext)] if at_qty
                             else [_money(r.get("unit_price")), _money(r.get("extended"))])
+                row.append(_details_btn(r))
             else:
                 refs = r.get("refs", [])
                 ref_txt = ", ".join(refs[:4]) + (f"  +{len(refs) - 4}" if len(refs) > 4 else "")
@@ -2250,13 +2349,23 @@ def _bom_panel(ctx, state) -> QWidget:
                     row.append(str(order_qty))
                 row += [str(r.get("value", "")), _pn_cell(r),
                         str(r.get("manufacturer", "")), "Basic" if r.get("basic") else "Extended"]
+                if show_source:
+                    row.append(_source_badge(r))
                 if priced:
-                    src = str(r.get("source", "") or "")
-                    row += ([src, _money(vunit), _money(vext)] if at_qty
-                            else [src, _money(r.get("unit_price")), _money(r.get("extended"))])
+                    row += ([_money(vunit), _money(vext)] if at_qty
+                            else [_money(r.get("unit_price")), _money(r.get("extended"))])
             if has_lead:
                 lw = LM._lead_weeks(r.get("lead_time"))
                 row.append("" if lw is None else str(lw))
+            # Stock coverage lift: a priced line whose known stock can't cover the run.
+            if priced:
+                sr = LM.bom_line_stock_risk(r, n)
+                if sr["short"]:
+                    idx = len(trows)
+                    row_tints.append(idx)
+                    avail_txt = "0 (no stock)" if sr["kind"] == "err" else str(sr["available"])
+                    row_tips[idx] = (f"Short for this build: need {sr['required']} "
+                                     f"(x{n} boards), stock is {avail_txt}.")
             trows.append(row)
         if mode == "consolidated":
             stretch = (ix["Manufacturer"], ix["Footprint"])
@@ -2273,7 +2382,8 @@ def _bom_panel(ctx, state) -> QWidget:
         if has_lead:
             mono |= {ix["Lead (wks)"]}; dim |= {ix["Lead (wks)"]}
         result.addWidget(W.data_table(cols, trows, stretch_col=stretch,
-                                      mono_cols=mono, dim_cols=dim, wrap=True), 1)
+                                      mono_cols=mono, dim_cols=dim, wrap=True,
+                                      row_tints=row_tints, row_tips=row_tips), 1)
         host._render_table = lambda: _draw_bom_table(res, mode)
 
     def _on_boards_changed(_v):
@@ -2294,7 +2404,28 @@ def _bom_panel(ctx, state) -> QWidget:
             pass
     sp_boards.valueChanged.connect(_on_boards_changed)
 
+    def _on_source_filter_changed(_i):
+        # A read-only re-render of the current table at the new source lens — never over an
+        # open diff (it owns the result area), and only when a table is actually mounted.
+        if getattr(host, "_summary_owner", None) == "diff":
+            return
+        rt = getattr(host, "_render_table", None)
+        if rt:
+            rt()
+    cb_source.currentIndexChanged.connect(_on_source_filter_changed)
+
     # ── exports (ported verbatim; root → host) ───────────────────────────────────────────
+    def _filter_rows(rows):
+        """The Export group's shared line-scope filter — the SAME predicates every one of the
+        six exports honours (a single source of truth): 'Populated Only' drops blank/placeholder
+        lines, 'Priced Only' drops lines with no usable price. Off = the whole BOM. Read-only."""
+        out = list(rows or [])
+        if cb_populated.isChecked():
+            out = [r for r in out if LM.bom_line_is_populated(r)]
+        if cb_priced_only.isChecked():
+            out = [r for r in out if LM.bom_line_is_priced(r)]
+        return out
+
     def _save_csv(title, default_name, text):
         fn, _ = QFileDialog.getSaveFileName(host, title, str(Path(base) / default_name),
                                             "CSV Files (*.csv)")
@@ -2321,22 +2452,30 @@ def _bom_panel(ctx, state) -> QWidget:
         res = getattr(host, "_last_bom", None)
         if not res:
             ctx.services.log("Build a BOM first."); return
-        _save_csv("Export BOM CSV", "bom.csv", res.get("csv", ""))
+        # Re-serialize from the FILTERED rows so the Export scope applies (with no filter it is
+        # byte-identical to the cached csv — locked by test). priced/sourced from the build.
+        rows = _filter_rows(res.get("rows", []))
+        text = LM.bom_csv(rows, mode=getattr(host, "_last_mode", "project"),
+                          board_names=res.get("board_names"),
+                          priced=res.get("cost") is not None, sourced="not_on_mouser" in res)
+        _save_csv("Export BOM CSV", "bom.csv", text)
 
     def _export_xlsx():
         res = getattr(host, "_last_bom", None)
         if not res:
             ctx.services.log("Build a BOM first."); return
-        data = LM.bom_xlsx(res.get("rows", []))
+        data = LM.bom_xlsx(_filter_rows(res.get("rows", [])))
         _save_bytes("Export BOM (Excel)", "bom.xlsx", data, "Excel Workbook (*.xlsx)")
 
     def _procurement_opts():
-        """Ask for the Procurement-Sheet-specific parameters — PCB pack size, Tax/Tariff rate,
-        and order Shipping — pre-filled with the last-used values. Returns (pcb_pack,
-        tax_fraction, shipping), or None if cancelled."""
+        """Ask for the Procurement-Sheet parameters — PCB pack size, Tax/Tariff rate, order
+        Shipping, and the landed-assembly inputs (Labour per Board, Assembly Surcharge % of
+        parts) — pre-filled with the last-used values. Returns (pcb_pack, tax_fraction,
+        shipping, labour_per_board, surcharge_fraction), or None if cancelled."""
         from ..util import _headless
         if _headless():                                    # offscreen drive/CI: never enter a modal
-            return int(host._proc_pack), float(host._proc_tax_pct) / 100.0, float(host._proc_ship)
+            return (int(host._proc_pack), float(host._proc_tax_pct) / 100.0, float(host._proc_ship),
+                    float(host._proc_labour), float(host._proc_surcharge_pct) / 100.0)
         dlg = QDialog(host); dlg.setWindowTitle("Procurement Sheet Options")
         form = QFormLayout(dlg)
         sp_pack = QSpinBox(); sp_pack.setRange(1, 1000); sp_pack.setValue(int(host._proc_pack))
@@ -2348,9 +2487,19 @@ def _bom_panel(ctx, state) -> QWidget:
         sp_ship = QDoubleSpinBox(); sp_ship.setRange(0, 100000); sp_ship.setDecimals(2)
         sp_ship.setValue(float(host._proc_ship)); sp_ship.setPrefix("$ ")
         sp_ship.setToolTip("One order-level shipping charge, shown and added in the Total row.")
+        sp_labour = QDoubleSpinBox(); sp_labour.setRange(0, 100000); sp_labour.setDecimals(2)
+        sp_labour.setValue(float(host._proc_labour)); sp_labour.setPrefix("$ ")
+        sp_labour.setToolTip("Flat assembly-labour charge per board built (billed for the Boards "
+                             "count, not the pack-rounded parts quantity). Adds an Assembly line.")
+        sp_sur = QDoubleSpinBox(); sp_sur.setRange(0, 100); sp_sur.setDecimals(2)
+        sp_sur.setValue(float(host._proc_surcharge_pct)); sp_sur.setSuffix(" %")
+        sp_sur.setToolTip("Assembly handling/markup as a percent of the parts subtotal, folded "
+                          "into the Assembly line and the grand Total.")
         form.addRow("PCB Pack", sp_pack)
         form.addRow("Tax/Tariff", sp_tax)
         form.addRow("Shipping", sp_ship)
+        form.addRow("Labour / Board", sp_labour)
+        form.addRow("Assembly Surcharge", sp_sur)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject)
         form.addRow(bb)
@@ -2359,12 +2508,17 @@ def _bom_panel(ctx, state) -> QWidget:
         host._proc_pack = sp_pack.value()                 # remember for next time
         host._proc_tax_pct = sp_tax.value()
         host._proc_ship = sp_ship.value()
-        return sp_pack.value(), sp_tax.value() / 100.0, sp_ship.value()
+        host._proc_labour = sp_labour.value()
+        host._proc_surcharge_pct = sp_sur.value()
+        return (sp_pack.value(), sp_tax.value() / 100.0, sp_ship.value(),
+                sp_labour.value(), sp_sur.value() / 100.0)
 
     def _export_procurement(opts=None):
         """Export the buy-side procurement sheet (Excel). Quantities honor the PCB pack size and
-        the passives spares buffer; Tax/Tariff applies the rate to each line. `opts` is a
-        (pcb_pack, tax_fraction, shipping) test seam; None opens the options dialog."""
+        the passives spares buffer; Tax/Tariff applies the rate to each line; Labour/Board and
+        the Assembly Surcharge add a landed Assembly line. `opts` is a (pcb_pack, tax_fraction,
+        shipping[, labour_per_board, surcharge_fraction]) test seam — a 3-tuple still works
+        (labour/surcharge default 0); None opens the options dialog. Honors the Export scope."""
         res = getattr(host, "_last_bom", None)
         if not res:
             ctx.services.log("Build a BOM first."); return
@@ -2372,10 +2526,13 @@ def _bom_panel(ctx, state) -> QWidget:
             opts = _procurement_opts()
             if opts is None:                              # cancelled
                 return
-        pack, tax_frac, ship = opts
-        data = LM.procurement_xlsx(res.get("rows", []), boards=sp_boards.value(),
+        pack, tax_frac, ship = opts[0], opts[1], opts[2]
+        labour = opts[3] if len(opts) > 3 else 0.0
+        surcharge_frac = opts[4] if len(opts) > 4 else 0.0
+        data = LM.procurement_xlsx(_filter_rows(res.get("rows", [])), boards=sp_boards.value(),
                                    spares_pct=sp_spares.value(), pcb_multiple=pack,
-                                   tax_rate=tax_frac, shipping=ship)
+                                   tax_rate=tax_frac, shipping=ship,
+                                   labour_per_board=labour, assembly_surcharge_rate=surcharge_frac)
         _save_bytes("Export Procurement Sheet", "procurement.xlsx", data,
                     "Excel Workbook (*.xlsx)")
 
@@ -2385,7 +2542,7 @@ def _bom_panel(ctx, state) -> QWidget:
             ctx.services.log("Build a BOM first."); return
         boards = sp_boards.value()
         spares = sp_spares.value()
-        cart = LM.procurement_cart_csv(res.get("rows", []), boards=boards, spares_pct=spares)
+        cart = LM.procurement_cart_csv(_filter_rows(res.get("rows", [])), boards=boards, spares_pct=spares)
         if not cart["line_count"]:
             ctx.services.log("No part numbers to order: every line is a bare passive."); return
         run = f" for {boards} boards" if boards > 1 else ""
@@ -2404,7 +2561,7 @@ def _bom_panel(ctx, state) -> QWidget:
         if not res:
             ctx.services.log("Build a BOM first."); return
         boards = sp_boards.value()
-        sheet = LM.priced_bom_csv_at_qty(res.get("rows", []), boards=boards)
+        sheet = LM.priced_bom_csv_at_qty(_filter_rows(res.get("rows", [])), boards=boards)
         if not sheet["priced_lines"]:
             ctx.services.log("Price the BOM first. Turn on Price with Mouser, then rebuild.")
             return
@@ -2420,7 +2577,7 @@ def _bom_panel(ctx, state) -> QWidget:
         res = getattr(host, "_last_bom", None)
         if not res:
             ctx.services.log("Build a BOM first."); return
-        bom = LM.jlcpcb_bom_csv(res.get("rows", []))
+        bom = LM.jlcpcb_bom_csv(_filter_rows(res.get("rows", [])))
         if not bom["line_count"]:
             ctx.services.log("Nothing to place: no BOM line has a value or part number."); return
         note = f"{bom['line_count']} assembly lines · {bom['total_qty']} parts"
@@ -2462,10 +2619,11 @@ def _bom_panel(ctx, state) -> QWidget:
         aw = l.get("added_max_weeks")
         if aw is not None:
             who = f" ({l['added_critical_mpn']})" if l.get("added_critical_mpn") else ""
+            unit = "wk" if aw == 1 else "wks"
             if l.get("on_critical_path"):
-                out.append((f"+{aw} wk lead{who}, critical path", "warn"))
+                out.append((f"Lead path +{aw} {unit}{who}, critical path", "warn"))
             else:
-                out.append((f"+{aw} wk lead{who}, off critical path", "mut"))
+                out.append((f"+{aw} {unit} lead{who}, off critical path", "mut"))
         if l.get("removed_unassessed"):
             n = l["removed_unassessed"]
             out.append((f"{n} removed, lead not assessed", "mut"))
@@ -2513,9 +2671,29 @@ def _bom_panel(ctx, state) -> QWidget:
             if priced:
                 row.append(_cost_cell(cost))
             return row
+        # Lead-delay lift: the ADDED line(s) whose manufacturer lead now gates the order (from
+        # rev B's threaded lead_time) get an amber-tinted row, so the part that pushed the
+        # critical path is visible in the diff, not just named in the summary tag.
+        lead = d.get("lead") or {}
+        amax = lead.get("added_max_weeks")
+        on_cp = bool(lead.get("on_critical_path"))
+        blead = {}
+        if on_cp and amax is not None:
+            for row in (getattr(host, "_last_bom", None) or {}).get("rows", []):
+                k = LM._bom_line_key(row)
+                w = LM._lead_weeks(row.get("lead_time"))
+                if w is not None and (blead.get(k) is None or w > blead[k]):
+                    blead[k] = w
         tbl = []
+        row_tints = []
+        row_tips = {}
         for r in d["added"]:
+            idx = len(tbl)
             tbl.append(_drow("Added", r, "0", str(r["qty"]), f"+{r['qty']}", _line_cost(r, r["qty"])))
+            if on_cp and amax is not None and blead.get(LM._bom_line_key(r)) == amax:
+                row_tints.append(idx)
+                unit = "wk" if amax == 1 else "wks"
+                row_tips[idx] = f"Adds the critical-path lead: +{amax} {unit}."
         for r in d["removed"]:
             tbl.append(_drow("Removed", r, str(r["qty"]), "0", f"-{r['qty']}", None))
         for r in d["changed"]:
@@ -2525,7 +2703,8 @@ def _bom_panel(ctx, state) -> QWidget:
         if priced:
             mono.add(cols.index("Cost Δ"))
         result.addWidget(W.data_table(cols, tbl, stretch_col=1, mono_cols=mono,
-                                      dim_cols={2}, wrap=True), 1)
+                                      dim_cols={2}, wrap=True,
+                                      row_tints=row_tints, row_tips=row_tips), 1)
 
     def _compare_to_csv(path=None):
         res = getattr(host, "_last_bom", None)
@@ -2693,6 +2872,8 @@ def _bom_panel(ctx, state) -> QWidget:
     host._proc_pack = 3                                    # PCBs ship in packs of this many
     host._proc_tax_pct = 0.0                               # tax/tariff percent on each line
     host._proc_ship = 0.0                                  # order-level shipping charge
+    host._proc_labour = 0.0                                # assembly labour per board built
+    host._proc_surcharge_pct = 0.0                         # assembly surcharge, percent of parts
     host._last_bom = None
     host._last_mode = "project"
     host._last_base_tags = []
@@ -2701,6 +2882,18 @@ def _bom_panel(ctx, state) -> QWidget:
     host._render_table = None
     host._last_diff = None
     host._recent_refs_cache = []
+
+    # ── Export scope: 'Populated Only' / 'Priced Only' checkboxes, docked at the top of the
+    #    Export collapsible so the two filters read as export controls (they drive _filter_rows,
+    #    shared by all six exports). Built here because kit renders the Export body internally. ──
+    scope_row = QWidget()
+    srl = QHBoxLayout(scope_row); srl.setContentsMargins(0, 0, 0, 6); srl.setSpacing(12)
+    srl.addWidget(pv.field_label("Scope"))
+    srl.addWidget(cb_populated); srl.addWidget(cb_priced_only); srl.addStretch(1)
+    for _sec in host.findChildren(W.CollapsibleSection):
+        if getattr(_sec, "_title", "") == "Export" and getattr(_sec, "_body", None) is not None:
+            _sec._body.layout().insertWidget(0, scope_row)
+            break
 
     # ── disable every action while a mutating op runs (mirror Health) ────────────────────
     from PyQt5.QtWidgets import QPushButton
@@ -2730,6 +2923,13 @@ def _bom_panel(ctx, state) -> QWidget:
     host._boards_spin = sp_boards
     host._spares_spin = sp_spares
     host._proj_checks = checks
+    host._source_filter = cb_source
+    host._populated_cb = cb_populated
+    host._priced_only_cb = cb_priced_only
+    host._filter_rows = _filter_rows
+    host._source_badge = _source_badge
+    host._consolidated_details_dialog = _consolidated_details_dialog
+    host._open_consolidated_details = _open_consolidated_details
     host._snapshot = snapshot
     host._export_csv = _export_csv
     host._export_xlsx = _export_xlsx

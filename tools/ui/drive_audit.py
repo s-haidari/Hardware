@@ -874,10 +874,80 @@ def audit_projects_styled():
             _fail("Projects/Health: preview groups / manual fill", e)
 
     def _bom(p):
+        from PyQt5.QtWidgets import QTableWidget
         p._run_primary(); _pump()                         # ▶ Build and Cost (offline, no pricing)
         if not hasattr(p, "_last_bom"):
             _fail("Projects/BOM: ▶ Build set no _last_bom seam")
         p._boards_spin.setValue(10); _pump()              # live re-projection + verdict track
+
+        # Drive the priced-BOM decision surface directly (a real price lookup would hit the
+        # network): a Mouser line, an LCSC line short at volume + long lead, and an unsourced
+        # unpriced passive. Exercises the stock tint, the Source view-filter, the export
+        # line-scope filters, and the consolidated Details modal — the whole subsystem.
+        priced = [
+            {"refs": ["U1"], "qty": 1, "mpn": "MCU1", "value": "STM32", "footprint": "LQFP",
+             "source": "Mouser", "unit_price": 5.0, "extended": 5.0, "stock": 100, "lifecycle": "Active"},
+            {"refs": ["U2"], "qty": 1, "mpn": "FPGA1", "value": "FPGA", "footprint": "BGA",
+             "source": "LCSC", "unit_price": 20.0, "extended": 20.0, "stock": 3,
+             "lifecycle": "Active", "lead_time": "16 Weeks"},
+            {"refs": ["R1", "R2"], "qty": 2, "mpn": "", "value": "10k", "footprint": "R_0402"},
+        ]
+        p._last_bom = {"rows": priced, "cost": {"total_cost": 25.0, "unpriced_lines": 1}}
+        p._last_mode = "project"; p._summary_owner = "bom"
+        p._boards_spin.setValue(1); _pump()
+        p._source_filter.setCurrentIndex(0)               # All Sources
+        p._draw_bom_table(p._last_bom, "project"); _pump()
+
+        def _bom_table():
+            tbls = p.findChildren(QTableWidget)
+            return tbls[-1] if tbls else None
+
+        t0 = _bom_table()
+        if t0 is None or t0.rowCount() != 3:
+            _fail("Projects/BOM: priced project table did not render 3 lines")
+        # Boards bump → the FPGA (stock 3) can't cover a 5-board run → its row tints (painted
+        # by the row-tint delegate, installed only when at least one row is at risk).
+        p._boards_spin.setValue(5); _pump()
+        t1 = _bom_table()
+        if getattr(t1, "_row_tint_delegate", None) is None:
+            _fail("Projects/BOM: no at-risk row tinted after bumping Boards past stock")
+        # And no tint when stock comfortably covers the run (boards back to 1).
+        p._boards_spin.setValue(1); _pump()
+        if getattr(_bom_table(), "_row_tint_delegate", None) is not None:
+            _fail("Projects/BOM: a row stayed tinted when stock covered the 1-board run")
+        p._boards_spin.setValue(5); _pump()
+        # Source view-filter narrows the visible rows read-only.
+        p._source_filter.setCurrentIndex(1); _pump()      # Mouser Only
+        if _bom_table().rowCount() != 1:
+            _fail("Projects/BOM: Source=Mouser Only did not narrow the table to 1 line")
+        p._source_filter.setCurrentIndex(0); _pump()      # back to All
+        if _bom_table().rowCount() != 3:
+            _fail("Projects/BOM: Source=All did not restore every line")
+
+        # Export line-scope: 'Priced Only' must drop the unpriced passive from the written CSV.
+        import tempfile as _tf2
+        out = Path(_tf2.mkdtemp(prefix="drive_bom_")) / "bom.csv"
+        _orig = PROJ.QFileDialog.getSaveFileName
+        PROJ.QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (str(out), ""))
+        try:
+            p._priced_only_cb.setChecked(True)
+            p._export_csv(); _pump()
+            text = out.read_text(encoding="utf-8")
+            if "MCU1" not in text or "10k" in text:
+                _fail("Projects/BOM: 'Priced Only' export did not drop the unpriced line")
+            p._priced_only_cb.setChecked(False)
+        finally:
+            PROJ.QFileDialog.getSaveFileName = _orig
+
+        # Consolidated Details modal: build a per-board breakdown line and open it (headless →
+        # built + reaped, never blocking).
+        crow = {"mpn": "MCU1", "value": "STM32", "footprint": "LQFP", "total_qty": 5,
+                "per_board": {"BoardA": 3, "BoardB": 2}}
+        dlg = p._consolidated_details_dialog(crow)
+        if getattr(dlg, "_chart_rows", None) != crow["per_board"]:
+            _fail("Projects/BOM: consolidated Details modal missing its per-board chart data")
+        dlg.deleteLater()
+        p._open_consolidated_details(crow); _pump()       # the real click path (headless-safe)
 
     def _pcb(p):
         p._validate(); _pump()                            # verdict push, no board write

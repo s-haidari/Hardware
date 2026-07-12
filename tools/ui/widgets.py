@@ -23,7 +23,8 @@ _log = logging.getLogger(__name__)
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (QWidget, QLabel, QFrame, QHBoxLayout, QVBoxLayout,
                              QPushButton, QGridLayout, QStackedWidget, QSizePolicy,
-                             QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView)
+                             QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
+                             QStyledItemDelegate)
 
 from . import theme as T
 
@@ -956,7 +957,8 @@ def dl(pairs: Sequence[Tuple[str, QWidget]], key_width: int = 136,
 
 # ── data table ───────────────────────────────────────────────────────────────
 def data_table(columns: Sequence[str], rows: Sequence[Sequence], stretch_col=0,
-               mono_cols=(), dim_cols=(), max_col: int = 300, wrap: bool = False) -> QTableWidget:
+               mono_cols=(), dim_cols=(), max_col: int = 300, wrap: bool = False,
+               row_tints=(), row_tips=None) -> QTableWidget:
     """A structured table with light row and column separators.
 
     Cells may be a plain str (rendered as a native item) or a QWidget (tokens,
@@ -964,6 +966,13 @@ def data_table(columns: Sequence[str], rows: Sequence[Sequence], stretch_col=0,
     `mono_cols` / `dim_cols`. `stretch_col` accepts one index or several; stretched
     columns share the leftover width. Non-stretch columns are content-sized but
     capped at `max_col`.
+
+    `row_tints` is an iterable of row indices to lift with a subtle inset background
+    step (design-rules §2: elevation via a background step, never a colour wash) — the
+    'this row needs attention' cue, kept theme-aware. `row_tips` is an optional {row:
+    tooltip} map: a tinted row's cells (and any widget cell) carry that one explanation
+    on hover, so the reason for the lift is one hover away. Both cover widget cells too
+    (wrapped in a tinted holder), so a badge column tints uniformly with its row.
 
     `wrap=True` wraps long cell text onto extra lines and grows the row height to
     fit (rows auto-size), instead of eliding — so a wide BOM stays readable in the
@@ -973,6 +982,17 @@ def data_table(columns: Sequence[str], rows: Sequence[Sequence], stretch_col=0,
     from PyQt5.QtGui import QColor
     stretch = set(stretch_col) if isinstance(stretch_col, (list, tuple, set)) else {stretch_col}
     mono_cols = set(mono_cols); dim_cols = set(dim_cols)
+    tint_rows = set(row_tints); row_tips = row_tips or {}
+    tinted_holders = []                                   # (holder, ) widget cells to re-tint on theme
+
+    class _RowTintDelegate(QStyledItemDelegate):
+        """Paint the subtle inset lift for tinted rows BENEATH the cell text. A delegate is
+        used (not item.setBackground) because a QTableWidget carrying a stylesheet suppresses
+        item background brushes — the delegate paints directly, so the row reads uniformly."""
+        def paint(self, painter, option, index):
+            if index.row() in tint_rows:
+                painter.fillRect(option.rect, _qcolor(T.t("inset")))
+            super().paint(painter, option, index)
 
     tbl = QTableWidget(len(rows), len(columns))
     # Title-case headers (not letterspaced UPPERCASE): narrower, so a payload header
@@ -1010,14 +1030,28 @@ def data_table(columns: Sequence[str], rows: Sequence[Sequence], stretch_col=0,
 
     mono = T.mono_font(9)
     for r, row in enumerate(rows):
+        tip = row_tips.get(r)
         for cidx, cell in enumerate(row):
             if isinstance(cell, QWidget):
-                tbl.setCellWidget(r, cidx, cell)
+                if r in tint_rows:
+                    # Wrap the widget so the tint paints behind it too (the widget itself
+                    # stays transparent). The holder carries the row tooltip.
+                    holder = QWidget()
+                    hl = QHBoxLayout(holder); hl.setContentsMargins(6, 0, 6, 0); hl.setSpacing(0)
+                    hl.addWidget(cell); hl.addStretch(1)
+                    if tip:
+                        holder.setToolTip(tip)
+                    tinted_holders.append(holder)
+                    tbl.setCellWidget(r, cidx, holder)
+                else:
+                    if tip:
+                        cell.setToolTip(tip)
+                    tbl.setCellWidget(r, cidx, cell)
             else:
                 it = QTableWidgetItem(str(cell))
                 if cidx in mono_cols:
                     it.setFont(mono)
-                it.setToolTip(str(cell))
+                it.setToolTip(tip or str(cell))
                 tbl.setItem(r, cidx, it)
 
     hdr = tbl.horizontalHeader()
@@ -1058,6 +1092,15 @@ def data_table(columns: Sequence[str], rows: Sequence[Sequence], stretch_col=0,
                 it = tbl.item(r, c)
                 if it is not None:
                     it.setForeground(dim if c in dim_cols else base)
+        # Tinted rows are painted by the delegate (item background brushes are suppressed
+        # under a table stylesheet); widget cells sit above the delegate, so their holder
+        # carries the same inset step directly.
+        for holder in tinted_holders:
+            try:
+                holder.setStyleSheet(f"background:{T.t('inset')};")
+            except RuntimeError:                          # holder deleted by a rebuild
+                pass
+        tbl.viewport().update()
         # Borderless ledger: no gridline-color (grid is off). Each row gets ONE 1px
         # bottom hairline via ::item — horizontal dividers only, no vertical rules,
         # no box. Full-row hover is the single inset lift (SelectRows makes it span
@@ -1069,6 +1112,10 @@ def data_table(columns: Sequence[str], rows: Sequence[Sequence], stretch_col=0,
             f"QTableWidget::item:hover{{background:{T.t('inset')};}}"
             f"QHeaderView::section{{background:transparent;color:{T.t('txt2')};border:none;"
             f"border-bottom:1px solid {T.t('stroke')};padding:6px 8px;font-weight:600;}}")
+    if tint_rows:
+        _delegate = _RowTintDelegate(tbl)
+        tbl.setItemDelegate(_delegate)
+        tbl._row_tint_delegate = _delegate                # keep a ref alive with the table
     register_restyle(_style, tbl)
     return tbl
 

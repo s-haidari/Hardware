@@ -427,8 +427,10 @@ def test_bom_procurement_opts_is_headless_safe(tmp_path):
     ctx = _fake_ctx(); state = _state(tmp_path)
     panel = PJ._bom_panel(ctx, state)
     panel._proc_pack = 5; panel._proc_tax_pct = 7.0; panel._proc_ship = 12.5
+    panel._proc_labour = 3.0; panel._proc_surcharge_pct = 4.0
     opts = panel._procurement_opts()                                   # offscreen → no exec_()
-    assert opts == (5, 0.07, 12.5)
+    # (pack, tax fraction, shipping, labour/board, surcharge fraction)
+    assert opts == (5, 0.07, 12.5, 3.0, 0.04)
 
 
 def test_pcb_conform_is_busy_gated(tmp_path):
@@ -1140,6 +1142,83 @@ def test_bom_export_xlsx_writes_a_valid_workbook(tmp_path, monkeypatch):
     assert any("Wrote bom.xlsx" in m for m in ctx.services.logs)
 
 
+def test_bom_export_scope_filters_drop_lines_from_the_written_csv(tmp_path, monkeypatch):
+    """The 'Priced Only' / 'Populated Only' export scope must drop the right lines from a
+    re-serialized CSV — and with both off the CSV is byte-identical to the cached build."""
+    from ui.features import projects as PJ
+    import LibraryManager as L
+    ctx = _fake_ctx(); state = _state(tmp_path)
+    panel = PJ._bom_panel(ctx, state)
+    rows = [
+        {"refs": ["U1"], "qty": 1, "value": "MCU", "mpn": "STM", "manufacturer": "ST",
+         "footprint": "LQFP", "datasheet": "", "description": "", "basic": False,
+         "source": "Mouser", "unit_price": 5.0, "extended": 5.0, "stock": 100, "lifecycle": "Active"},
+        {"refs": ["R1", "R2"], "qty": 2, "value": "10k", "mpn": "", "manufacturer": "",
+         "footprint": "R_0402", "datasheet": "", "description": "", "basic": True},
+    ]
+    # A priced build carries the full csv the export re-serializes when no filter is active.
+    panel._last_bom = {"rows": rows, "cost": {"total_cost": 5.0, "unpriced_lines": 1},
+                       "csv": L.bom_csv(rows, mode="project", priced=True)}
+    panel._last_mode = "project"
+    out = tmp_path / "bom.csv"
+    monkeypatch.setattr(PJ.QFileDialog, "getSaveFileName",
+                        staticmethod(lambda *a, **k: (str(out), "")))
+    # No filter -> byte-identical to the cached csv.
+    panel._export_csv()
+    assert out.read_text(encoding="utf-8") == panel._last_bom["csv"]
+    # Priced Only -> the unpriced passive line is dropped.
+    panel._priced_only_cb.setChecked(True)
+    panel._export_csv()
+    text = out.read_text(encoding="utf-8")
+    assert "STM" in text and "10k" not in text
+    panel._priced_only_cb.setChecked(False)
+    # Populated Only keeps both (both carry a value), so nothing is dropped here.
+    panel._populated_cb.setChecked(True)
+    panel._export_csv()
+    assert "STM" in out.read_text(encoding="utf-8") and "10k" in out.read_text(encoding="utf-8")
+
+
+def test_bom_filter_rows_is_the_shared_export_predicate(tmp_path):
+    from ui.features import projects as PJ
+    ctx = _fake_ctx(); state = _state(tmp_path)
+    panel = PJ._bom_panel(ctx, state)
+    rows = [{"mpn": "A", "value": "x", "unit_price": 1.0},
+            {"mpn": "", "value": "10k"},                       # populated (value), unpriced
+            {"mpn": "", "value": ""}]                          # blank
+    assert len(panel._filter_rows(rows)) == 3                  # off by default
+    panel._populated_cb.setChecked(True)
+    assert len(panel._filter_rows(rows)) == 2                  # blank dropped
+    panel._priced_only_cb.setChecked(True)
+    assert [r["mpn"] for r in panel._filter_rows(rows)] == ["A"]  # only the priced+populated line
+
+
+def test_bom_source_filter_hidden_until_priced(tmp_path):
+    """The Source view-filter only makes sense on a priced project build (rows carry a source
+    only when priced) — it stays hidden on an unpriced build and appears once priced."""
+    from ui.features import projects as PJ
+    ctx = _fake_ctx(); state = _state(tmp_path)
+    panel = PJ._bom_panel(ctx, state)
+    unpriced = {"rows": [{"refs": ["R1"], "qty": 1, "value": "10k", "mpn": ""}]}
+    panel._draw_bom_table(unpriced, "project"); _APP.processEvents()
+    assert panel._source_filter.isHidden() is True                # hidden on an unpriced build
+    priced = {"rows": [{"refs": ["U1"], "qty": 1, "value": "MCU", "mpn": "STM",
+                        "source": "Mouser", "unit_price": 5.0, "extended": 5.0}],
+              "cost": {"total_cost": 5.0, "unpriced_lines": 0}}
+    panel._draw_bom_table(priced, "project"); _APP.processEvents()
+    assert panel._source_filter.isHidden() is False               # shown once priced
+
+
+def test_bom_consolidated_details_dialog_carries_the_per_board_split(tmp_path):
+    from ui.features import projects as PJ
+    ctx = _fake_ctx(); state = _state(tmp_path)
+    panel = PJ._bom_panel(ctx, state)
+    row = {"mpn": "MCU1", "value": "STM32", "footprint": "LQFP", "total_qty": 7,
+           "per_board": {"A": 4, "B": 3}}
+    dlg = panel._consolidated_details_dialog(row)
+    assert dlg._chart_rows == {"A": 4, "B": 3}
+    dlg.deleteLater()
+
+
 def test_bom_export_procurement_sheet_uses_toolbar_controls(tmp_path, monkeypatch):
     import io, zipfile
     import xml.etree.ElementTree as ET
@@ -1181,7 +1260,8 @@ def test_procurement_options_dialog_returns_and_remembers(tmp_path, monkeypatch)
     assert panel._proc_pack == 3 and panel._proc_tax_pct == 0.0     # defaults
     monkeypatch.setattr(PJ.QDialog, "exec_", lambda self: PJ.QDialog.Accepted)
     opts = panel._procurement_opts()
-    assert opts == (3, 0.0, 0.0)                                     # (pack, tax fraction, shipping)
+    # (pack, tax fraction, shipping, labour/board, surcharge fraction)
+    assert opts == (3, 0.0, 0.0, 0.0, 0.0)
     # Cancel returns None and doesn't change the remembered values.
     monkeypatch.setattr(PJ.QDialog, "exec_", lambda self: PJ.QDialog.Rejected)
     assert panel._procurement_opts() is None

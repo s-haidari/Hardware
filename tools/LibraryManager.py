@@ -3212,27 +3212,8 @@ def consolidated_bom(boards: Dict[str, list], lookup=None, price_lookup=None) ->
     priced = price_lookup is not None
     if priced:
         _price_rows(rows, price_lookup, "total_qty")
-    import csv as _csv
-    import io as _io
-    buf = _io.StringIO()
-    w = _csv.writer(buf, lineterminator="\n")
-    head = ["MPN", "Manufacturer", "Value", "Footprint", "Total"] + board_names + ["Datasheet"]
-    if sourced:
-        head.insert(5, "Source")                     # which provider carries it (or NOT FOUND)
-    if priced:
-        head += ["Dist P/N", "Unit Price", "Ext Price", "Stock", "Lifecycle"]
-    w.writerow(head)
-    for r in rows:
-        row = [r["mpn"], r["manufacturer"], r["value"], r["footprint"], r["total_qty"]]
-        if sourced:
-            row.append(r.get("source", ""))
-        row += [r["per_board"].get(b, 0) for b in board_names] + [r["datasheet"]]
-        if priced:
-            ext = r.get("extended")
-            row += [_dist_pn(r), r.get("unit_price", ""), f"{ext:.4f}" if ext is not None else "",
-                    r.get("stock", ""), r.get("lifecycle", "")]
-        w.writerow(row)
-    out = {"rows": rows, "board_names": board_names, "csv": buf.getvalue(),
+    out = {"rows": rows, "board_names": board_names,
+           "csv": _bom_consolidated_csv(rows, board_names, sourced, priced),
            "line_count": len(rows), "total_parts": sum(r["total_qty"] for r in rows)}
     if sourced:
         out["not_on_mouser"] = [r["mpn"] or r["value"] for r in rows
@@ -3559,6 +3540,53 @@ def bom_sourcing_risks(rows, boards=1) -> dict:
             "any": bool(not_active or no_stock or insufficient)}
 
 
+def bom_line_stock_risk(r, boards=1) -> dict:
+    """Stock coverage for ONE BOM line at a build of `boards` boards — the per-row form of
+    bom_sourcing_risks' stock test, so a tinted table row can never disagree with the
+    headline No-Stock / Low-Stock counts. required = per_board_qty * boards (a board count
+    below 1 folds to 1); per-board qty comes from 'qty' (project) or 'total_qty'
+    (consolidated). available is the line's known integer stock, or None when stock is
+    unknown (a line that was never priced) — unknown is NOT a risk, absence of data is not a
+    warning. kind is 'err' when known stock is 0 (nothing to buy), 'warn' when a positive
+    known stock is below required (a short line), else None. `short` is True for both risky
+    cases. Read-only, pure. Returns {kind, required, available, short}."""
+    n = _board_count(boards)
+    per_board = r.get("qty", r.get("total_qty", 0)) or 0
+    try:
+        per_board = int(per_board)
+    except (TypeError, ValueError):
+        per_board = 0
+    required = per_board * n
+    stock = r.get("stock")
+    if isinstance(stock, bool) or not isinstance(stock, (int, float)):
+        return {"kind": None, "required": required, "available": None, "short": False}
+    # Branch on the RAW stock (not int(stock)) so the No-Stock vs Low-Stock split matches
+    # bom_sourcing_risks EXACTLY — flooring first would call a fractional 0 < stock < 1 line
+    # No-Stock while the aggregate counts it Low-Stock, breaking the "can never disagree"
+    # invariant. `available` reports the whole count for display (real stock is integral).
+    available = int(stock)
+    if stock <= 0:
+        return {"kind": "err", "required": required, "available": available, "short": True}
+    if required and stock < required:
+        return {"kind": "warn", "required": required, "available": available, "short": True}
+    return {"kind": None, "required": required, "available": available, "short": False}
+
+
+def bom_line_is_populated(r) -> bool:
+    """Whether a BOM line is a real, orderable/identifiable line — it carries a part number
+    OR a value. The 'Populated Lines Only' export predicate: it drops blank/placeholder
+    lines (no MPN and no value) that a purchasing sheet should never carry. Pure."""
+    return bool((r.get("mpn") or "").strip()) or bool((r.get("value") or "").strip())
+
+
+def bom_line_is_priced(r) -> bool:
+    """Whether a BOM line carries a usable price — a stored extended cost, or a unit price
+    that parses to a number. The 'Priced Lines Only' export predicate. Pure."""
+    if r.get("extended") is not None:
+        return True
+    return _coerce_price(r.get("unit_price")) is not None
+
+
 def _lead_weeks(v):
     """Normalize a distributor lead-time value into whole weeks, or None when unknown.
     Providers disagree on shape: Mouser gives strings ("16 Weeks"), DigiKey gives a
@@ -3675,14 +3703,79 @@ def _price_rows(rows, price_lookup, qty_key: str):
                 r[k] = v
 
 
+def _bom_project_csv(rows, priced: bool) -> str:
+    """The project BOM export CSV for `rows` (Refs,Qty,Value,MPN,Manufacturer,Footprint,
+    Datasheet,Description,Basic, + the priced Source/Dist P/N/Unit/Ext/Stock/Lifecycle
+    columns when `priced`). Shared by the builder and the Export group's line-filtered
+    re-export, so both emit the identical schema. Pure."""
+    import csv as _csv
+    import io as _io
+    buf = _io.StringIO()
+    w = _csv.writer(buf, lineterminator="\n")
+    head = ["Refs", "Qty", "Value", "MPN", "Manufacturer", "Footprint",
+            "Datasheet", "Description", "Basic"]
+    if priced:
+        head += ["Source", "Dist P/N", "Unit Price", "Ext Price", "Stock", "Lifecycle"]
+    w.writerow(head)
+    for r in rows:
+        line = [",".join(r.get("refs", [])), r.get("qty", ""), r.get("value", ""), r.get("mpn", ""),
+                r.get("manufacturer", ""), r.get("footprint", ""), r.get("datasheet", ""),
+                r.get("description", ""), "yes" if r.get("basic") else ""]
+        if priced:
+            ext = r.get("extended")
+            line += [r.get("source", ""), _dist_pn(r), r.get("unit_price", ""),
+                     f"{ext:.4f}" if ext is not None else "",
+                     r.get("stock", ""), r.get("lifecycle", "")]
+        w.writerow(line)
+    return buf.getvalue()
+
+
+def _bom_consolidated_csv(rows, board_names, sourced: bool, priced: bool) -> str:
+    """The consolidated BOM export CSV for `rows` (MPN,Manufacturer,Value,Footprint,Total,
+    [Source,] per-board columns, Datasheet, + priced columns) — the per-board breakdown a
+    consolidated build carries. Shared by the builder and the line-filtered re-export. Pure."""
+    import csv as _csv
+    import io as _io
+    buf = _io.StringIO()
+    w = _csv.writer(buf, lineterminator="\n")
+    head = ["MPN", "Manufacturer", "Value", "Footprint", "Total"] + list(board_names) + ["Datasheet"]
+    if sourced:
+        head.insert(5, "Source")
+    if priced:
+        head += ["Dist P/N", "Unit Price", "Ext Price", "Stock", "Lifecycle"]
+    w.writerow(head)
+    for r in rows:
+        row = [r.get("mpn", ""), r.get("manufacturer", ""), r.get("value", ""),
+               r.get("footprint", ""), r.get("total_qty", "")]
+        if sourced:
+            row.append(r.get("source", ""))
+        row += [(r.get("per_board") or {}).get(b, 0) for b in board_names] + [r.get("datasheet", "")]
+        if priced:
+            ext = r.get("extended")
+            row += [_dist_pn(r), r.get("unit_price", ""), f"{ext:.4f}" if ext is not None else "",
+                    r.get("stock", ""), r.get("lifecycle", "")]
+        w.writerow(row)
+    return buf.getvalue()
+
+
+def bom_csv(rows, *, mode="project", board_names=None, priced=False, sourced=False) -> str:
+    """Serialize BOM rows to the export CSV for `mode` ('project' | 'consolidated'),
+    reproducing the exact columns the builders emit so a FILTERED subset (the Export group's
+    'Populated'/'Priced' line filters) re-exports with the same schema. `priced`/`sourced`
+    come from the ORIGINAL build, not re-detected from the rows, so filtering out every
+    priced line still keeps the header stable. Locked byte-for-byte against the builders'
+    own csv by test. Pure."""
+    if mode == "consolidated":
+        return _bom_consolidated_csv(rows, board_names or [], sourced, priced)
+    return _bom_project_csv(rows, priced)
+
+
 def _bom_from_components(comps, lookup=None,
                         enrich_fields=("manufacturer", "datasheet", "description"), price_lookup=None) -> dict:
     """Group (ref, props) components into BOM lines, enrich blanks via `lookup`,
     and flag basic parts. Shared by the single-sheet and whole-project builders.
     When `price_lookup` is given, each line with an MPN also gets unit_price /
     extended / stock / lifecycle and the result carries a `cost` roll-up."""
-    import csv as _csv
-    import io as _io
     groups: dict = {}
     for ref, props in comps:
         ident = part_identity(props, fallback=props.get("Value", ""))
@@ -3727,25 +3820,8 @@ def _bom_from_components(comps, lookup=None,
     if priced:
         _price_rows(rows, price_lookup, "qty")
 
-    buf = _io.StringIO()
-    w = _csv.writer(buf, lineterminator="\n")
-    head = ["Refs", "Qty", "Value", "MPN", "Manufacturer", "Footprint",
-            "Datasheet", "Description", "Basic"]
-    if priced:
-        head += ["Source", "Dist P/N", "Unit Price", "Ext Price", "Stock", "Lifecycle"]
-    w.writerow(head)
-    for r in rows:
-        line = [",".join(r["refs"]), r["qty"], r["value"], r["mpn"],
-                r["manufacturer"], r["footprint"], r["datasheet"], r["description"],
-                "yes" if r["basic"] else ""]
-        if priced:
-            ext = r.get("extended")
-            line += [r.get("source", ""), _dist_pn(r), r.get("unit_price", ""),
-                     f"{ext:.4f}" if ext is not None else "",
-                     r.get("stock", ""), r.get("lifecycle", "")]
-        w.writerow(line)
     out = {"rows": rows, "component_count": len(comps), "line_count": len(rows),
-           "csv": buf.getvalue()}
+           "csv": _bom_project_csv(rows, priced)}
     if priced:
         out["cost"] = bom_cost_summary(rows)
     return out
@@ -4240,7 +4316,7 @@ def _procurement_note(*, priced: bool, spares_added: int, spares_pct: float) -> 
 
 
 def procurement_xlsx(rows, *, boards=1, spares_pct=0, pcb_multiple=3, tax_rate=0.0,
-                     shipping=0.0) -> bytes:
+                     shipping=0.0, labour_per_board=0.0, assembly_surcharge_rate=0.0) -> bytes:
     """The buy-side procurement sheet as a clean Excel workbook, modeled on a real hand-made
     order sheet but AUTO-POPULATED from the Mouser/DigiKey data we already fetch — the columns
     a buyer fills by hand: Description, P/N (the orderable distributor part number), Electronic
@@ -4258,8 +4334,16 @@ def procurement_xlsx(rows, *, boards=1, spares_pct=0, pcb_multiple=3, tax_rate=0
     falling back to the stored unit price. Cost @ QTY = QTY * Unit Cost; Tax/Tariff = Cost @ QTY
     * `tax_rate` (a single fraction, e.g. 0.07 for 7%); per-line Total Cost = Cost @ QTY +
     Tax/Tariff. `shipping` is one order-level charge shown and added in the TOTAL row (the grand
-    Total = the cost + tax subtotals + shipping). Unpriced lines still list their quantities but
-    leave the money cells blank. The Notes column auto-flags the exceptions a buyer must act on —
+    Total = the cost + tax subtotals + shipping).
+
+    Landed assembly cost (both default 0 = off, so the sheet is unchanged): `labour_per_board`
+    is a flat assembly-labour charge per board built, billed for the actual board count `boards`
+    (NOT the pack-rounded parts quantity, since you assemble the boards you build);
+    `assembly_surcharge_rate` is a fraction of the PARTS subtotal (Cost @ QTY, e.g. 0.05 for 5%)
+    covering handling/markup. When either is nonzero a single 'Assembly' line (labour + surcharge,
+    its breakdown in Notes) is emitted above the TOTAL row and folded into the grand Total, so the
+    sheet foots to parts + labour*boards + surcharge + tax + shipping. Assembly is not taxed
+    (labour, not parts). Unpriced lines still list their quantities but leave the money cells blank. The Notes column auto-flags the exceptions a buyer must act on —
     an unpriced line ('no price — request quote') and a spares-padded passive ('+N spares (P%
     attrition)') — and is otherwise blank. Pure, offline, standard-library. Returns the .xlsx bytes."""
     import math
@@ -4282,6 +4366,14 @@ def procurement_xlsx(rows, *, boards=1, spares_pct=0, pcb_multiple=3, tax_rate=0
         ship = max(0.0, float(shipping))
     except (TypeError, ValueError):
         ship = 0.0
+    try:
+        labour = max(0.0, float(labour_per_board))
+    except (TypeError, ValueError):
+        labour = 0.0
+    try:
+        surcharge_rate = max(0.0, float(assembly_surcharge_rate))
+    except (TypeError, ValueError):
+        surcharge_rate = 0.0
 
     # (header, kind): 't' text, 'i' integer, 'm' money (currency-styled number).
     cols = [("Description", "t"), ("P/N", "t"), ("Electronic Component?", "t"), ("Vendor", "t"),
@@ -4317,8 +4409,28 @@ def procurement_xlsx(rows, *, boards=1, spares_pct=0, pcb_multiple=3, tax_rate=0
     data = [line(r) for r in rows]
     cost_sum = round(sum(d["Cost @ QTY"] for d in data if d["Cost @ QTY"] is not None), 4)
     tax_sum = round(sum(d["Tax/Tariff"] for d in data if d["Tax/Tariff"] is not None), 4)
-    total_row = {"Description": "TOTAL", "Cost @ QTY": cost_sum, "Tax/Tariff": tax_sum,
-                 "Shipping": ship or None, "Total Cost": round(cost_sum + tax_sum + ship, 4)}
+
+    # Landed assembly: labour billed per board built (actual `n`, not the pack-rounded parts
+    # qty) + a surcharge on the parts subtotal. Emitted as one 'Assembly' line and folded into
+    # the grand Total; not taxed (labour, not parts). Off (blank) when both inputs are 0.
+    labour_total = round(labour * n, 4)
+    surcharge = round(cost_sum * surcharge_rate, 4)
+    assembly_total = round(labour_total + surcharge, 4)
+    assembly_row = None
+    if assembly_total > 0:
+        bits = []
+        if labour_total > 0:
+            bits.append(f"labour ${labour:,.2f}/board x {n}")
+        if surcharge > 0:
+            bits.append(f"{surcharge_rate * 100:g}% surcharge on parts")
+        assembly_row = {"Description": "Assembly", "Electronic Component?": "No",
+                        "Cost @ QTY": assembly_total, "Total Cost": assembly_total,
+                        "Notes": " + ".join(bits)}
+
+    parts_and_assembly = round(cost_sum + assembly_total, 4)
+    total_row = {"Description": "TOTAL", "Cost @ QTY": parts_and_assembly, "Tax/Tariff": tax_sum,
+                 "Shipping": ship or None,
+                 "Total Cost": round(parts_and_assembly + tax_sum + ship, 4)}
 
     def cell(ref, kind, raw, *, header=False, bold=False):
         if header:
@@ -4359,8 +4471,17 @@ def procurement_xlsx(rows, *, boards=1, spares_pct=0, pcb_multiple=3, tax_rate=0
     for ri, d in enumerate(data, start=2):
         row_xml.append(f'<row r="{ri}">' + "".join(
             cell(f"{_xlsx_col(i)}{ri}", k, d[name]) for i, (name, k) in enumerate(cols)) + '</row>')
+    next_r = len(data) + 2
+    # Assembly line (labour + surcharge) sits above the TOTAL, when billed. Money cells only;
+    # QTY/Unit are blank (the full landed assembly cost lives in Cost @ QTY), the breakdown in Notes.
+    if assembly_row is not None:
+        ar = next_r
+        row_xml.append(f'<row r="{ar}">' + "".join(
+            cell(f"{_xlsx_col(i)}{ar}", "t" if name in ("Description", "Electronic Component?", "Notes")
+                 else k, assembly_row.get(name)) for i, (name, k) in enumerate(cols)) + '</row>')
+        next_r += 1
     # Bold TOTAL row: "TOTAL" label under Description, sums under the money columns.
-    tr = len(data) + 2
+    tr = next_r
     total_cells = []
     for i, (name, kind) in enumerate(cols):
         ref = f"{_xlsx_col(i)}{tr}"
