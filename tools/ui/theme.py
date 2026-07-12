@@ -397,6 +397,41 @@ def load_fonts(app) -> None:
     app.setFont(f)
 
 
+_indicator_cache: Dict[str, str] = {}
+
+
+def _indicator_png(svg: str, color: str, size: int, tag: str) -> str:
+    """Bake an inline SVG (currentColor -> `color`) to a size×size PNG for a QSS
+    `image:` on a checkbox/radio indicator — the check MARK / radio DOT the flat
+    fill was missing. QSS `image:` needs a file and the glyph uses currentColor, so it
+    is baked to `color` (on_accent, which reads on the accent fill) and re-baked per
+    theme. Cached by tag+colour; returns a forward-slash path for QSS, or "" if SVG
+    rendering is unavailable (the indicator then falls back to the solid fill)."""
+    from pathlib import Path as _Path
+    key = f"{tag}:{color}:{size}"
+    cached = _indicator_cache.get(key)
+    if cached and _Path(cached).is_file():
+        return cached
+    try:
+        import tempfile
+        from PyQt5.QtGui import QPixmap, QPainter
+        from PyQt5.QtCore import Qt as _Qt
+        from PyQt5.QtSvg import QSvgRenderer
+        r = QSvgRenderer(bytearray(svg.replace("currentColor", color), encoding="utf-8"))
+        pm = QPixmap(size, size); pm.fill(_Qt.transparent)
+        p = QPainter(pm); r.render(p); p.end()
+        out = _Path(tempfile.gettempdir()) / f"kicadmgr_{tag}_{color.lstrip('#')}.png"
+        pm.save(str(out), "PNG")
+        _indicator_cache[key] = out.as_posix()
+        return _indicator_cache[key]
+    except Exception:                       # noqa: BLE001 — no tick beats a crash
+        return ""
+
+
+# The radio DOT (checkboxes reuse the bundled 'check' glyph); a plain filled circle.
+_RADIO_DOT_SVG = '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="3.4" fill="currentColor"/></svg>'
+
+
 def qss(dark: bool | None = None) -> str:
     """Full stylesheet for the Fusion base widgets (buttons, inputs, combos,
     tables, headers, scrollbars, tooltips, menus). Object-name hooks let the
@@ -423,6 +458,13 @@ def qss(dark: bool | None = None) -> str:
     glow = "#1c1c1c" if _is_dark else "#f7f7f7"
     grad = (f"qradialgradient(cx:0.16, cy:-0.05, radius:1.3, fx:0.16, fy:-0.05, "
             f"stop:0 {glow}, stop:0.5 {c['canvas']}, stop:1 {c['base']})")
+    # A real check MARK / radio DOT for the :checked indicators (the flat accent fill
+    # alone read as "just on/off" — owner feedback). Baked, on_accent-tinted, per theme.
+    from . import icons as _icons
+    check_url = _indicator_png(_icons.icon("check"), c['on_accent'], 13, "check")
+    dot_url = _indicator_png(_RADIO_DOT_SVG, c['on_accent'], 12, "dot")
+    check_img = f"image: url({check_url});" if check_url else ""
+    dot_img = f"image: url({dot_url});" if dot_url else ""
     return f"""
 /* outline:none folded into QWidget — the universal `*` selector amid a large
    sheet makes Qt's QSS parser emit a spurious "Could not parse stylesheet". */
@@ -456,7 +498,7 @@ QLabel {{ background: transparent; }}
 #navDidYouMean:hover {{ color: {c['txt1']}; }}
 
 /* buttons */
-QPushButton {{ background: {c['ctl']}; border: 1px solid {c['stroke']}; border-radius: {rc}px;
+QPushButton {{ background: {c['ctl']}; border: 1px solid {c['hairline_strong']}; border-radius: {rc}px;
     color: {c['txt1']}; padding: 6px 12px; }}
 QPushButton:hover {{ background: {c['ctl_hover']}; }}
 /* border same colour as the fill: without an explicit border a Fusion QSS button can
@@ -557,13 +599,13 @@ QSpinBox:focus, QDoubleSpinBox:focus {{ border: 1px solid {c['txt3']}; }}
 QSpinBox::up-button, QSpinBox::down-button,
 QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{ width: 0; border: none; }}
 QCheckBox {{ color: {c['txt1']}; spacing: 8px; }}
-QCheckBox::indicator {{ width: 15px; height: 15px; border: 1px solid {c['stroke']};
+QCheckBox::indicator {{ width: 15px; height: 15px; border: 1px solid {c['hairline_strong']};
     border-radius: {rc}px; background: {c['ctl']}; }}
-QCheckBox::indicator:checked {{ background: {c['accent']}; border-color: {c['accent']}; }}
+QCheckBox::indicator:checked {{ background: {c['accent']}; border-color: {c['accent']}; {check_img} }}
 QRadioButton {{ color: {c['txt1']}; spacing: 8px; }}
-QRadioButton::indicator {{ width: 14px; height: 14px; border: 1px solid {c['stroke']};
+QRadioButton::indicator {{ width: 14px; height: 14px; border: 1px solid {c['hairline_strong']};
     border-radius: 7px; background: {c['ctl']}; }}
-QRadioButton::indicator:checked {{ background: {c['accent']}; border-color: {c['accent']}; }}
+QRadioButton::indicator:checked {{ background: {c['accent']}; border-color: {c['accent']}; {dot_img} }}
 
 QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
 QScrollBar::handle:vertical {{ background: {c['ctl_hover']}; border-radius: {rc}px; min-height: 24px; }}
@@ -594,7 +636,7 @@ QTableCornerButton::section {{ background: {c['card']}; border: none; }}
    borderless transparent mono surface (overrides the QPlainTextEdit input styling). */
 #activityConsole {{ background: {c['nav']}; border-top: 1px solid {c['divider']}; }}
 #consoleLog {{ background: transparent; border: none; color: {c['txt2']}; padding: 0; }}
-#consoleChevron {{ background: transparent; border: none; border-radius: {rc}px;
-    color: {c['txt2']}; font-size: {fz_input}px; }}
+#consoleChevron {{ background: {c['tok']}; border: 1px solid {c['hairline_strong']};
+    border-radius: {rc}px; color: {c['txt1']}; font-size: {fz_input}px; }}
 #consoleChevron:hover {{ background: {c['subtle_hover']}; color: {c['txt1']}; }}
 """
