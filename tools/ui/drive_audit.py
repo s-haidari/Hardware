@@ -705,9 +705,21 @@ def audit_library_workbench():
         if not dd._checks:
             _fail("Dedup review: no footprint rows rendered")
         before = dd._counter.text()
-        cb = next(iter(dd._checks.values())); cb.setChecked(not cb.isChecked()); _pump()
+        cb = next(iter(dd._checks.values())); cb.setChecked(True); _pump()
         if dd._counter.text() == before:
             _fail("Dedup review: live counter did not update on a toggle")
+        # Regression lock (review wf_8cf64971): headless _delete_checked with NO explicit
+        # confirm seam must NOT delete — util.confirm auto-proceeds under offscreen, so the
+        # `else: return` guard is the only thing protecting the files (mirrors the sibling).
+        _orig_rm = LM.remove_footprint
+        _rm = {"n": 0}
+        LM.remove_footprint = lambda *a, **k: (_rm.__setitem__("n", _rm["n"] + 1), {"removed": False})[1]
+        try:
+            dd._delete_checked(); _pump()          # no seam + headless → guard must skip the delete
+        finally:
+            LM.remove_footprint = _orig_rm
+        if _rm["n"] != 0:
+            _fail("Dedup review: headless _delete_checked with no seam deleted files (guard missing)")
         lt.deleteLater(); dd.deleteLater()
     except Exception as e:  # noqa: BLE001
         _fail("Library Parts: Library Tools / Dedup modals", e)

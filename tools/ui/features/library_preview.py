@@ -827,19 +827,29 @@ class DedupReviewDialog(QDialog):
         if getattr(self, "_delete_btn", None) is not None:
             self._delete_btn.setEnabled(n_del > 0 and not self._busy)
 
-    def _delete_checked(self):
+    def _delete_checked(self, confirm=None):
+        """Delete the checked duplicate footprints. `confirm` is a test/drive seam: a
+        callable(stems)->bool that bypasses the GUI confirm; None uses the in-app overlay.
+        A headless run with no explicit seam NEVER deletes (safe default) — mirrors
+        DuplicateManagerDialog so a future offscreen drive can't auto-delete files."""
         if self._busy:
             return
         stems = [s for s, cb in self._checks.items() if cb.isChecked()]
         if not stems:
             return
-        from ..util import confirm as _confirm_dlg
-        if not _confirm_dlg(
-                self, "Delete Footprints",
-                f"Delete {len(stems)} duplicate footprint file"
-                f"{'' if len(stems) == 1 else 's'}? This is undo-safe (files go to the "
-                "library trash) and commits the result."):
-            return
+        if callable(confirm):
+            if not confirm(stems):
+                return
+        elif not _headless():
+            from ..util import confirm as _confirm_dlg
+            if not _confirm_dlg(
+                    self, "Delete Footprints",
+                    f"Delete {len(stems)} duplicate footprint file"
+                    f"{'' if len(stems) == 1 else 's'}? This is undo-safe (files go to the "
+                    "library trash) and commits the result."):
+                return
+        else:
+            return                       # headless with no explicit confirm never deletes
         self._busy = True
         self._update_counter()
 
