@@ -480,20 +480,15 @@ QPushButton#seg[selected="true"] {{ background: {c['card']}; color: {c['txt1']};
 QPushButton#tokbtn {{ background: {c['tok']}; border: none; border-radius: {rc}px;
     color: {c['txt1']}; padding: 3px 9px; font-family: {MONO_STACK}; font-size: {fz_ctl}px; }}
 QPushButton#tokbtn:hover {{ background: {c['ctl_hover']}; }}
-/* Library finder (mockup .finder): a filter button beside the search box that opens
-   a Show/Group-By pop. Quiet by default, lifts on hover; its badge carries the count
-   of active (non-default) filters. The pop is a raised card; its Show checkboxes and
-   Group By radios inherit the global QCheckBox/QRadioButton chrome. */
-QPushButton#finderFilter {{ background: {c['ctl']}; border: 1px solid {c['stroke']};
-    border-radius: {rc}px; }}
-QPushButton#finderFilter:hover {{ background: {c['ctl_hover']}; }}
-QLabel#finderBadge {{ background: {c['accent']}; color: {c['on_accent']};
-    border-radius: {rc}px; font-size: 8px; font-weight: 700; }}
-QFrame#finderPop {{ background: {c['card']}; border: 1px solid {c['hairline_strong']};
-    border-radius: {rk}px; }}
+/* Library finder bar (design-rules §4 — no hidden chrome): an always-visible inline
+   bar under the search with the Show class multi-select, the Group single-select, and
+   Duplicates-only, wrapping in a FlowLayout. The bar itself is transparent; its section
+   labels (#finderPopLabel) are quiet t3, and its checkboxes/radios (#finderOpt) inherit
+   the global chrome with a tighter inline padding. */
+QWidget#finderBar {{ background: transparent; }}
 QLabel#finderPopLabel {{ color: {c['txt3']}; background: transparent; }}
 QCheckBox#finderOpt, QRadioButton#finderOpt {{ color: {c['txt1']}; background: transparent;
-    padding: 5px 4px; spacing: 9px; }}
+    padding: 3px 2px; spacing: 6px; }}
 QCheckBox#finderOpt:hover, QRadioButton#finderOpt:hover {{ color: {c['txt1']}; }}
 /* Detail header still-needs line (mockup .needs) + the ⋯ kebab. The Complete pill is
    green, each missing-field pill is amber, a broken link reads red. Reusable chrome. */

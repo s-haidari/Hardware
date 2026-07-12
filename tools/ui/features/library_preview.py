@@ -25,7 +25,8 @@ from PyQt5.QtWidgets import (QWidget, QFrame, QVBoxLayout, QHBoxLayout, QLabel,
                              QListWidget, QListWidgetItem, QLineEdit, QFileDialog,
                              QInputDialog, QDialog, QCheckBox, QGridLayout,
                              QPlainTextEdit, QPushButton, QRadioButton, QButtonGroup,
-                             QLayout, QSizePolicy, QMenu, QProgressBar, QScrollArea)
+                             QLayout, QSizePolicy, QMenu, QProgressBar, QScrollArea,
+                             QAbstractItemView, QDialogButtonBox)
 
 from .. import theme as T
 from ..prose import plural
@@ -848,6 +849,174 @@ class DedupReviewDialog(QDialog):
                 self._on_changed()
             self.accept()
         run_populate(self._ctx, job, done, busy="Removing duplicate footprints…")
+
+
+class DuplicateManagerDialog(QDialog):
+    """Resolve duplicate PARTS side by side (the Parts picker's Manage Duplicates action
+    and a row's Duplicate-badge click both open this). One card per part — name, MPN,
+    manufacturer, footprint, 3D model, completion — with the most-complete part pre-kept
+    (unchecked) and the rest pre-marked delete. 'Delete Checked' removes each checked
+    part through the proven remove_part backend (symbols, and optionally the footprint /
+    3D-model files), undo-safe, and commits once. Backed by the SAME per-part delete the
+    detail's Delete Whole Part uses, so bulk cleanup can never diverge from it."""
+
+    def __init__(self, ctx, rows, on_changed=None, parent=None):
+        super().__init__(parent)
+        self._ctx = ctx
+        self._rows = list(rows or [])
+        self._on_changed = on_changed
+        self._checks: list = []          # (row, QCheckBox) — checked = delete
+        self._busy = False
+        self.setWindowTitle("Manage Duplicates")
+        self.setModal(True); self.setMinimumWidth(560)
+
+        lay = QVBoxLayout(self); lay.setContentsMargins(20, 18, 20, 16); lay.setSpacing(12)
+        lay.addWidget(W.eyebrow("Manage Duplicates"))
+        sub = W.body("These parts duplicate one another (a shared part number, or a "
+                     "byte-identical footprint). The most complete part is kept; check "
+                     "the ones to delete. Deletes are undo-safe and commit once.", dim=True)
+        sub.setWordWrap(True); lay.addWidget(sub)
+
+        keeper = self._pick_keeper(self._rows)
+        cards = QWidget(); flow = FlowLayout(cards, hspacing=10, vspacing=10)
+        for row in self._rows:
+            flow.addWidget(self._part_card(row, row is keeper))
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setWidget(cards)
+        scroll.setFrameShape(QFrame.NoFrame)
+        cards.setStyleSheet("background:transparent;")
+        scroll.setStyleSheet("QScrollArea{background:transparent;border:none;}"
+                             "QScrollArea>QWidget>QWidget{background:transparent;}")
+        lay.addWidget(scroll, 1)
+
+        # File-scope options: symbols always go; the footprint / model files are shared-
+        # capable, so deleting them is opt-in (off by default, exactly like the detail).
+        self._also_fp = QCheckBox("Also delete footprint files")
+        self._also_md = QCheckBox("Also delete 3D model files")
+        for cb in (self._also_fp, self._also_md):
+            cb.setObjectName("finderOpt"); cb.setCursor(Qt.PointingHandCursor)
+        opts = QHBoxLayout(); opts.setSpacing(16)
+        opts.addWidget(self._also_fp); opts.addWidget(self._also_md); opts.addStretch(1)
+        lay.addLayout(opts)
+
+        self._counter = QLabel(""); self._counter.setFont(T.ui_font(10))
+        W.register_restyle(lambda: self._counter.setStyleSheet(
+            f"color:{T.t('txt2')};background:transparent;"), self._counter)
+        row = QHBoxLayout(); row.addWidget(self._counter); row.addStretch(1)
+        row.addWidget(W.btn("Cancel", "ghost", "Close without deleting anything", self.reject))
+        self._delete_btn = W.btn("Delete Checked", "primary",
+                                 "Delete the checked parts and commit", self._delete_checked)
+        row.addWidget(self._delete_btn)
+        lay.addLayout(row)
+
+        self._update_counter()
+        W.register_restyle(lambda: self.setStyleSheet(f"QDialog{{background:{T.t('surface')};}}"), self)
+        self.setStyleSheet(f"QDialog{{background:{T.t('surface')};}}")
+
+    def _pick_keeper(self, rows):
+        """Keep the most-complete part (highest passport score); ties break to the first
+        row so the choice is deterministic and stable."""
+        best, best_n = (rows[0] if rows else None), -1
+        for r in rows:
+            try:
+                n = int(LM.part_completion(r).get("score", 0))
+            except Exception:  # noqa: BLE001
+                n = 0
+            if n > best_n:
+                best, best_n = r, n
+        return best
+
+    def _field(self, label, value):
+        r = QHBoxLayout(); r.setContentsMargins(0, 0, 0, 0); r.setSpacing(6)
+        r.addWidget(W.body(label, dim=True), 0)
+        v = W.body(value or "—", mono=True); v.setWordWrap(True)
+        r.addWidget(v, 1)
+        return r
+
+    def _part_card(self, row, is_keeper) -> QWidget:
+        card = QFrame(); card.setObjectName("dedupcard")
+        card.setMinimumWidth(240)
+        W.register_restyle(lambda: card.setStyleSheet(
+            f"QFrame#dedupcard{{background:{T.t('raised')};border:1px solid {T.t('hairline')};"
+            f"border-radius:8px;}}"), card)
+        cv = QVBoxLayout(card); cv.setContentsMargins(14, 12, 14, 12); cv.setSpacing(8)
+        head = QHBoxLayout(); head.setContentsMargins(0, 0, 0, 0); head.setSpacing(10)
+        cb = QCheckBox(); cb.setChecked(not is_keeper)
+        cb.toggled.connect(lambda _c: self._update_counter())
+        self._checks.append((row, cb))
+        head.addWidget(cb, 0)
+        nm = W.body(str(row.get("name") or "?")); nm.setFont(T.ui_font(10.5, semibold=True))
+        head.addWidget(nm, 1)
+        head.addWidget(W.tag("Keep", "ok") if is_keeper else W.body("Delete", dim=True), 0)
+        cv.addLayout(head)
+        cv.addLayout(self._field("Part Number", row.get("mpn") if row.get("has_real_mpn") else None))
+        cv.addLayout(self._field("Manufacturer", row.get("manufacturer")))
+        cv.addLayout(self._field("Footprint", row.get("footprint")))
+        cv.addLayout(self._field("3D Model", row.get("model")))
+        cv.addLayout(self._field("Completion", LM.completion_badge(row)))
+        return card
+
+    def _update_counter(self):
+        n_del = sum(1 for _r, cb in self._checks if cb.isChecked())
+        n_keep = len(self._checks) - n_del
+        self._counter.setText(f"{n_del} to delete · {n_keep} kept")
+        if getattr(self, "_delete_btn", None) is not None:
+            self._delete_btn.setEnabled(n_del > 0 and not self._busy)
+
+    def _delete_checked(self, confirm=None):
+        """Delete the checked parts. `confirm` is a test/drive seam: a callable returning
+        True to proceed (bypasses the modal QMessageBox); None uses the GUI confirm."""
+        if self._busy:
+            return
+        targets = [r for r, cb in self._checks if cb.isChecked()]
+        if not targets:
+            return
+        del_fp, del_md = self._also_fp.isChecked(), self._also_md.isChecked()
+        if callable(confirm):
+            if not confirm(targets):
+                return
+        elif not _headless():
+            from PyQt5.QtWidgets import QMessageBox
+            extra = ""
+            if del_fp or del_md:
+                bits = [b for b, on in (("footprint", del_fp), ("3D model", del_md)) if on]
+                extra = f" Their {' and '.join(bits)} files are deleted too, when not shared."
+            ans = QMessageBox.question(
+                self, "Delete Parts",
+                f"Delete {plural(len(targets), 'part')}? Their symbols are removed."
+                f"{extra} This is undo-safe (snapshot to the library trash) and commits once.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if ans != QMessageBox.Yes:
+                return
+        else:
+            return                       # headless with no explicit confirm never deletes
+        self._busy = True
+        self._update_counter()
+
+        def job():
+            log = LogSink(self._ctx.services)
+            removed_parts, removed_syms = [], 0
+            for r in targets:
+                res = LM.remove_part(self._ctx.cfg, r, log,
+                                     delete_footprint=del_fp, delete_model=del_md)
+                if res.get("ok"):
+                    removed_parts.append(r.get("name", "?"))
+                    removed_syms += len(res.get("symbols_removed") or [])
+            if removed_parts:
+                LM.git_commit_push(self._ctx.cfg, log,
+                                   f"chore(lib): remove {plural(len(removed_parts), 'duplicate part')}")
+            return {"parts": removed_parts, "symbols": removed_syms}
+
+        def done(res, ok):
+            self._busy = False
+            n = len((res or {}).get("parts") or [])
+            self._ctx.services.log(
+                f"Manage Duplicates: removed {plural(n, 'part')} "
+                f"({plural((res or {}).get('symbols', 0), 'symbol')})."
+                if n else "Manage Duplicates: nothing removed.")
+            if self._on_changed:
+                self._on_changed()
+            self.accept()
+        run_populate(self._ctx, job, done, busy="Removing duplicate parts…")
 
 
 class LibraryToolsDialog(QDialog):
@@ -2416,14 +2585,49 @@ class PartDetail(QWidget):
                 f"{U.fmt_dims(sz[0], sz[1], sz[2], mm_dec=2, mils_dec=1)}")
 
 
+def _highlight_html(text: str, needle: str) -> str:
+    """HTML for `text` with every case-insensitive occurrence of `needle` wrapped in a
+    neutral highlight span. The emphasis is a grayscale wash (hairline_strong adapts
+    per theme), never a brand hue — a scan cue, not a status colour (design-rules §4)."""
+    low, out, i, n = text.lower(), [], 0, len(needle)
+    while i < len(text):
+        j = low.find(needle, i)
+        if j < 0:
+            out.append(escape(text[i:])); break
+        out.append(escape(text[i:j]))
+        out.append(f'<span style="background:{T.t("hairline_strong")};">'
+                   f'{escape(text[j:j + n])}</span>')
+        i = j + n
+    return "".join(out)
+
+
+class _ClickLabel(QLabel):
+    """A label that fires `on_click` on a left press (a lightweight clickable chip —
+    the row's Duplicate badge). Accepts the event so the list's own click still runs
+    (selecting the row) but the badge action takes precedence."""
+
+    def __init__(self, text: str, on_click, parent=None):
+        super().__init__(text, parent)
+        self._on_click = on_click
+        self.setCursor(Qt.PointingHandCursor)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton and callable(self._on_click):
+            self._on_click(); e.accept(); return
+        super().mousePressEvent(e)
+
+
 class _ElideLabel(QLabel):
     """A single-line label that elides (…) on the right instead of forcing its
     row wide — keeps long Mouser descriptions from spawning a horizontal scroll
-    in the narrow parts list. Reports its FULL text via full_text()."""
+    in the narrow parts list. Reports its FULL text via full_text(). When a search
+    query is set (`set_highlight`), the matched substrings in the ELIDED text carry a
+    neutral highlight so the query is visible in the row without a widget rebuild."""
 
     def __init__(self, text: str = "", parent=None):
         super().__init__(parent)
         self._full = text or ""
+        self._hl = ""                       # lowercased highlight substring (search match)
         from PyQt5.QtWidgets import QSizePolicy
         self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self._reelide()
@@ -2435,6 +2639,15 @@ class _ElideLabel(QLabel):
     def full_text(self) -> str:
         return self._full
 
+    def set_highlight(self, query: str):
+        """Set the search substring to emphasise (empty clears it). Cheap no-op when
+        unchanged so re-applying the same query across every row does no work."""
+        q = (query or "").strip().lower()
+        if q == self._hl:
+            return
+        self._hl = q
+        self._reelide()
+
     def resizeEvent(self, e):
         super().resizeEvent(e)
         self._reelide()
@@ -2442,7 +2655,14 @@ class _ElideLabel(QLabel):
     def _reelide(self):
         w = max(0, self.width())
         shown = self.fontMetrics().elidedText(self._full, Qt.ElideRight, w) if w else self._full
-        super().setText(shown)
+        # Highlight the match within what is ACTUALLY shown (post-elide), so an
+        # ellipsized name still emphasises the part of the query that survived.
+        if self._hl and self._hl in shown.lower():
+            self.setTextFormat(Qt.RichText)
+            super().setText(_highlight_html(shown, self._hl))
+        else:
+            self.setTextFormat(Qt.PlainText)
+            super().setText(shown)
         # When the text had to be shortened, expose the FULL value on hover so a
         # long footprint name / part description is never truly lost to the ellipsis.
         self.setToolTip(self._full if shown != self._full else "")
@@ -2493,21 +2713,30 @@ class PartsList(QWidget):
     health facet. One 6px asset-state dot per row (the only color); selection uses
     the native row wash. No borders."""
 
-    def __init__(self, rows, on_select: Callable[[dict], None], parent=None):
+    def __init__(self, rows, on_select: Callable[[dict], None], parent=None, *,
+                 group_by: str = "Category",
+                 on_group_change: Optional[Callable[[str], None]] = None,
+                 on_resolve_dup: Optional[Callable[[dict], None]] = None):
         super().__init__(parent)
         self._rows = list(rows)
         self._on_select = on_select
+        # Panel-wired seams: persist the last-used grouping, and open the one-confirm
+        # keep/delete flow when a row's Duplicate badge is clicked. Both optional so the
+        # bare PartsList(rows, on_select) constructor the tests use keeps working.
+        self._on_group_change = on_group_change
+        self._on_resolve_dup = on_resolve_dup
         self._facet = "All"
         self._query = ""
-        self._group_by = "Category"        # Category | Completion | Manufacturer | None
-        # Multi-select "Show" filter (mockup finder pop): a row is HIDDEN when it
-        # belongs to an UNCHECKED class (AND-exclude). Every part is exactly one of
-        # Complete / Incomplete / Needs A Fix, plus an orthogonal Not Orderable tag.
+        self._group_by = (group_by if group_by in ("Category", "Completion",
+                                                   "Manufacturer", "None") else "Category")
+        # Multi-select "Show" filter (finder bar): a row is HIDDEN when it belongs to an
+        # UNCHECKED class (AND-exclude). Every part is exactly one of Complete /
+        # Incomplete / Needs A Fix, plus an orthogonal Not Orderable tag.
         self._show = {"Complete", "Incomplete", "Not Orderable", "Needs A Fix"}
-        # "Duplicates only" (finder pop): restrict the list to parts that duplicate
-        # another — a shared REAL manufacturer part number (computed from the rows), or
-        # a byte-identical footprint file (from find_duplicate_footprints, seeded by the
-        # panel via set_duplicate_footprints). Off by default.
+        # "Duplicates only": restrict the list to parts that duplicate another — a shared
+        # REAL manufacturer part number (computed from the rows), or a byte-identical
+        # footprint file (from find_duplicate_footprints, seeded by the panel via
+        # set_duplicate_footprints). Off by default.
         self._dupes_only = False
         self._dup_footprints: set = set()  # footprint stems in a geometry-dup group
         self._dup_mpns: set = set()        # real MPNs shared by 2+ parts
@@ -2530,32 +2759,23 @@ class PartsList(QWidget):
         W.register_restyle(lambda: self._search.setStyleSheet(
             f"QLineEdit{{background:{T.t('inset')};border:none;border-radius:6px;"
             f"padding:6px 10px;color:{T.t('txt1')};}}"), self._search)
+        lay.addWidget(self._search)
 
-        # Finder (mockup .finder): the debounced search + a filter button that opens a
-        # pop with Show (multi-select) + Group By (single-select). The button carries a
-        # badge with the count of non-default filter deviations.
-        finder = QWidget()
-        frow = QHBoxLayout(finder); frow.setContentsMargins(0, 0, 0, 0); frow.setSpacing(8)
-        frow.addWidget(self._search, 1)
-        self._filter_btn = QPushButton(); self._filter_btn.setObjectName("finderFilter")
-        self._filter_btn.setCursor(Qt.PointingHandCursor)
-        self._filter_btn.setFixedSize(34, 34)
-        self._filter_btn.setToolTip("Filter and group the parts list")
-        self._filter_btn.clicked.connect(self._toggle_finder_pop)
-        self._filter_badge = QLabel(self._filter_btn)
-        self._filter_badge.setObjectName("finderBadge")
-        self._filter_badge.setAlignment(Qt.AlignCenter)
-        self._filter_badge.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        self._filter_badge.hide()
-        W.register_restyle(self._restyle_filter_btn, self._filter_btn)
-        frow.addWidget(self._filter_btn, 0)
-        lay.addWidget(finder)
-        self._finder_pop = self._build_finder_pop()
+        # Finder bar (design-rules §4 — no hidden chrome): the Show / Group By /
+        # Duplicates-only controls live in an ALWAYS-VISIBLE wrapping bar under the
+        # search, not behind a filter button + pop.
+        self._filter_bar = self._build_filter_bar()
+        lay.addWidget(self._filter_bar)
 
         self._list = QListWidget()
         self._list.setFrameShape(QFrame.NoFrame)
         self._list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # Multi-select (Ctrl/Shift+click) for bulk duplicate management; group headers
+        # carry NoItemFlags so they can never enter the selection. The detail still
+        # follows the CURRENT row; the selection SET drives the footer + Manage Duplicates.
+        self._list.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self._list.currentRowChanged.connect(self._on_row)
+        self._list.itemSelectionChanged.connect(self._update_selection_footer)
         W.register_restyle(self._restyle_list, self._list)
         lay.addWidget(self._list, 1)
 
@@ -2572,13 +2792,19 @@ class PartsList(QWidget):
         sb.rangeChanged.connect(lambda *_: self._sync_overlay())   # fires once the list has real geometry
         self._list.viewport().installEventFilter(self)
 
+        # Selection footer (mockup): 'N of M selected' while a multi-selection is active,
+        # else the quiet visible-count. Sits under the list.
+        self._footer = W.static_label("", "dim")
+        self._footer.setFont(T.ui_font(9))
+        lay.addWidget(self._footer)
+
         self._items = []                   # (row, QListWidgetItem, widget) DATA rows only
         self._visible = []
         self._group_labels = {}            # casefold(group) -> first-seen display label
         self._rebuilding = False           # True while _rebuild_widgets mutates the list
         self._rebuild_widgets()            # build the row widgets ONCE (PERF lib_preview:1175)
         self._apply()
-        self._update_filter_badge()
+        self._update_selection_footer()
 
     def _restyle_list(self):
         self._list.setStyleSheet(
@@ -2589,81 +2815,63 @@ class PartsList(QWidget):
         # The per-row widgets recolor themselves via their own registered
         # restylers (dot + text tokens), so nothing to iterate here.
 
-    # ── finder pop: Show (multi-select) + Group By (single-select) ────────────────
-    def _restyle_filter_btn(self):
-        self._filter_btn.setIcon(W.svg_icon(icons.GLYPHS["filter"], 16, T.t("txt2")))
-        self._filter_btn.setIconSize(QSize(16, 16))
-
+    # ── inline finder bar: Show (multi-select) + Group By (single) + Duplicates ────
     def _pop_label(self, text: str) -> QLabel:
         lab = QLabel(text); lab.setObjectName("finderPopLabel")
         lab.setFont(T.ui_font(8, semibold=True))
         return lab
 
-    def _build_finder_pop(self) -> QFrame:
-        pop = QFrame(self, Qt.Popup); pop.setObjectName("finderPop")
-        pop.setMinimumWidth(210)
-        v = QVBoxLayout(pop); v.setContentsMargins(12, 10, 12, 12); v.setSpacing(1)
-        v.addWidget(self._pop_label("Show"))
+    def _build_filter_bar(self) -> QWidget:
+        """The always-visible inline filter/toggle bar (design-rules §4 — no hidden
+        chrome), two semantic rows so a section label always leads its controls even as
+        they wrap in the narrow picker: a FILTER row ('Show' classes + Duplicates-only)
+        and a GROUP row (the single-select grouping)."""
+        bar = QWidget(); bar.setObjectName("finderBar")
+        col = QVBoxLayout(bar); col.setContentsMargins(0, 0, 0, 0); col.setSpacing(2)
+
+        filt = QWidget(); frow = FlowLayout(filt, hspacing=6, vspacing=4)
+        frow.addWidget(self._pop_label("Show"))
         self._show_boxes = {}
         for name in ("Complete", "Incomplete", "Not Orderable", "Needs A Fix"):
             cb = QCheckBox(name); cb.setObjectName("finderOpt"); cb.setChecked(True)
             cb.setCursor(Qt.PointingHandCursor)
             cb.toggled.connect(lambda on, n=name: self._on_show_toggle(n, on))
-            self._show_boxes[name] = cb; v.addWidget(cb)
-        v.addSpacing(10); v.addWidget(self._pop_label("Group By"))
+            self._show_boxes[name] = cb; frow.addWidget(cb)
+        # Duplicates-only is a filter (it narrows the set), so it lives on the filter row.
+        self._dupes_box = QCheckBox("Duplicates only"); self._dupes_box.setObjectName("finderOpt")
+        self._dupes_box.setCursor(Qt.PointingHandCursor)
+        self._dupes_box.setToolTip("Show only parts that duplicate another: a shared part "
+                                   "number, or a byte-identical footprint")
+        self._dupes_box.toggled.connect(self._on_dupes_toggle)
+        frow.addWidget(self._dupes_box)
+        col.addWidget(filt)
+
+        grp = QWidget(); grow = FlowLayout(grp, hspacing=6, vspacing=4)
+        grow.addWidget(self._pop_label("Group"))
         self._group_radios = {}
-        self._group_bg = QButtonGroup(pop)
+        self._group_bg = QButtonGroup(bar)
         for name in ("Category", "Completion", "Manufacturer", "None"):
             rb = QRadioButton(name); rb.setObjectName("finderOpt")
             rb.setCursor(Qt.PointingHandCursor)
             rb.setChecked(name == self._group_by)
             self._group_bg.addButton(rb)
             rb.toggled.connect(lambda on, n=name: self._pick_group(n) if on else None)
-            self._group_radios[name] = rb; v.addWidget(rb)
-        # Duplicates-only (its own line — an orthogonal restrict, not a Show class).
-        v.addSpacing(10); v.addWidget(self._pop_label("Find"))
-        self._dupes_box = QCheckBox("Duplicates only"); self._dupes_box.setObjectName("finderOpt")
-        self._dupes_box.setCursor(Qt.PointingHandCursor)
-        self._dupes_box.setToolTip("Show only parts that duplicate another: a shared part "
-                                   "number, or a byte-identical footprint")
-        self._dupes_box.toggled.connect(self._on_dupes_toggle)
-        v.addWidget(self._dupes_box)
-        return pop
+            self._group_radios[name] = rb; grow.addWidget(rb)
+        col.addWidget(grp)
+        return bar
 
     def _on_dupes_toggle(self, on: bool):
         self._dupes_only = bool(on)
         self._apply(preserve=True)         # pure hide/show — no widget rebuild
-        self._update_filter_badge()
-
-    def _toggle_finder_pop(self):
-        pop = self._finder_pop
-        if pop.isVisible():
-            pop.hide(); return
-        pop.adjustSize()
-        btn = self._filter_btn
-        tr = btn.mapToGlobal(btn.rect().bottomRight())
-        pop.move(tr.x() - pop.width(), tr.y() + 6)
-        pop.show()
 
     def _on_show_toggle(self, name: str, on: bool):
         (self._show.add if on else self._show.discard)(name)
         self._apply(preserve=True)         # a pure hide/show — no widget rebuild
-        self._update_filter_badge()
 
     def _pick_group(self, name: str):
-        self._update_filter_badge()
         # Rebuild from OUTSIDE the radio's toggled signal (blueprint footgun #2): defer
         # the list teardown so it never runs mid-signal.
         QTimer.singleShot(0, lambda: self.set_group_by(name))
-
-    def _update_filter_badge(self):
-        n = (4 - len(self._show)) + (0 if self._group_by == "Category" else 1) + (1 if self._dupes_only else 0)
-        if n <= 0:
-            self._filter_badge.hide(); return
-        self._filter_badge.setText(str(n))
-        self._filter_badge.setFixedSize(14, 14)
-        self._filter_badge.move(self._filter_btn.width() - 12, -2)
-        self._filter_badge.show(); self._filter_badge.raise_()
 
     def _show_match(self, row) -> bool:
         """AND-exclude: a row is hidden when it belongs to an unchecked Show class."""
@@ -2697,7 +2905,8 @@ class PartsList(QWidget):
         sub = _ElideLabel(names["technical"]); sub.setObjectName("partRowTechnical")
         sub.setFont(T.mono_font(8))
         # Suppress the second line when it would just repeat the first.
-        sub.setVisible(bool(names["technical"]) and names["technical"] != names["humanized"])
+        show_sub = bool(names["technical"]) and names["technical"] != names["humanized"]
+        sub.setVisible(show_sub)
         col.addWidget(prim); col.addWidget(sub)
         # LIB-03 / LM:2006: the same honest flag as the detail + BOM — a no-MPN part
         # carries a quiet 'no MPN · not orderable' line so the list never implies a
@@ -2708,6 +2917,24 @@ class PartsList(QWidget):
             flag.setFont(T.ui_font(8))
             col.addWidget(flag)
         lay.addLayout(col, 1)
+        # Search-highlight seam: _apply_highlight re-tints the matched substring in
+        # these two labels on each settled query, WITHOUT a widget rebuild. Store the
+        # technical line only when it is actually shown (isVisible() is False on an
+        # unshown widget, so gate on the intended-visibility flag, not the live state).
+        w._prim = prim
+        w._sub = sub if show_sub else None
+
+        # Duplicate badge (right-aligned like the score): shown when the row duplicates
+        # another part; clicking it opens the one-confirm keep/delete resolve flow. Built
+        # for every row and toggled by _refresh_dup_badges, since the footprint-dup signal
+        # arrives AFTER the widgets are built (set_duplicate_footprints).
+        dup = _ClickLabel("Duplicate", lambda r=row: self._resolve_dup(r))
+        dup.setObjectName("partRowDup")
+        dup.setFont(T.ui_font(8, semibold=True))
+        dup.setToolTip("Duplicates another part; click to keep or delete")
+        dup.setVisible(self._is_duplicate(row))
+        lay.addWidget(dup, 0, Qt.AlignVCenter)
+        w._dup_badge = dup
 
         # Warning triangle (mockup .rowwarn): silent-complete / red-triangle-on-any-gap
         # convention — a part that is incomplete OR has a broken link shows it; a
@@ -2732,6 +2959,8 @@ class PartsList(QWidget):
             sub.setStyleSheet(f"color:{T.t('txt3')};background:transparent;")
             if flag is not None:
                 flag.setStyleSheet(f"color:{T.t('warn')};background:transparent;")
+            dup.setStyleSheet(f"background:{T.t('ctl')};color:{T.t('txt2')};"
+                              f"border-radius:6px;padding:1px 6px;")
             if comp["dangling"]:
                 score.setStyleSheet(f"color:{T.t('err')};background:transparent;")
             elif comp["is_complete"]:
@@ -2741,6 +2970,10 @@ class PartsList(QWidget):
             if warn is not None:                    # err token shifts with theme
                 warn.setPixmap(W.svg_icon(icons.GLYPHS["alert"], size=15,
                                           color=T.t("err")).pixmap(15, 15))
+            # Keep the highlight wash theme-correct after a flip while a query is live.
+            prim._reelide()
+            if w._sub is not None:
+                w._sub._reelide()
         W.register_restyle(restyle, w)
         restyle()
         return w
@@ -2926,8 +3159,71 @@ class PartsList(QWidget):
         else:
             self._selected_key = None
             self._on_select and self._on_select(None)  # clear the detail when empty
+        # Re-tint the query match in the visible rows (cheap no-op when the query is
+        # unchanged per label), then re-pin the overlay and refresh the count footer.
+        self._apply_highlight()
         # Selecting a row can auto-scroll the list, so re-pin the group overlay after.
         self._sync_overlay()
+        self._update_selection_footer()
+
+    def _apply_highlight(self):
+        """Push the current query onto every row's name/technical labels so the match
+        is emphasised without rebuilding any widget (search stays a pure hide/show)."""
+        for _row, _it, w in self._items:
+            prim = getattr(w, "_prim", None)
+            sub = getattr(w, "_sub", None)
+            if prim is not None:
+                prim.set_highlight(self._query)
+            if sub is not None:
+                sub.set_highlight(self._query)
+
+    # ── multi-select footer + seams ───────────────────────────────────────────────
+    def selected_rows(self) -> list:
+        """The part rows currently in the multi-selection (headers excluded)."""
+        out = []
+        for it in self._list.selectedItems():
+            d = it.data(Qt.UserRole)
+            if isinstance(d, dict):
+                out.append(d)
+        return out
+
+    def selected_duplicate_rows(self) -> list:
+        """The selected rows that duplicate another part — the Manage Duplicates set."""
+        return [r for r in self.selected_rows() if self._is_duplicate(r)]
+
+    def visible_rows(self) -> list:
+        """The rows currently shown (post facet/search/Show/Duplicates filter), in
+        display order — the set 'Export Visible Parts' writes out."""
+        return list(self._visible)
+
+    def _update_selection_footer(self):
+        f = getattr(self, "_footer", None)
+        if f is None:
+            return
+        m = self.visible_count()
+        sel = len(self.selected_rows())
+        f.setText(f"{sel} of {m} selected" if sel >= 2 else plural(m, "part"))
+        # Notify the panel (Manage Duplicates enablement) on EVERY selection refresh —
+        # including the _apply path where the list's own signals are blocked, so the
+        # action never goes stale after a rescan collapses a multi-selection.
+        cb = getattr(self, "_on_selection_changed", None)
+        if callable(cb):
+            cb()
+
+    def _resolve_dup(self, row):
+        """A row's Duplicate badge was clicked: hand off to the panel's keep/delete flow.
+        Returns whatever the panel callback returns (the dialog, for the drive/test seam)."""
+        if callable(self._on_resolve_dup):
+            return self._on_resolve_dup(row)
+        return None
+
+    def _refresh_dup_badges(self):
+        """Show/hide each row's Duplicate badge against the current dup signals (the
+        footprint-dup set arrives after the widgets are built)."""
+        for row, _it, w in self._items:
+            b = getattr(w, "_dup_badge", None)
+            if b is not None:
+                b.setVisible(self._is_duplicate(row))
 
     def _on_search_text(self, query: str):
         """BUG-1a: store the query on each keystroke and (re)arm the debounce timer;
@@ -2969,6 +3265,7 @@ class PartsList(QWidget):
         whose footprint file duplicates another. The panel computes this off-thread with
         the scan and calls this; a re-filter follows if the filter is active."""
         self._dup_footprints = set(stems or ())
+        self._refresh_dup_badges()             # footprint-dup rows can now show the badge
         if self._dupes_only:
             self._apply(preserve=True)
 
@@ -2987,13 +3284,21 @@ class PartsList(QWidget):
 
     def set_group_by(self, mode: str):
         """Change the row grouping (Category | Completion | Manufacturer | None) and
-        rebuild — the list regroups, staying on the selected part when it survives."""
+        rebuild — the list regroups, staying on the selected part when it survives.
+        Fires on_group_change so the panel can persist the last-used grouping."""
         mode = mode if mode in ("Category", "Completion", "Manufacturer", "None") else "Category"
         if mode == self._group_by:
             return
         self._group_by = mode
+        # Keep the inline radios in sync when set programmatically (smart default /
+        # restore), without re-entering _pick_group.
+        rb = getattr(self, "_group_radios", {}).get(mode)
+        if rb is not None and not rb.isChecked():
+            rb.blockSignals(True); rb.setChecked(True); rb.blockSignals(False)
         self._rebuild_widgets()
         self._apply(preserve=True)
+        if callable(self._on_group_change):
+            self._on_group_change(mode)
 
     def group_by(self) -> str:
         return self._group_by

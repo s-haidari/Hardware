@@ -36,10 +36,11 @@ rebuilds** (known candidates: `lint_card`/`run_lint`, `authority_diff`, `card_ma
 | `process_folder_dialog` (via `move_files`) | import an already-extracted part folder | **Import Extracted Folder…** |
 | `clean_leftovers` | delete leftover zips/folders in Downloads | **Clean Downloads Leftovers** |
 
-### Library — tracked (need a multi-select affordance, not half-wired)
-| Capability | What it does | Plan |
+### Library — Parts picker dedupe (NOW SURFACED)
+| Capability | What it does | Where it's surfaced |
 |-----------|--------------|------|
-| `remove_symbol_by_index` / `remove_symbols_by_indices` | delete a specific duplicate / bulk symbols by position | Needs a duplicate/multi-select symbol list UI — build as a "Manage Duplicate Symbols" action (not a stub). |
+| `remove_part` (+ `find_duplicate_footprints`, `_dup_mpns`) | delete a whole duplicate part (symbols, optionally footprint/model files) | **Parts ▸ Manage Duplicates** — multi-select 2+ duplicate rows (Ctrl/Shift+click) or click a row's **Dup** badge → the `DuplicateManagerDialog` side-by-side keep/delete modal; bulk delete loops `remove_part` (the same proven per-part delete the detail uses) and commits once. The row Dup badge + the always-visible "Duplicates only" filter both draw the signal from `_dup_mpns` (shared real MPN) and `find_duplicate_footprints` (byte-identical geometry). |
+| `remove_symbols_by_indices` | bulk-remove symbol blocks by file position (aborts on a name mismatch) | Kept as the lower-level primitive (covered by `test_lib_parts_picker.py`). The Manage Duplicates UI deliberately uses the higher-level `remove_part` instead: MPN duplicates are distinct symbol NAMES (one row each), so name-based deletion is unambiguous, and `remove_part` additionally handles the footprint/model files + `still_referenced` safety. Index-based deletion is only needed for two blocks sharing a name, which `scan_library_grouped` collapses into one row — not a case the picker can reach. |
 
 ### Projects — NOW SURFACED (Projects workbench rebuild, commit closing this)
 The project-centric `_proj_panel` rebuild (▶ Prepare This Project, ▶ Build & Cost, the

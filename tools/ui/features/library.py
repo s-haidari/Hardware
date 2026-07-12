@@ -9,6 +9,9 @@ runs off the GUI thread via the shell's async service and logs to the status lin
 """
 from __future__ import annotations
 
+import csv
+import io
+import json
 import os
 from pathlib import Path
 
@@ -24,11 +27,73 @@ from ..util import LogSink, run_populate, _headless, clear_layout
 from .. import feature as F
 from ..prose import plural
 from . import library_preview as P
-from .library_preview import PartsList, PartDetail
+from .library_preview import PartsList, PartDetail, DuplicateManagerDialog
 
 import LibraryManager as LM
 import nd_git as ND
 import nd_commit_msg as CM
+
+# Persisted per-user preference: the last-used Parts grouping. A first run has no value,
+# so the panel picks a smart default by library size (see _smart_group_by).
+_GROUP_BY_SETTING = "LibraryGroupBy"
+
+
+def _smart_group_by(n: int) -> str:
+    """The default Parts grouping for a library of `n` parts: a small library reads fine
+    flat (None), a mid library groups by Category, a big one by Manufacturer — so the
+    list is never a wall of ungrouped rows nor over-chopped into tiny groups."""
+    if n < 20:
+        return "None"
+    if n <= 100:
+        return "Category"
+    return "Manufacturer"
+
+
+def _model_path(cfg, row) -> str:
+    """The row's 3D model file path (portable posix form), or '' when it has none."""
+    model = row.get("model")
+    if not model:
+        return ""
+    return (Path(cfg.get("ModelLib", "")) / model).as_posix()
+
+
+def _part_export_records(cfg, rows) -> list:
+    """The export rows for the Export Visible Parts action: identity + completion + the
+    3D-model path, one dict per part, in the list's current display order."""
+    out = []
+    for r in rows:
+        out.append({
+            "name": r.get("name") or "",
+            "mpn": (r.get("mpn") or "") if r.get("has_real_mpn") else "",
+            "manufacturer": r.get("manufacturer") or "",
+            "category": r.get("category") or "",
+            "completion": LM.completion_badge(r),
+            "model": _model_path(cfg, r),
+        })
+    return out
+
+
+_EXPORT_FIELDS = ["name", "mpn", "manufacturer", "category", "completion", "model"]
+
+
+def _write_parts_export(path, cfg, rows) -> int:
+    """Write the visible parts to `path` as JSON (.json) or CSV (any other suffix), UTF-8
+    so Windows never chokes on a unicode name. Returns the record count. Pure — the
+    button wraps it in a save dialog, the drive/test path calls it directly."""
+    recs = _part_export_records(cfg, rows)
+    p = Path(path)
+    if p.suffix.lower() == ".json":
+        p.write_text(json.dumps(recs, indent=2, ensure_ascii=False), encoding="utf-8")
+    else:
+        buf = io.StringIO()
+        w = csv.DictWriter(buf, fieldnames=_EXPORT_FIELDS)
+        w.writeheader()
+        w.writerows(recs)
+        # newline="" so the csv module's own \r\n line terminators are written verbatim:
+        # the default newline translation would turn each \r\n into \r\r\n on Windows
+        # (a blank line between every record), which strict CSV parsers / Excel choke on.
+        p.write_text(buf.getvalue(), encoding="utf-8", newline="")
+    return len(recs)
 
 
 def _action_row(*buttons) -> QWidget:
@@ -149,18 +214,68 @@ def _parts_panel(ctx, _state) -> QWidget:
     # at the top of its own column (the mockup's Files section), so the whole part —
     # Files, Component Fields, Sourcing, actions — lives in one scrollable canvas.
     detail = PartDetail(ctx)
-    parts_list = PartsList(rows, on_select=detail.show)
+
+    # Byte-identical footprint GROUPS from the last scan (stem -> its peer stems), so a
+    # Duplicate-badge click can gather the exact geometry group, not just "is a dup".
+    dstate = {"stem2grp": {}}
+
+    def _set_fp_groups(groups):
+        s2g = {}
+        for g in groups or []:
+            peers = set(g)
+            for stem in g:
+                s2g[stem] = peers
+        dstate["stem2grp"] = s2g
+
+    def _dup_group_for(row) -> list:
+        """Every part that duplicates `row`: parts sharing its real manufacturer part
+        number, plus parts whose footprint is byte-identical geometry to its footprint
+        (the same find_duplicate_footprints group). De-duplicated by identity, `row`
+        first, so the resolve modal shows the whole group."""
+        group, seen = [], set()
+
+        def _add(r):
+            if id(r) not in seen:
+                seen.add(id(r)); group.append(r)
+        _add(row)
+        mpn = (row.get("mpn") or "").strip() if row.get("has_real_mpn") else ""
+        peers = dstate["stem2grp"].get(row.get("footprint"), set())
+        for r in parts_list._rows:
+            same_mpn = mpn and r.get("has_real_mpn") and (r.get("mpn") or "").strip() == mpn
+            same_geom = bool(r.get("footprint")) and r.get("footprint") in peers
+            if same_mpn or same_geom:
+                _add(r)
+        return group
+
+    def _resolve_dup(row):
+        """A row's Duplicate badge was clicked: open the keep/delete resolve flow on that
+        part's whole duplicate group (the one-confirm flow). Returns the dialog so the
+        drive/test path can exercise it; exec is guarded off headlessly."""
+        grp = _dup_group_for(row)
+        dlg = DuplicateManagerDialog(ctx, grp, on_changed=rescan, parent=root)
+        if not _headless():
+            dlg.exec_()
+        return dlg
+
+    # Last-used grouping, else a smart default by library size once the first scan lands.
+    saved_group = str(LM.read_setting(_GROUP_BY_SETTING, "") or "")
+    parts_list = PartsList(
+        rows, on_select=detail.show,
+        group_by=(saved_group or "Category"),
+        on_group_change=lambda mode: LM.write_setting(_GROUP_BY_SETTING, mode),
+        on_resolve_dup=_resolve_dup)
 
     def _scan_with_dupes():
         """Scan the library AND compute the byte-identical-geometry footprint groups in
-        one off-thread pass, so the 'Duplicates only' filter has its footprint signal
-        without a second thread hop."""
+        one off-thread pass, so the 'Duplicates only' filter and the Manage Duplicates
+        resolve both have their footprint signal without a second thread hop."""
         rows = LM.scan_library_grouped(cfg)
         try:
-            dup_stems = {s for g in LM.find_duplicate_footprints(cfg) for s in g}
+            groups = LM.find_duplicate_footprints(cfg)
         except Exception:  # noqa: BLE001 — a filter hint never fails the scan
-            dup_stems = set()
-        return rows, dup_stems
+            groups = []
+        dup_stems = {s for g in groups for s in g}
+        return rows, dup_stems, groups
 
     def rescan():
         """Re-read the library after a mutation and refresh the list + counts.
@@ -171,7 +286,8 @@ def _parts_panel(ctx, _state) -> QWidget:
         def done(res, ok):
             if not ok or res is None:
                 return
-            fresh, dup_stems = res
+            fresh, dup_stems, groups = res
+            _set_fp_groups(groups)
             parts_list.set_rows(fresh)
             parts_list.set_duplicate_footprints(dup_stems)
         run_populate(ctx, _scan_with_dupes, done, busy="Rescanning library...")
@@ -240,16 +356,71 @@ def _parts_panel(ctx, _state) -> QWidget:
         src_btn.setToolTip("Add a Mouser API key in Settings to enable live sourcing")
         enrich_btn.setToolTip("Add a Mouser API key in Settings to enable enrichment")
 
+    def manage_duplicates():
+        """Open the side-by-side resolve modal on the currently multi-selected duplicate
+        parts (Ctrl/Shift+click 2+ duplicate rows first). Returns the dialog (or None
+        when fewer than 2 duplicates are selected); exec is guarded off headlessly."""
+        sel = parts_list.selected_duplicate_rows()
+        if len(sel) < 2:
+            ctx.services.log("Manage Duplicates: select 2 or more duplicate parts first "
+                             "(Ctrl or Shift click, or click a Dup badge to resolve one).")
+            return None
+        dlg = DuplicateManagerDialog(ctx, sel, on_changed=rescan, parent=root)
+        if not _headless():
+            dlg.exec_()
+        return dlg
+
+    def export_visible(path=None):
+        """Export the currently filtered parts to CSV/JSON. `path` is a test/drive seam;
+        None opens a save dialog."""
+        vis = parts_list.visible_rows()
+        if not vis:
+            ctx.services.log("Export Visible: no parts in the current view."); return
+        p = path
+        if p is None:
+            if _headless():
+                ctx.services.log("Export Visible is unavailable in a headless run."); return
+            default = str(Path(cfg.get("RepoRoot") or ".") / "visible_parts.csv")
+            p, _f = QFileDialog.getSaveFileName(
+                root, "Export Visible Parts", default,
+                "CSV (*.csv);;JSON (*.json)")
+            if not p:
+                return
+
+        def done(n, ok):
+            ctx.services.log(f"Exported {plural(n, 'part')} to {Path(p).as_posix()}."
+                             if ok else "Export failed, see status.")
+        run_populate(ctx, lambda: _write_parts_export(p, cfg, vis), done,
+                     busy="Exporting visible parts...")
+
     # Parts is a browse view — no forced primary. Import is rare/destructive, so it
     # is the quietest (ghost), not the lone primary it used to be.
     import_btn = W.btn("Import ZIP", "ghost",
                        "Extract, move, merge, auto-link, enrich, then commit a vendor ZIP",
                        import_zip)
+    dup_btn = W.btn("Manage Duplicates", "default",
+                    "Resolve 2+ selected duplicate parts side by side (bulk delete)",
+                    manage_duplicates)
+    export_btn = W.btn("Export Visible", "default",
+                       "Export the currently filtered parts (name, part number, maker, "
+                       "category, completion, model path) as CSV or JSON", export_visible)
 
-    # LIB-08: sourcing + import live on Parts; Maintenance is its own tab now.
-    lay.addWidget(_action_row(src_btn, enrich_btn, import_btn))
-    # The health filter chip bar is gone: filtering + grouping now live in the picker's
-    # finder pop (mockup .finder — Show checkboxes + Group By radios), inside PartsList.
+    def _sync_dup_btn():
+        """Manage Duplicates is live only when 2+ duplicate parts are selected."""
+        dup_btn.setEnabled(len(parts_list.selected_duplicate_rows()) >= 2)
+    # Fire on every selection refresh (incl. the blocked-signal _apply path after a
+    # rescan) via the list's selection hook, so the button never goes stale.
+    parts_list._on_selection_changed = _sync_dup_btn
+    _sync_dup_btn()
+
+    # LIB-08: sourcing + import live on Parts; Maintenance is its own tab now. The scan
+    # affordances — Manage Duplicates + Export Visible — sit alongside them.
+    lay.addWidget(_action_row(dup_btn, export_btn, src_btn, enrich_btn, import_btn))
+    # Filtering + grouping now live in an always-visible inline bar inside PartsList
+    # (design-rules §4 — no hidden chrome), not the old filter-button pop.
+
+    root.manage_duplicates = manage_duplicates       # test / drive seams
+    root.export_visible = export_visible
 
     # A maintenance action on the other tab emits library.changed; refresh here.
     bus = getattr(ctx, "bus", None)
@@ -310,9 +481,18 @@ def _parts_panel(ctx, _state) -> QWidget:
         parts_list.setVisible(True)
         if not ok or res is None:
             ctx.services.log("Library scan failed. See status."); return
-        fresh, dup_stems = res
+        fresh, dup_stems, groups = res
+        _set_fp_groups(groups)
         parts_list.set_rows(fresh)
         parts_list.set_duplicate_footprints(dup_stems)
+        # First run (no persisted grouping): pick the smart default by library size and
+        # persist it so it survives the next launch. Persist explicitly — set_group_by is
+        # a no-op (no persist) when the smart default already equals the current mode.
+        if not str(LM.read_setting(_GROUP_BY_SETTING, "") or ""):
+            sd = _smart_group_by(len(fresh))
+            parts_list.set_group_by(sd)
+            LM.write_setting(_GROUP_BY_SETTING, sd)
+        _sync_dup_btn()
     run_populate(ctx, _scan_with_dupes, _loaded, busy="Scanning library...")
 
     root.parts_list = parts_list        # test/inspection handles

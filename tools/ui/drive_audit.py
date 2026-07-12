@@ -247,9 +247,11 @@ def audit_library_workbench():
     n = lst.count()
     if n == 0:
         _fail("Library Parts: list empty after scan")
-    # M2: rows are grouped under sticky headers, and any incomplete/dangling part
-    # shows a warning triangle. Assert both, and that Group By re-renders the list.
+    # M2: rows are grouped under sticky headers (once a grouping is on — the smart
+    # default is None for a tiny fixture), and any incomplete/dangling part shows a
+    # warning triangle. Assert both, and that Group By re-renders the list.
     pl = panel.parts_list
+    pl.set_group_by("Category"); _pump()             # smart default is None on a tiny lib
     if not pl._headers:
         _fail("Library Parts: grouped list rendered no group headers")
     if not any(w.findChild(_QLabel, "partRowWarn") for _r, _it, w in pl._items):
@@ -266,15 +268,15 @@ def audit_library_workbench():
                 _fail("Library Parts: Group By Category rendered no headers")
     except Exception as e:  # noqa: BLE001
         _fail("Library Parts: Group By re-render", e)
-    # M3: the finder pop's Show checkboxes filter the list and its Group By radios
-    # re-group it (the real UI wiring, not the direct API the block above drives).
+    # M3: the ALWAYS-VISIBLE inline finder bar (no hidden pop): its Show checkboxes
+    # filter the list and its Group By radios re-group it (the real UI wiring).
     try:
+        if not pl._filter_bar.isVisibleTo(pl):
+            _fail("Library Parts: inline finder bar is not visible")
         vis0 = pl.visible_count()
         pl._show_boxes["Not Orderable"].setChecked(False); _pump()
         if pl.visible_count() >= vis0:
             _fail("Library Parts: unchecking a Show class did not hide any rows")
-        if not pl._filter_badge.text():
-            _fail("Library Parts: filter badge did not update after a Show toggle")
         pl._show_boxes["Not Orderable"].setChecked(True); _pump()
         if pl.visible_count() != vis0:
             _fail("Library Parts: re-checking the Show class did not restore the rows")
@@ -283,24 +285,85 @@ def audit_library_workbench():
             _fail("Library Parts: Group By radio did not switch the grouping")
         pl._group_radios["Category"].setChecked(True); _pump()
     except Exception as e:  # noqa: BLE001
-        _fail("Library Parts: finder pop Show/Group-By wiring", e)
+        _fail("Library Parts: inline finder bar Show/Group-By wiring", e)
+    # M3b: a query narrows the list AND highlights the match in the row, and the footer
+    # reflects the visible count.
+    try:
+        a_name = next((r.get("name") for r in pl._rows if r.get("name")), None)
+        if a_name:
+            frag = str(a_name)[:2].lower()
+            pl.filter(frag); _pump()
+            want = sum(1 for r in pl._rows if frag in str(r.get("name") or "").lower()
+                       or frag in str(r.get("mpn") or "").lower())
+            if pl.visible_count() != want:
+                _fail(f"Library Parts: query '{frag}' visible {pl.visible_count()} != {want}")
+            if not any("<span" in w._prim.text().lower()
+                       for _r, it, w in pl._items if not it.isHidden()):
+                _fail("Library Parts: query did not highlight any visible row")
+            if str(pl.visible_count()) not in pl._footer.text():
+                _fail("Library Parts: footer did not reflect the visible count")
+            pl.filter(""); _pump()
+    except Exception as e:  # noqa: BLE001
+        _fail("Library Parts: search highlight + footer", e)
     # Duplicates-only: seed a footprint dup group + toggle the checkbox; the list must
-    # narrow to the duplicated parts and the badge must count the active filter.
+    # narrow to the duplicated parts, the row badges appear, and un-toggling restores it.
     try:
         vis_all = pl.visible_count()
-        some_fp = next((r.get("footprint") for r in pl._rows if r.get("footprint")), None)
-        if some_fp:
-            pl.set_duplicate_footprints({some_fp}); _pump()
+        fps = [r.get("footprint") for r in pl._rows if r.get("footprint")]
+        dup_fps = set(fps[:2]) if len(fps) >= 2 else set(fps)
+        if dup_fps:
+            pl.set_duplicate_footprints(dup_fps); _pump()
+            if not any(not w._dup_badge.isHidden() for _r, _it, w in pl._items):
+                _fail("Library Parts: seeded footprint dup did not surface a row badge")
         pl._dupes_box.setChecked(True); _pump()
         if pl.visible_count() > vis_all:
             _fail("Library Parts: Duplicates-only widened the list")
-        if not pl._filter_badge.text():
-            _fail("Library Parts: filter badge did not count Duplicates-only")
         pl._dupes_box.setChecked(False); _pump()
         if pl.visible_count() != vis_all:
             _fail("Library Parts: un-toggling Duplicates-only did not restore the list")
     except Exception as e:  # noqa: BLE001
         _fail("Library Parts: Duplicates-only filter", e)
+    # M3c: multi-select two duplicates → Manage Duplicates builds the modal; drive its
+    # bulk-delete CONFIRM path (cancel, so the fixture is untouched), then click a row's
+    # Duplicate badge to open the one-part resolve flow (also headless-guarded).
+    try:
+        dup_items = [(r, it) for r, it, w in pl._items if not w._dup_badge.isHidden()]
+        if len(dup_items) >= 2:
+            for _r, it in dup_items[:2]:
+                it.setSelected(True)
+            _pump()
+            if len(pl.selected_duplicate_rows()) < 2:
+                _fail("Library Parts: two duplicate rows did not enter the selection")
+            dlg = panel.manage_duplicates()
+            if dlg is None:
+                _fail("Library Parts: Manage Duplicates did not open on 2 selected dupes")
+            else:
+                cancelled = {"n": 0}
+                dlg._delete_checked(confirm=lambda t: cancelled.__setitem__("n", len(t)) or False)
+                if cancelled["n"] < 1:
+                    _fail("Library Parts: Manage Duplicates confirm path saw no targets")
+                dlg.reject()
+            # Badge click → single-part resolve flow (guarded exec returns the dialog).
+            rdlg = pl._resolve_dup(dup_items[0][0])
+            if rdlg is None or not rdlg._checks:
+                _fail("Library Parts: Duplicate badge resolve flow built no cards")
+            rdlg.reject()
+            pl._list.clearSelection(); _pump()
+    except Exception as e:  # noqa: BLE001
+        _fail("Library Parts: Manage Duplicates / badge resolve", e)
+    # M3d: Export Visible writes the current view to a temp file with the right header.
+    try:
+        import tempfile as _tf
+        out = os.path.join(_tf.mkdtemp(), "visible.csv")
+        panel.export_visible(out)
+        _pump()
+        txt = Path(out).read_text(encoding="utf-8")
+        if not txt.startswith("name,mpn,manufacturer,category,completion,model"):
+            _fail("Library Parts: Export Visible header wrong")
+        if len(txt.strip().splitlines()) < 2:
+            _fail("Library Parts: Export Visible wrote no rows")
+    except Exception as e:  # noqa: BLE001
+        _fail("Library Parts: Export Visible", e)
     for i in range(n):
         try:
             lst.setCurrentRow(i); _pump()
@@ -492,8 +555,9 @@ def audit_library_workbench():
     except Exception as e:  # noqa: BLE001
         _fail("Library Parts: Library Tools / Dedup modals", e)
 
-    print("  library styled Parts driven (2-column, per-part actions: rename/reuse/delete; "
-          "inline-edit batches behind Save — no per-field push)",
+    print("  library styled Parts driven (2-column, inline finder bar + search highlight + "
+          "footer, dup badges, Manage Duplicates modal, Export Visible; per-part actions: "
+          "rename/reuse/delete; inline-edit batches behind Save — no per-field push)",
           flush=True)
 
     # ── Sourcing Health workbench: verdict + ▶ Fix All From Library ──────────────────
