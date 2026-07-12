@@ -390,18 +390,30 @@ def _fonts_dir():
     return Path(__file__).resolve().parent.parent / "fonts"
 
 
-def load_fonts(app) -> None:
-    """Register bundled TTFs (if any) and set the base app font to the UI face."""
+def load_fonts(app) -> list:
+    """Register bundled TTFs (if any) and set the base app font to the UI face.
+
+    Returns the family names successfully registered from the bundled TTFs, so a
+    caller (e.g. the --selftest smoke check) can prove the bundled font actually
+    made it into the installed set instead of silently falling back. A bare
+    `load_fonts(app)` call still works and ignores the return."""
+    registered: list = []
     try:
         import glob
         from PyQt5.QtGui import QFontDatabase
         for ttf in glob.glob(str(_fonts_dir() / "*.ttf")):
-            QFontDatabase.addApplicationFont(ttf)
+            try:
+                fid = QFontDatabase.addApplicationFont(ttf)
+                if fid != -1:
+                    registered.extend(QFontDatabase.applicationFontFamilies(fid))
+            except Exception:  # noqa: BLE001 - one bad TTF must not abort the rest
+                pass
     except Exception:  # noqa: BLE001
         pass
     _family_cache.clear()                # bundled TTFs just changed the installed set
     f = ui_font(10)
     app.setFont(f)
+    return registered
 
 
 _indicator_cache: Dict[str, str] = {}

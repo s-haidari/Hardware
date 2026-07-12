@@ -963,6 +963,14 @@ def run():
     app = QApplication.instance() or QApplication(sys.argv)
     app.setStyle("Fusion")
     T.load_fonts(app)
+    if selftest:
+        # Fail LOUDLY if the bundled DM Sans did not register: a frozen exe that
+        # dropped the font would otherwise silently fall back to a system face and
+        # ship looking wrong. This turns that into a red CI, not a user surprise.
+        from PyQt5.QtGui import QFontDatabase
+        if "DM Sans" not in QFontDatabase().families():
+            print("SELFTEST FAIL: DM Sans not registered after load_fonts - bundled font missing from the frozen exe", file=sys.stderr, flush=True)
+            return 1
     import LibraryManager as LM
     # SP1: a frozen exe has no repo tree — resolve (and on first run, choose+seed)
     # the writable library location before anything reads config or paths. Skip the
