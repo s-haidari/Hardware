@@ -250,11 +250,10 @@ def _parts_panel(ctx, _state) -> QWidget:
     def _resolve_dup(row):
         """A row's Duplicate badge was clicked: open the keep/delete resolve flow on that
         part's whole duplicate group (the one-confirm flow). Returns the dialog so the
-        drive/test path can exercise it; exec is guarded off headlessly."""
+        drive/test path can exercise it; it opens as an in-app subpage, not a modal window."""
         grp = _dup_group_for(row)
         dlg = DuplicateManagerDialog(ctx, grp, on_changed=rescan, parent=root)
-        if not _headless():
-            dlg.exec_()
+        K.open_subpage(ctx, dlg, "Manage Duplicates")
         return dlg
 
     # Last-used grouping, else a smart default by library size once the first scan lands.
@@ -402,15 +401,14 @@ def _parts_panel(ctx, _state) -> QWidget:
     def manage_duplicates():
         """Open the side-by-side resolve modal on the currently multi-selected duplicate
         parts (Ctrl/Shift+click 2+ duplicate rows first). Returns the dialog (or None
-        when fewer than 2 duplicates are selected); exec is guarded off headlessly."""
+        when fewer than 2 duplicates are selected); it opens as an in-app subpage."""
         sel = parts_list.selected_duplicate_rows()
         if len(sel) < 2:
             ctx.services.log("Manage Duplicates: select 2 or more duplicate parts first "
                              "(Ctrl or Shift click, or click a Dup badge to resolve one).")
             return None
         dlg = DuplicateManagerDialog(ctx, sel, on_changed=rescan, parent=root)
-        if not _headless():
-            dlg.exec_()
+        K.open_subpage(ctx, dlg, "Manage Duplicates")
         return dlg
 
     def export_visible(path=None):
@@ -496,7 +494,9 @@ def _parts_panel(ctx, _state) -> QWidget:
     # Fix Broken Links / Integrity Scan). The Maintenance + Sourcing-Health subtabs stay.
     def open_library_tools():
         from .library_preview import LibraryToolsDialog
-        LibraryToolsDialog(ctx, on_changed=rescan, parent=root).exec_()
+        dlg = LibraryToolsDialog(ctx, on_changed=rescan, parent=root)
+        K.open_subpage(ctx, dlg, "Library Tools")
+        return dlg
     tools_btn = W.btn("Library Tools", "default",
                       "Curated whole-library maintenance: sourcing, dedup, links, integrity",
                       open_library_tools)

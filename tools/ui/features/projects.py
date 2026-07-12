@@ -4247,11 +4247,9 @@ def _pcb_setup_panel(ctx, state) -> QWidget:
 
         def _open_fab_manager():
             dlg = FabPresetManagerDialog(host, on_change=lambda: _refresh_fab_presets())
-            from ..util import _headless
-            if _headless():
-                return                                    # headless drive can't exec a modal
-            dlg.exec_()
-            _refresh_fab_presets()
+            kit.open_subpage(ctx, dlg, "Fabrication Presets",
+                             on_result=lambda _r: _refresh_fab_presets())
+            return dlg
 
         fab_combo.currentTextChanged.connect(_set_fab)
         b_fab_manage.clicked.connect(_open_fab_manager)

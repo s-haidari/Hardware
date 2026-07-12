@@ -1171,8 +1171,8 @@ class LibraryToolsDialog(QDialog):
         n = sum(len(g) for g in groups)
         self._set_status("Deduplicate Footprints",
                          f"{plural(len(groups), 'group')}, {n} footprints. Opening review…")
-        if not _headless():
-            dlg.exec_()
+        from ..kit import open_subpage
+        open_subpage(self._ctx, dlg, "Deduplicate Footprints")
 
     def _auto_assign(self):
         def job():
@@ -2521,15 +2521,19 @@ class PartDetail(QWidget):
                 self.show(self._current)
             return
         dlg = _AutofillDialog(self._current or {}, res, self)
-        if dlg.exec_() != QDialog.Accepted:
-            if self._current:
-                self.show(self._current)         # still surface the fetched sourcing
-            return
-        plan = dlg.plan()
-        if plan:
-            self._apply_autofill(res, plan)
-        elif self._current:
-            self.show(self._current)
+
+        def _autofill_done(result):
+            if result != QDialog.Accepted:
+                if self._current:
+                    self.show(self._current)     # still surface the fetched sourcing
+                return
+            plan = dlg.plan()
+            if plan:
+                self._apply_autofill(res, plan)
+            elif self._current:
+                self.show(self._current)
+        from ..kit import open_subpage
+        open_subpage(self._ctx, dlg, "Autofill From Mouser", on_result=_autofill_done)
 
     def _find_on_mouser(self, row: dict):
         """Open the live catalog search seeded from this part, and apply the picked
@@ -2538,9 +2542,12 @@ class PartDetail(QWidget):
         from .mouser_search import MouserSearchDialog
         seed = (row.get("mpn") or row.get("value") or row.get("name") or "").strip()
         dlg = MouserSearchDialog(self._ctx, seed_query=seed, parent=self)
-        dlg.exec_()
-        if dlg.picked:
-            self._apply_fetched(dlg.picked)
+
+        def _search_done(_result):
+            if dlg.picked:
+                self._apply_fetched(dlg.picked)
+        from ..kit import open_subpage
+        open_subpage(self._ctx, dlg, "Search Mouser", on_result=_search_done)
 
     def _apply_autofill(self, fetched: dict, plan: dict):
         """Write the chosen autofill fields into the symbol(s) in one commit."""
