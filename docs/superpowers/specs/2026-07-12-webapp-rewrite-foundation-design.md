@@ -1,5 +1,9 @@
 # Web-app rewrite — Foundation design (Components + Projects first)
 
+> **SUPERSEDED (2026-07-12)** by `2026-07-12-perfected-rewrite-direction.md`, which reconciles this
+> Electron spec with the Stockroom clean-room effort into one direction (WebView2 host instead of
+> Electron; best-of-both reuse; text source plus derived SQLite index). Kept for history only.
+
 **Date:** 2026-07-12
 **Status:** Approved (brainstorm) — pending spec review → implementation plan
 **Scope of THIS spec:** the Foundation sub-project (repo scaffold, backend API skeleton,
