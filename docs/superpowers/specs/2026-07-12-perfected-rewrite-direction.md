@@ -1,6 +1,8 @@
 # Perfected rewrite direction (reconciled)
 
 **Date:** 2026-07-12
+**Product:** Stockroom (owner-confirmed). The rewrite ships under this name; this (Hardware) repo becomes
+its home under the top-level directory `stockroom/` and may be renamed `stockroom` later.
 **Status:** Design approved (brainstorm); pending owner spec review then implementation plans.
 **Supersedes:** `docs/superpowers/specs/2026-07-12-webapp-rewrite-foundation-design.md` (the Electron
 web-app Foundation spec). This document reconciles that spec with the Stockroom clean-room effort
@@ -34,6 +36,26 @@ must hold); reuse owns reading and computing (where the old logic is battle-test
 pure waste). The one integration discipline is that a reused Projects mutation (design rules, net
 classes, board setup) writes through the clean-room span layer, never the old reformatting writer.
 
+### 2.1 Zero Qt in the backend (hard constraint)
+
+The rewrite backend imports **zero PyQt**. A FastAPI service must never depend on a GUI toolkit. This
+reshapes "reuse" into **reuse-by-extraction**: the mature logic is lifted out of the old Qt-coupled
+modules into new Qt-free modules, preserving the algorithms and behavior (verified against the old
+tests) while dropping every Qt import. A CI gate greps the backend package for `PyQt5`, `QtCore`,
+`QtWidgets`, and `QtGui` and fails the build on any hit, so the constraint cannot rot (this matches the
+app's existing no-fault-gate culture).
+
+The coupling reality this must clear (measured 2026-07-12): only `LibraryManager.py` imports PyQt
+directly (a top-level import plus a couple of lazy `QMessageBox`/`QFileDialog` prompts that do not
+belong in a backend anyway). It is the **Qt hub**: it also imports `fp_render` (Qt-heavy), and most
+`nd_*` modules import `LibraryManager` (mostly lazily), so importing them as-is would drag Qt in
+transitively. Extraction therefore: (a) lifts LibraryManager's pure logic (the BOM subsystem, the
+Mouser/enrichment client, library parsing, place-and-link, merge) into Qt-free modules; (b) satisfies
+the `parse_sexpr` dependency from the clean-room s-expression layer, not `fp_render`; (c) re-points
+every `nd_*` import at the extracted Qt-free modules; (d) never imports `fp_render` (previews are
+kicad-cli plus three.js). The `nd_*` modules reference no Qt symbols themselves, and `kicad_tools.py`
+is already Qt-free, so the extraction is bounded and well-defined rather than open-ended.
+
 ## 3. Per-axis synthesis decisions
 
 | Axis | Decision | Rationale |
@@ -44,9 +66,9 @@ classes, board setup) writes through the clean-room span layer, never the old re
 | **Shell** | **WebView2 via pywebview, NOT Electron** | Target is Windows-only and all logic is Python, so Electron's cross-platform and Node-main-process buy nothing while costing a second runtime plus a bundled Chromium. WebView2: Python is the host process, native drag/drop delivers full zip paths to Python, and the same engine is the scraping fallback for bot-protected sites. This is the one axis where the Electron spec is overruled. |
 | Frontend | **Vite + React + TypeScript + Tailwind + TanStack Query + cmdk + three.js** (from the Electron spec) | Both specs agree on React/Tailwind; this ports the existing web mockups faithfully and closes the "looks nothing like the mockup" gap the PyQt port never did. |
 | Backend API | **FastAPI thin veneer** (both specs agree) | The surface is API plumbing, not logic. |
-| **Enrichment** | **Reuse** the old Mouser client, rate-limit/SRC-04 handling, and parser, and fold in Stockroom's generic URL parser, WebView2 rendered-DOM fallback, and datasheet fetcher | Best of both: proven Mouser code plus the scraper that makes completeness achievable without the API cap (see section 6). |
-| **BOM and procurement** | **Reuse** the LibraryManager BOM subsystem (~20 functions: `bom_cost_summary`, `bom_from_project`, `consolidated_bom`, `bom_diff`, `bom_procurement_summary`, `bom_xlsx`, and so on) | Mature pure logic; rebuilding is waste. Decouple from the module-level Qt import. |
-| **Projects (health, editor, net classes, design rules, board setup, fab/design presets)** | **Reuse** the Qt-free `nd_*` modules, routing their KiCad writes through the clean-room layer | The entire Projects capability already exists and is Qt-free; only its writes need re-plumbing. |
+| **Enrichment** | **Reuse by extraction (Qt-free)** the old Mouser client, rate-limit/SRC-04 handling, and parser, and fold in the generic URL parser, WebView2 rendered-DOM fallback, and datasheet fetcher | Best of both: proven Mouser code plus the scraper that makes completeness achievable without the API cap (see section 6). |
+| **BOM and procurement** | **Reuse by extraction (Qt-free)** the LibraryManager BOM subsystem (~20 functions: `bom_cost_summary`, `bom_from_project`, `consolidated_bom`, `bom_diff`, `bom_procurement_summary`, `bom_xlsx`, and so on) | Mature pure logic; rebuilding is waste. Lifted into Qt-free modules (section 2.1). |
+| **Projects (health, editor, net classes, design rules, board setup, fab/design presets)** | **Reuse by extraction (Qt-free)** the `nd_*` modules (re-pointed off the Qt hub), routing their KiCad writes through the clean-room layer | The entire Projects capability already exists; its writes re-route through Layer 0 and its `LibraryManager` imports re-point to the extracted Qt-free modules (section 2.1). |
 | Previews | **Replace** `fp_render` (33 lines of Qt) with kicad-cli SVG plus three.js/GLB | Keeps the backend Qt-free and always matches the installed KiCad. |
 | Update model | **git-pull ff-only self-update, frozen-once launcher, library-as-repo** | Ships code, UI, and library data in one pull; fits the git-native design. (Confirm in section 12.) |
 
@@ -110,10 +132,11 @@ that cuts against "works regardless of their KiCad setup").
 
 ## 6. Completeness contract (the complete-to-add gate)
 
-A component may not enter the primary library unless it is **complete**. Completeness is defined by the
-**completion passport** (the app already has a strict multi-item passport: identity fields, symbol,
-footprint, 3D model, datasheet, purchase link, manufacturer, MPN, category). The exact required-field set
-is finalized from that passport during M2 and enforced in one place:
+A component may not enter the primary library unless it is **complete**. Completeness is the
+**strict full set** (owner-confirmed 2026-07-12): identity (name, MPN, manufacturer, category,
+value/description), assets (symbol, footprint, 3D model, datasheet), and sourcing (purchase link). The
+exact field keys and validation rules are finalized from the completion passport during M2 and enforced
+in one place:
 
 - The atomic add operation in the mutation engine **rejects** an add whose passport is not 100 percent, with
   an honest per-field report of what is missing (never a silent partial add).
@@ -149,8 +172,9 @@ lose them, the current library is **archived** and the clean library starts comp
   (the profile mechanism already exists: one folder per profile). The Archive profile is preserved intact and
   stays usable in existing projects; it is exempt from the complete-to-add gate (grandfathered).
 - The **primary profile** is complete-only from day one: every new add passes the section 6 gate.
-- Archived parts can be **completed and promoted** into the primary library later through the same enrichment
-  plus gate flow (an explicit, supported path, not an automatic bulk migration).
+- Archived parts are **completed and promoted per part, user-initiated** (owner-confirmed): open an archived
+  part, run enrichment to fill its gaps, and promote it into the primary library once it passes the gate. Not
+  an automatic bulk migration.
 - The archive is created through the byte-preserving layer and committed as one scoped commit, so nothing is
   reformatted and the import is fully reversible.
 
@@ -161,10 +185,10 @@ lose them, the current library is **archived** and the clean library starts comp
 | M1 | Foundation: byte-preserving KiCad file core, semantic-diff gate, file models, kicad-cli wrapper | Shipped (Stockroom), migrates in |
 | M2 | Library data model, profiles, git sync, KiCad wiring, atomic mutation engine, **derived SQLite index**, **complete-to-add gate**, **archive import** | In progress (Stockroom store/vcs green; add the index, gate, archive) |
 | M3 | Ingestion: content-fingerprint zip adapters, legacy upgrade, 3D re-linking, staging, LCSC path | Planned |
-| M4 | Enrichment: **scraper-first** (purchase and datasheet links), WebView2 DOM fallback, datasheet fetcher, Mouser API as supplement (reuse the old client) | Planned |
+| M4 | Enrichment: **scraper-first** (purchase and datasheet links), WebView2 DOM fallback, datasheet fetcher, Mouser API as supplement (reuse-by-extraction of the old client into Qt-free modules) | Planned |
 | M5 | Backend API + pywebview WebView2 shell + frozen-once launcher + git-pull self-update | Planned (needs Windows) |
 | M6 | Frontend: Components UI from the web mockups, Ctrl+K palette, symbol/footprint/3D viewers, ingest, duplicates, settings, doctor | Planned |
-| M7 | **Projects (full): audit, health, Editor (design rules / net classes / board setup), BOM, procurement, exports** (reuse the `nd_*` modules and the BOM subsystem, routing KiCad writes through Layer 0) | Planned |
+| M7 | **Projects (full): audit, health, Editor (design rules / net classes / board setup), BOM, procurement, exports** (reuse-by-extraction of the `nd_*` modules and the BOM subsystem into Qt-free modules, routing KiCad writes through Layer 0) | Planned |
 | M8 | Retire the PyQt app per-feature at parity | Planned |
 
 Each milestone produces working, testable software and is adversarially reviewed and merged before the next.
@@ -182,15 +206,18 @@ and "reuse mature logic where good." Shell-first was rejected because it would b
 engine being replaced then require a risky swap; dual-track was rejected because it is the two-conflicting-
 directions problem this document ends.
 
-**Consolidation:** the rewrite lives in this (Hardware) repo under one top-level directory with a single
-history. Stockroom's shipped engine migrates in (`sexp/`, `verify/`, `kicad/`, `model/`, `store/`, `vcs/`,
+**Consolidation:** the rewrite lives in this (Hardware) repo under `stockroom/` with a single history.
+Stockroom's shipped engine migrates in (`sexp/`, `verify/`, `kicad/`, `model/`, `store/`, `vcs/`,
 `mutation/`), the FastAPI backend and React frontend follow the Electron spec's structure adapted to the
-WebView2 host, and the reused `nd_*` and BOM logic is extracted from `tools/` and decoupled from Qt.
+WebView2 host, and the reused `nd_*` and BOM logic is extracted from `tools/` into Qt-free modules
+(section 2.1). The repo may be renamed `stockroom` once the PyQt app is fully retired.
 
-**Reuse mechanics (honest about coupling):** the `nd_*` project modules are Qt-free and reuse cleanly. The
-BOM and enrichment logic lives in `LibraryManager.py`, whose Qt coupling is thin (a module-level import plus
-one lazy import), so the pure functions extract cleanly once that import is removed. `fp_render.py` is
-heavily Qt-coupled and is replaced by kicad-cli plus three.js rather than reused.
+**Reuse mechanics:** governed by the zero-Qt constraint in section 2.1. In short, the `nd_*` modules
+reference no Qt directly but most import `LibraryManager` (the Qt hub), so reuse is by extraction: lift
+LibraryManager's pure logic and re-point the `nd_*` imports at the Qt-free extracted modules, satisfy
+`parse_sexpr` from the clean-room layer, and never import `fp_render` (replaced by kicad-cli plus three.js).
+The extractions land at the milestones that consume them (M4 enrichment, M7 Projects and BOM); each ships as
+Qt-free modules behind the CI gate.
 
 ## 10. Coexistence and cutover
 
@@ -210,20 +237,25 @@ heavily Qt-coupled and is replaced by kicad-cli plus three.js rather than reused
 - **API:** pytest plus httpx against a fixture library and project.
 - **Frontend:** Vitest for hooks and components; **Playwright drives the real app (the new drive-audit) and
   screenshots it against the mockups (the new render gate)**.
+- **Zero-Qt gate:** a CI check greps the backend package for any `PyQt5`, `QtCore`, `QtWidgets`, or `QtGui`
+  import and fails on a hit, so the section 2.1 constraint cannot rot.
 - **Release gate:** Windows CI stays the gate; the reused `nd_*` and BOM logic keeps its existing unit tests.
   Claims always name the environment they rest on; Linux/offscreen green is necessary, never sufficient.
 
-## 12. Open decisions (confirm at spec review)
+## 12. Resolved decisions (owner, 2026-07-12)
 
-1. **Product name:** keep **Stockroom** (already public on GitHub with releases, a strong product identity) or
-   fold the rewrite under **KiCad Manager** (the v2.12 release name). Recommendation: keep Stockroom as the
-   product name, with this repo as its home.
-2. **Update model:** keep **git-pull ff-only self-update** (recommended, fits library-as-repo) or drop the
-   updater entirely as the Electron spec did. Recommendation: keep it.
-3. **Top-level directory name** for the consolidated rewrite (for example `app/`, `stockroom/`, or `webapp/`).
-4. **Exact required-field set** for the complete-to-add gate, finalized from the existing passport during M2.
-5. **Archived-part promotion UX:** confirm the complete-and-promote flow is user-initiated per part (recommended)
-   rather than an automatic bulk migration.
+1. **Product name:** **Stockroom.** The rewrite ships under this name; this (Hardware) repo is its home and
+   may be renamed `stockroom` later.
+2. **Top-level directory:** `stockroom/`.
+3. **Update model:** **git-pull ff-only self-update** (Update control plus a non-blocking on-launch check; a
+   graceful restart; frozen-once launcher; the library carried in-repo, so one pull ships code, UI, and data).
+4. **Complete-to-add gate:** the **strict full set** (identity: name, MPN, manufacturer, category,
+   value/description; assets: symbol, footprint, 3D model, datasheet; sourcing: purchase link).
+5. **Archive promotion:** **per part, user-initiated** (enrich, then promote when the part passes the gate).
+6. **Zero Qt in the backend:** hard constraint enforced by a CI gate (section 2.1).
+
+Left to finalize in M2 (implementation detail, not a direction fork): the precise passport field keys and
+their validation rules.
 
 ## 13. Non-goals (this direction)
 
